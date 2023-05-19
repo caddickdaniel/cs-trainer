@@ -34,5 +34,5 @@ module.exports = [
     },
     {
         name: 'Team L', language: 'English', region: 'US', platform: 'Faceit', skill_level: '10'
-    }
+    },
   ];

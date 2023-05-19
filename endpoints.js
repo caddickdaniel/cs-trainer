@@ -7,7 +7,7 @@ exports.endpoints = {
         'GET /api/teams': {
           description: 'This endpoint returns all the teams on the server',
         },
-        'POST /api/stock': {
+        'POST /api/teams': {
           description: 'This enpoint allows the user to add teams to the server',
         },
       },
