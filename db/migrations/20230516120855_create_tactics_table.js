@@ -1,9 +1,9 @@
 exports.up = function (knex) {
-    return knex.schema.createTable('tactics', (table) => {
-      table.increments('id').primary();
-      table.string('name').notNullable();
-      table.string('economy');
-      table.timestamps(true, true);
+    return knex.schema.createTable('tactics', (tacticTable) => {
+      tacticTable.increments('tactic_id').primary();
+      tacticTable.string('name').notNullable();
+      tacticTable.string('economy');
+      tacticTable.timestamps(true, true);
     });
   };
   

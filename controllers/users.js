@@ -1,34 +1,17 @@
 const {
     getTeams,
-    getTeamsByID,
     getTeamsByName,
     getTeamsByLanguage,
     getTeamsByRegion,
     getTeamsByPlatform,
     getTeamsBySkillLevel,
-    addTeam,
-    deleteTeamByID
+    deleteTeamByName
   } = require('../models/teams');
   
   exports.sendTeams = (req, res, next) => {
     const { sort_by, order } = req.query;
     Promise.all([getTeams(sort_by, order)])
       .then(([teams]) => {
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
-
-  exports.sendTeamsByID = (req, res, next) => {
-    const teamID = req.params.team_id;
-    getTeamsByID(teamID)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That team doesn't exist`
-          });
-        }
         res.status(200).send({ teams });
       })
       .catch(err => next(err));
@@ -118,11 +101,11 @@ const {
   };
   
   exports.sendDeletedTeam = (req, res, next) => {
-    const { team_id } = req.params;
+    const { name } = req.params;
   
-    deleteTeamByID(team_id)
+    deleteTeamByName(name)
       .then(() => {
-        if (!team_id) {
+        if (!name) {
           return Promise.reject({
             status: 404,
             message: `The team doesn't exist`

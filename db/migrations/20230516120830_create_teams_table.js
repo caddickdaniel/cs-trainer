@@ -1,12 +1,12 @@
 exports.up = function (knex) {
-    return knex.schema.createTable('teams', (table) => {
-      table.increments('id').primary();
-      table.string('name').notNullable();
-      table.string('language');
-      table.string('region');
-      table.string('platform');
-      table.string('skill_level');
-      table.timestamps(true, true);
+    return knex.schema.createTable('teams', (teamTable) => {
+      teamTable.increments('team_id').primary();
+      teamTable.string('name').notNullable();
+      teamTable.string('language');
+      teamTable.string('region');
+      teamTable.string('platform');
+      teamTable.string('skill_level');
+      teamTable.timestamps(true, true);
     });
   };
   

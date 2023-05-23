@@ -3,7 +3,6 @@ const connection = require('../db/connection');
 exports.getTeams = (sort_by = 'name', order = 'desc') =>
   connection
     .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -14,25 +13,9 @@ exports.getTeams = (sort_by = 'name', order = 'desc') =>
     .orderBy(sort_by, order)
     .returning('*');
 
-exports.getTeamsByID = teamID =>
-  connection
-    .select(
-      'teams.team_id',
-      'teams.name',
-      'teams.language',
-      'teams.region',
-      'teams.platform',
-      'teams.skill_level'
-    )
-    .groupBy('teams.team_id')
-    .from('teams')
-    .where('teams.team_id', '=', teamID)
-    .returning('*');
-
 exports.getTeamsByName = teamName =>
     connection
       .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -47,7 +30,6 @@ exports.getTeamsByName = teamName =>
 exports.getTeamsByLanguage = languageName =>
   connection
     .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -62,7 +44,6 @@ exports.getTeamsByLanguage = languageName =>
 exports.getTeamsByRegion = regionName =>
   connection
     .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -77,7 +58,6 @@ exports.getTeamsByRegion = regionName =>
 exports.getTeamsByPlatform = platformName =>
   connection
     .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -92,7 +72,6 @@ exports.getTeamsByPlatform = platformName =>
 exports.getTeamsBySkillLevel = skillLevelName =>
   connection
     .select(
-        'teams.team_id',
         'teams.name',
         'teams.language',
         'teams.region',
@@ -110,7 +89,7 @@ exports.addTeam = newTeam =>
     .into('teams')
     .returning('*');
 
-exports.deleteTeamByID = teamID =>
+exports.deleteTeamByName = teamName =>
   connection('teams')
-    .where('teams.team_id', '=', teamID)
+    .where('teams.name', '=', teamName)
     .del();

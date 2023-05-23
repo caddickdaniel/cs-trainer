@@ -1,7 +1,6 @@
 const teamRouter = require('express').Router();
 const {
   sendTeams,
-  sendTeamsByID,
   sendTeamsByName,
   sendTeamsByLanguage,
   sendTeamsByRegion,
@@ -19,33 +18,28 @@ teamRouter
   .all(handle405);
 
 teamRouter
-  .route('/:team_id')
-  .get(sendTeamsByID)
-  .delete(sendDeletedTeam)
-  .all(handle405); 
-
-teamRouter
-  .route('/:name')
+  .route('/teams/:name')
   .get(sendTeamsByName)
+  .delete(sendDeletedTeam)
   .all(handle405);
 
 teamRouter
-  .route('/:language')
+  .route('/teams/:language')
   .get(sendTeamsByLanguage)
   .all(handle405);
 
 teamRouter
-  .route('/:region')
+  .route('/teams/:region')
   .get(sendTeamsByRegion)
   .all(handle405);
 
 teamRouter
-  .route('/:platform')
+  .route('/teams/:platform')
   .get(sendTeamsByPlatform)
   .all(handle405);
 
 teamRouter
-  .route('/:skill_level')
+  .route('/teams/:skill_level')
   .get(sendTeamsBySkillLevel)
   .all(handle405);  
 
