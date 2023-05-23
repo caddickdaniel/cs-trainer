@@ -1,46 +1,64 @@
-const teamRouter = require('express').Router();
+const userRouter = require('express').Router();
 const {
-  sendTeams,
-  sendTeamsByName,
-  sendTeamsByLanguage,
-  sendTeamsByRegion,
-  sendTeamsByPlatform,
-  sendTeamsBySkillLevel,
-  sendNewTeam,
-  sendDeletedTeam,
-} = require('../controllers/teams');
+  sendUsers,
+  sendUsersByID,
+  sendUsersByName,
+  sendUsersByLanguage,
+  sendUsersByRegion,
+  sendUsersByPlatform,
+  sendUsersBySkillLevel,
+  sendUsersByRole,
+  sendUsersByTeam,
+  sendNewUser,
+  sendDeletedUser,
+} = require('../controllers/users');
 const { handle405 } = require('../errors');
 
-teamRouter
+userRouter
   .route('/')
-  .get(sendTeams)
-  .post(sendNewTeam)
+  .get(sendUsers)
+  .post(sendNewUser)
   .all(handle405);
 
-teamRouter
-  .route('/teams/:name')
-  .get(sendTeamsByName)
-  .delete(sendDeletedTeam)
+userRouter
+  .route('/:user_id')
+  .get(sendUsersByID)
+  .delete(sendDeletedUser)
   .all(handle405);
 
-teamRouter
-  .route('/teams/:language')
-  .get(sendTeamsByLanguage)
+userRouter
+  .route(':name')
+  .get(sendUsersByName)
   .all(handle405);
 
-teamRouter
-  .route('/teams/:region')
-  .get(sendTeamsByRegion)
+userRouter
+  .route(':language')
+  .get(sendUsersByLanguage)
   .all(handle405);
 
-teamRouter
-  .route('/teams/:platform')
-  .get(sendTeamsByPlatform)
+userRouter
+  .route(':region')
+  .get(sendUsersByRegion)
   .all(handle405);
 
-teamRouter
-  .route('/teams/:skill_level')
-  .get(sendTeamsBySkillLevel)
+userRouter
+  .route(':platform')
+  .get(sendUsersByPlatform)
+  .all(handle405);
+
+userRouter
+  .route(':skill_level')
+  .get(sendUsersBySkillLevel)
   .all(handle405);  
 
-module.exports = teamRouter;
+userRouter
+  .route(':role')
+  .get(sendUsersByRole)
+  .all(handle405);    
+
+userRouter
+  .route(':team')
+  .get(sendUsersByTeam)
+  .all(handle405);  
+
+module.exports = userRouter;

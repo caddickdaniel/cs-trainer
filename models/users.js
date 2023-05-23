@@ -1,95 +1,164 @@
 const connection = require('../db/connection');
 
-exports.getTeams = (sort_by = 'name', order = 'desc') =>
+exports.getUsers = (sort_by = 'name', order = 'desc') =>
   connection
     .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
     )
-    .from('teams')
+    .from('users')
     .orderBy(sort_by, order)
     .returning('*');
 
-exports.getTeamsByName = teamName =>
+exports.getUsersByID = userID =>
+  connection
+    .select(
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
+    )
+    .groupBy('users.user_id')
+    .from('users')
+    .where('users.user_id', '=', userID)
+    .returning('*');
+
+exports.getUsersByName = userName =>
     connection
       .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level'
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
       )
-      .groupBy('teams.name')
-      .from('teams')
-      .where('teams.name', '=', teamName)
+      .groupBy('users.name')
+      .from('users')
+      .where('users.name', '=', userName)
       .returning('*');
 
-exports.getTeamsByLanguage = languageName =>
+exports.getUsersByLanguage = languageName =>
   connection
     .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level'
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
     )
-    .groupBy('teams.language')
-    .from('teams')
-    .where('teams.language', '=', languageName)
+    .groupBy('users.language')
+    .from('users')
+    .where('users.language', '=', languageName)
     .returning('*');
 
-exports.getTeamsByRegion = regionName =>
+exports.getUsersByRegion = regionName =>
   connection
     .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level'
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
     )
-    .groupBy('teams.region')
-    .from('teams')
-    .where('teams.region', '=', regionName)
+    .groupBy('users.region')
+    .from('users')
+    .where('users.region', '=', regionName)
     .returning('*');
 
-exports.getTeamsByPlatform = platformName =>
+exports.getUsersByPlatform = platformName =>
   connection
     .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level'
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
     )
-    .groupBy('teams.platform')
-    .from('teams')
-    .where('teams.platform', '=', platformName)
+    .groupBy('users.platform')
+    .from('users')
+    .where('users.platform', '=', platformName)
     .returning('*');
 
-exports.getTeamsBySkillLevel = skillLevelName =>
+exports.getUsersBySkillLevel = skillLevelName =>
   connection
     .select(
-        'teams.name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level'
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
     )
-    .groupBy('teams.skill_level')
-    .from('teams')
-    .where('teams.skill_level', '=', skillLevelName)
+    .groupBy('users.skill_level')
+    .from('users')
+    .where('users.skill_level', '=', skillLevelName)
     .returning('*');
 
-exports.addTeam = newTeam =>
+exports.getUsersByRole = roleName =>
   connection
-    .insert(newTeam)
-    .into('teams')
+    .select(
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
+    )
+    .groupBy('users.role')
+    .from('users')
+    .where('users.role', '=', roleName)
+    .returning('*');
+  
+exports.getUsersByTeam = teamName =>
+  connection
+    .select(
+        'users.user_id',
+        'users.name',
+        'users.language',
+        'users.region',
+        'users.platform',
+        'users.skill_level',
+        'users.role',
+        'users.team'
+    )
+    .groupBy('users.team')
+    .from('users')
+    .where('users.team', '=', teamName)
+    .returning('*');    
+
+exports.addUser = newUser =>
+  connection
+    .insert(newUser)
+    .into('users')
     .returning('*');
 
-exports.deleteTeamByName = teamName =>
-  connection('teams')
-    .where('teams.name', '=', teamName)
+exports.deleteUserByID = userID =>
+  connection('users')
+    .where('users.user_id', '=', userID)
     .del();

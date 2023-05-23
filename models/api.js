@@ -39,8 +39,11 @@ exports.endpoints = {
         'POST /api/users': {
           description: 'This endpoint allows the user to add a new user to the server',
         },
-        'GET /api/users/:username': {
-          description: 'This endpoint returns a single user, referencing username',
+        'GET /api/users/:user_id': {
+          description: 'This endpoint returns a single user, referencing user ID',
+        },
+        'DELETE /api/users/:user_id': {
+          description: 'This endpoint allows the user to delete a user, referencing user ID',
         },
       },
     },
