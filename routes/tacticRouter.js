@@ -16,18 +16,18 @@ tacticRouter
   .all(handle405);
 
 tacticRouter
-  .route('/tactics/:tactic_id')
+  .route('/:tactic_id')
   .get(sendTacticsByID)
   .delete(sendDeletedTactic)
   .all(handle405);
 
 tacticRouter
-  .route('/tactics/:name')
+  .route('/:name')
   .get(sendTacticsByName)
   .all(handle405);
 
 tacticRouter
-  .route('/tactics/:economy')
+  .route('/:economy')
   .get(sendTacticsByEconomy)
   .all(handle405);
 
