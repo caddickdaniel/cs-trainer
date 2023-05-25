@@ -22,7 +22,7 @@ tacticRouter
   .all(handle405);
 
 tacticRouter
-  .route('/:name')
+  .route('/:tactic_name')
   .get(sendTacticsByName)
   .all(handle405);
 

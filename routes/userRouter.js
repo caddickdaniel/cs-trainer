@@ -27,7 +27,7 @@ userRouter
   .all(handle405);
 
 userRouter
-  .route(':name')
+  .route(':user_name')
   .get(sendUsersByName)
   .all(handle405);
 

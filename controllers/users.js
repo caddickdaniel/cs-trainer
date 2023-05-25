@@ -37,7 +37,7 @@ exports.sendUsersByID = (req, res, next) => {
 };
 
 exports.sendUsersByName = (req, res, next) => {
-  const userName = req.params.name;
+  const userName = req.params.user_name;
   getUsersByName(userName)
     .then(([users]) => {
       if (!users) {

@@ -32,7 +32,7 @@ const {
   };
 
   exports.sendTacticsByName = (req, res, next) => {
-    const tacticName = req.params.name;
+    const tacticName = req.params.tactic_name;
     getTacticsByName(tacticName)
       .then(([tactics]) => {
         if (!tactics) {

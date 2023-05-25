@@ -1,10 +1,10 @@
 const connection = require('../db/connection');
 
-exports.getUsers = (sort_by = 'name', order = 'desc') =>
+exports.getUsers = (sort_by = 'user_name', order = 'desc') =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -20,7 +20,7 @@ exports.getUsersByID = userID =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -37,7 +37,7 @@ exports.getUsersByName = userName =>
     connection
       .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -45,16 +45,16 @@ exports.getUsersByName = userName =>
         'users.role',
         'users.team_name'
       )
-      .groupBy('users.name')
+      .groupBy('users.user_name')
       .from('users')
-      .where('users.name', '=', userName)
+      .where('users.user_name', '=', userName)
       .returning('*');
 
 exports.getUsersByLanguage = languageName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -71,7 +71,7 @@ exports.getUsersByRegion = regionName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -88,7 +88,7 @@ exports.getUsersByPlatform = platformName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -105,7 +105,7 @@ exports.getUsersBySkillLevel = skillLevelName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -122,7 +122,7 @@ exports.getUsersByRole = roleName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',
@@ -139,7 +139,7 @@ exports.getUsersByTeam = teamName =>
   connection
     .select(
         'users.user_id',
-        'users.name',
+        'users.user_name',
         'users.language',
         'users.region',
         'users.platform',

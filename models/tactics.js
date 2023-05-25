@@ -1,10 +1,10 @@
 const connection = require('../db/connection');
 
-exports.getTactics = (sort_by = 'name', order = 'desc') =>
+exports.getTactics = (sort_by = 'tactic_name', order = 'desc') =>
   connection
     .select(
         'tactics.tactic_id',
-        'tactics.name',
+        'tactics.tactic_name',
         'tactics.economy',
     )
     .from('tactics')
@@ -15,7 +15,7 @@ exports.getTacticsByID = tacticID =>
     connection
       .select(
         'tactics.tactic_id',
-        'tactics.name',
+        'tactics.tactic_name',
         'tactics.economy',
       )
       .groupBy('tactics.tactic_id')
@@ -27,19 +27,19 @@ exports.getTacticsByName = tacticName =>
   connection
       .select(
         'tactics.tactic_id',
-        'tactics.name',
+        'tactics.tactic_name',
         'tactics.economy',
       )
-      .groupBy('tactics.name')
+      .groupBy('tactics.tactic_name')
       .from('tactics')
-      .where('tactics.name', '=', tacticName)
+      .where('tactics.tactic_name', '=', tacticName)
       .returning('*');
 
 exports.getTacticsByEconomy = economyName =>
   connection
       .select(
         'tactics.tactic_id',
-        'tactics.name',
+        'tactics.tactic_name',
         'tactics.economy',
       )
       .groupBy('tactics.economy')
