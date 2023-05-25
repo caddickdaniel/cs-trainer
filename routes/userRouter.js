@@ -57,7 +57,7 @@ userRouter
   .all(handle405);    
 
 userRouter
-  .route(':team')
+  .route(':team_name')
   .get(sendUsersByTeam)
   .all(handle405);  
 

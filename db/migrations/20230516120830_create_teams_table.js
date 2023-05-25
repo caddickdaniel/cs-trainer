@@ -1,7 +1,7 @@
 exports.up = function (knex) {
     return knex.schema.createTable('teams', (teamTable) => {
       teamTable.increments('team_id').primary();
-      teamTable.string('name').notNullable();
+      teamTable.string('team_name').notNullable();
       teamTable.string('language');
       teamTable.string('region');
       teamTable.string('platform');

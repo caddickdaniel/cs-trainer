@@ -25,7 +25,7 @@ teamRouter
   .all(handle405); 
 
 teamRouter
-  .route('/:name')
+  .route('/:team_name')
   .get(sendTeamsByName)
   .all(handle405);
 

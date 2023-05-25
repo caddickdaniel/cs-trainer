@@ -35,7 +35,7 @@ const {
   };
   
   exports.sendTeamsByName = (req, res, next) => {
-    const teamName = req.params.name;
+    const teamName = req.params.team_name;
     getTeamsByName(teamName)
       .then(([teams]) => {
         if (!teams) {

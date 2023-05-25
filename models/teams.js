@@ -1,10 +1,10 @@
 const connection = require('../db/connection');
 
-exports.getTeams = (sort_by = 'name', order = 'desc') =>
+exports.getTeams = (sort_by = 'team_name', order = 'desc') =>
   connection
     .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',
@@ -18,7 +18,7 @@ exports.getTeamsByID = teamID =>
   connection
     .select(
       'teams.team_id',
-      'teams.name',
+      'teams.team_name',
       'teams.language',
       'teams.region',
       'teams.platform',
@@ -33,22 +33,22 @@ exports.getTeamsByName = teamName =>
     connection
       .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',
         'teams.skill_level'
       )
-      .groupBy('teams.name')
+      .groupBy('teams.team_name')
       .from('teams')
-      .where('teams.name', '=', teamName)
+      .where('teams.team_name', '=', teamName)
       .returning('*');
 
 exports.getTeamsByLanguage = languageName =>
   connection
     .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',
@@ -63,7 +63,7 @@ exports.getTeamsByRegion = regionName =>
   connection
     .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',
@@ -78,7 +78,7 @@ exports.getTeamsByPlatform = platformName =>
   connection
     .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',
@@ -93,7 +93,7 @@ exports.getTeamsBySkillLevel = skillLevelName =>
   connection
     .select(
         'teams.team_id',
-        'teams.name',
+        'teams.team_name',
         'teams.language',
         'teams.region',
         'teams.platform',

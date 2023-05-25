@@ -127,7 +127,7 @@ exports.sendUsersByRole = (req, res, next) => {
 };
 
 exports.sendUsersByTeam = (req, res, next) => {
-  const teamName = req.params.team;
+  const teamName = req.params.team_name;
   getUsersByTeam(teamName)
     .then(([users]) => {
       if (!users) {

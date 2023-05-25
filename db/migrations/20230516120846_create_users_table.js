@@ -7,7 +7,7 @@ exports.up = function (knex) {
       userTable.string('platform');
       userTable.string('skill_level');
       userTable.string('role');
-      userTable.string('team');
+      userTable.string('team_name');
       userTable.timestamps(true, true);
     });
   };

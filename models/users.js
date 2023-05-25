@@ -10,7 +10,7 @@ exports.getUsers = (sort_by = 'name', order = 'desc') =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .from('users')
     .orderBy(sort_by, order)
@@ -26,7 +26,7 @@ exports.getUsersByID = userID =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.user_id')
     .from('users')
@@ -43,7 +43,7 @@ exports.getUsersByName = userName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
       )
       .groupBy('users.name')
       .from('users')
@@ -60,7 +60,7 @@ exports.getUsersByLanguage = languageName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.language')
     .from('users')
@@ -77,7 +77,7 @@ exports.getUsersByRegion = regionName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.region')
     .from('users')
@@ -94,7 +94,7 @@ exports.getUsersByPlatform = platformName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.platform')
     .from('users')
@@ -111,7 +111,7 @@ exports.getUsersBySkillLevel = skillLevelName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.skill_level')
     .from('users')
@@ -128,7 +128,7 @@ exports.getUsersByRole = roleName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
     .groupBy('users.role')
     .from('users')
@@ -145,11 +145,11 @@ exports.getUsersByTeam = teamName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team'
+        'users.team_name'
     )
-    .groupBy('users.team')
+    .groupBy('users.team_name')
     .from('users')
-    .where('users.team', '=', teamName)
+    .where('users.team_name', '=', teamName)
     .returning('*');    
 
 exports.addUser = newUser =>
