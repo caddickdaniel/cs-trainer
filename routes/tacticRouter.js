@@ -22,12 +22,12 @@ tacticRouter
   .all(handle405);
 
 tacticRouter
-  .route('/:tactic_name')
+  .route('/name/:tactic_name')
   .get(sendTacticsByName)
   .all(handle405);
 
 tacticRouter
-  .route('/:economy')
+  .route('/econ/:economy')
   .get(sendTacticsByEconomy)
   .all(handle405);
 

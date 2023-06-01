@@ -34,32 +34,32 @@ const {
   exports.sendTacticsByName = (req, res, next) => {
     const tacticName = req.params.tactic_name;
     getTacticsByName(tacticName)
-      .then(([tactics]) => {
-        if (!tactics) {
-          return Promise.reject({
-            status: 404,
-            message: `That tactic doesn't exist`
-          });
-        }
-        res.status(200).send({ tactics });
-      })
-      .catch(err => next(err));
-  };
+    .then(([tactics]) => {
+      if (!tactics) {
+        return Promise.reject({
+          status: 404,
+          message: `That tactic doesn't exist`
+        });
+      }
+      res.status(200).send({ tactics });
+    })
+    .catch(err => next(err));
+};
   
   exports.sendTacticsByEconomy = (req, res, next) => {
     const economyName = req.params.economy;
     getTacticsByEconomy(economyName)
-      .then(([tactics]) => {
-        if (!tactics) {
+      .then((tactics) => {
+        if (tactics.length === 0) {
           return Promise.reject({
             status: 404,
-            message: `That tactic doesn't exist`
+            message: `No tactics found for the specified language`,
           });
         }
         res.status(200).send({ tactics });
       })
-      .catch(err => next(err));
-  };
+      .catch((err) => next(err));
+};
 
   exports.sendNewTactic = (req, res, next) => {
     const tacticToAdd = req.body;
