@@ -127,8 +127,8 @@ exports.sendUsersByRole = (req, res, next) => {
 };
 
 exports.sendUsersByTeam = (req, res, next) => {
-  const teamName = req.params.team_name;
-  getUsersByTeam(teamName)
+  const teamID = req.params.team_id;
+  getUsersByTeam(teamID)
     .then(([users]) => {
       if (!users) {
         return Promise.reject({

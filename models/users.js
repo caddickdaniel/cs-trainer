@@ -10,9 +10,11 @@ exports.getUsers = (sort_by = 'user_name', order = 'desc') =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
     .orderBy(sort_by, order)
     .returning('*');
 
@@ -26,10 +28,12 @@ exports.getUsersByID = userID =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.user_id')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.user_id')
     .where('users.user_id', '=', userID)
     .returning('*');
 
@@ -43,10 +47,12 @@ exports.getUsersByName = userName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
       )
-      .groupBy('users.user_name')
       .from('users')
+      .join('teams', 'users.team_id', '=', 'teams.team_id')
+      .groupBy('users.user_name')
       .where('users.user_name', '=', userName)
       .returning('*');
 
@@ -60,10 +66,12 @@ exports.getUsersByLanguage = languageName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.language')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.language')
     .where('users.language', '=', languageName)
     .returning('*');
 
@@ -77,10 +85,12 @@ exports.getUsersByRegion = regionName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.region')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.region')
     .where('users.region', '=', regionName)
     .returning('*');
 
@@ -94,10 +104,12 @@ exports.getUsersByPlatform = platformName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.platform')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.platform')
     .where('users.platform', '=', platformName)
     .returning('*');
 
@@ -111,10 +123,12 @@ exports.getUsersBySkillLevel = skillLevelName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.skill_level')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.skill_level')
     .where('users.skill_level', '=', skillLevelName)
     .returning('*');
 
@@ -128,14 +142,16 @@ exports.getUsersByRole = roleName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.role')
     .from('users')
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.role')
     .where('users.role', '=', roleName)
     .returning('*');
   
-exports.getUsersByTeam = teamName =>
+exports.getUsersByTeam = teamID =>
   connection
     .select(
         'users.user_id',
@@ -145,11 +161,13 @@ exports.getUsersByTeam = teamName =>
         'users.platform',
         'users.skill_level',
         'users.role',
-        'users.team_name'
+        'users.team_id',
+        'teams.team_name AS team_name',
     )
-    .groupBy('users.team_name')
     .from('users')
-    .where('users.team_name', '=', teamName)
+    .join('teams', 'users.team_id', '=', 'teams.team_id')
+    .groupBy('users.team_id')
+    .where('users.team_id', '=', teamID)
     .returning('*');    
 
 exports.addUser = newUser =>
