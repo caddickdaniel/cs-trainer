@@ -20,7 +20,6 @@ describe('/api', () => {
         .get('/api/teams')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.teams).to.be.an('array');
           expect(body.teams[0]).to.be.an('object');
           expect(body.teams[0]).to.have.property('team_name');
@@ -31,7 +30,6 @@ describe('/api', () => {
         .get('/api/teams')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.teams).to.be.an('array');
           expect(body.teams[0]).to.be.an('object');
           expect(body.teams[1].team_name).to.equal('Team B');
@@ -42,7 +40,6 @@ describe('/api', () => {
         .get('/api/teams?sort_by=language')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.teams).to.be.an('array');
           expect(body.teams[0]).to.be.an('object');
           expect(body.teams[0].language).to.equal('English');
@@ -53,7 +50,6 @@ describe('/api', () => {
         .get('/api/teams')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.teams).to.be.an('array');
           expect(body.teams[0]).to.be.an('object');
           expect(body.teams[11].team_name).to.equal('Team L');
@@ -64,7 +60,6 @@ describe('/api', () => {
         .get('/api/teams?order=desc')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.teams).to.be.an('array');
           expect(body.teams[0]).to.be.an('object');
           expect(body.teams[11].team_name).to.equal('Team A');
@@ -75,7 +70,6 @@ describe('/api', () => {
         .get('/api/teams/2')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams);
           expect(body.teams).to.be.an('object');
           expect(body.teams.team_name).to.equal('Team B');
         })
@@ -85,7 +79,6 @@ describe('/api', () => {
         .get('/api/teams/name/Team%20A')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams);
           expect(body.teams).to.be.an('object');
           expect(body.teams.team_name).to.equal('Team A');
         })
@@ -95,7 +88,6 @@ describe('/api', () => {
         .get('/api/teams/lang/English')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams[1]);
           expect(body.teams).to.be.an('array');
           expect(body.teams[1]).to.be.an('object');
           expect(body.teams[1].language).to.equal('English');
@@ -107,7 +99,6 @@ describe('/api', () => {
         .get('/api/teams/reg/EU')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams);
           expect(body.teams).to.be.an('array');
           expect(body.teams[1]).to.be.an('object');
           expect(body.teams[1].region).to.equal('EU');
@@ -118,7 +109,6 @@ describe('/api', () => {
         .get('/api/teams/plat/Faceit')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams);
           expect(body.teams).to.be.an('array');
           expect(body.teams[2]).to.be.an('object');
           expect(body.teams[2].platform).to.equal('Faceit');
@@ -129,7 +119,6 @@ describe('/api', () => {
         .get('/api/teams/skill/10')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.teams);
           expect(body.teams).to.be.an('array');
           expect(body.teams[2]).to.be.an('object');
           expect(body.teams[2].skill_level).to.equal('10');
@@ -148,7 +137,6 @@ describe('/api', () => {
           .send(newTeam)
           .expect(201)
           .then(({ body }) => {
-            // console.log(body);
             expect(body.teams.team_name).to.equal(newTeam.team_name);
             expect(body.teams.team_id).to.equal(13);
           });
@@ -161,7 +149,6 @@ describe('/api', () => {
         .get('/api/tactics')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.tactics).to.be.an('array');
           expect(body.tactics[0]).to.be.an('object');
           expect(body.tactics[0]).to.have.property('tactic_name');
@@ -172,7 +159,6 @@ describe('/api', () => {
         .get('/api/tactics')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.tactics).to.be.an('array');
           expect(body.tactics[0]).to.be.an('object');
           expect(body.tactics[1].tactic_name).to.equal('Tactic B');
@@ -183,7 +169,6 @@ describe('/api', () => {
         .get('/api/tactics?sort_by=economy')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.tactics).to.be.an('array');
           expect(body.tactics[9]).to.be.an('object');
           expect(body.tactics[9].tactic_name).to.equal('Tactic D');
@@ -194,7 +179,6 @@ describe('/api', () => {
         .get('/api/tactics')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.tactics).to.be.an('array');
           expect(body.tactics[1]).to.be.an('object');
           expect(body.tactics[1].tactic_name).to.equal('Tactic B');
@@ -205,7 +189,6 @@ describe('/api', () => {
         .get('/api/tactics?order=desc')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.tactics).to.be.an('array');
           expect(body.tactics[0]).to.be.an('object');
           expect(body.tactics[0].tactic_name).to.equal('Tactic L');
@@ -216,7 +199,6 @@ describe('/api', () => {
         .get('/api/tactics/3')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.tactics);
           expect(body.tactics).to.be.an('object');
           expect(body.tactics.tactic_name).to.equal('Tactic C');
         })
@@ -226,7 +208,6 @@ describe('/api', () => {
         .get('/api/tactics/name/Tactic%20C')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.tactics);
           expect(body.tactics).to.be.an('object');
           expect(body.tactics.tactic_name).to.equal('Tactic C');
         })
@@ -236,7 +217,6 @@ describe('/api', () => {
         .get('/api/tactics/econ/Fullbuy')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body.tactics);
           expect(body.tactics[0]).to.be.an('object');
           expect(body.tactics[0].tactic_name).to.equal('Tactic D');
         })
@@ -255,7 +235,6 @@ describe('/api', () => {
           .send(newTactic)
           .expect(201)
           .then(({ body }) => {
-            // console.log(body);
             expect(body.tactics.tactic_name).to.equal(newTactic.tactic_name);
             expect(body.tactics.tactic_id).to.equal(13);
           });
@@ -268,7 +247,6 @@ describe('/api', () => {
         .get('/api/users')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0]).to.have.property('user_name');
@@ -279,7 +257,6 @@ describe('/api', () => {
         .get('/api/users')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[1]).to.be.an('object');
           expect(body.users[1].user_name).to.equal('User B');
@@ -290,7 +267,6 @@ describe('/api', () => {
         .get('/api/users?sort_by=language')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].language).to.equal('English');
@@ -301,7 +277,6 @@ describe('/api', () => {
         .get('/api/users')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[1]).to.be.an('object');
           expect(body.users[1].user_name).to.equal('User B');
@@ -312,7 +287,6 @@ describe('/api', () => {
         .get('/api/users?order=desc')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].user_name).to.equal('User L');
@@ -323,7 +297,6 @@ describe('/api', () => {
         .get('/api/users/3')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('object');
           expect(body.users.user_id).to.equal(3);
         })
@@ -333,7 +306,6 @@ describe('/api', () => {
         .get('/api/users/3')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('object');
           expect(body.users.user_id).to.equal(3);
         })
@@ -343,7 +315,6 @@ describe('/api', () => {
         .get('/api/users/name/User%20C')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('object');
           expect(body.users.user_name).to.equal('User C');
         })
@@ -353,7 +324,6 @@ describe('/api', () => {
         .get('/api/users/lang/Swedish')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].language).to.equal('Swedish');
@@ -364,7 +334,6 @@ describe('/api', () => {
         .get('/api/users/reg/US')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].region).to.equal('US');
@@ -375,7 +344,6 @@ describe('/api', () => {
         .get('/api/users/plat/ESEA')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].platform).to.equal('ESEA');
@@ -386,7 +354,6 @@ describe('/api', () => {
         .get('/api/users/skill/A')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].skill_level).to.equal('A');
@@ -397,7 +364,6 @@ describe('/api', () => {
         .get('/api/users/role/IGL')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].role).to.equal('IGL');
@@ -408,7 +374,6 @@ describe('/api', () => {
         .get('/api/users/team/1')
         .expect(200)
         .then(({ body }) => {
-        //   console.log(body);
           expect(body.users).to.be.an('array');
           expect(body.users[0]).to.be.an('object');
           expect(body.users[0].team_name).to.equal('Team A');
@@ -429,7 +394,6 @@ describe('/api', () => {
           .send(newUser)
           .expect(201)
           .then(({ body }) => {
-            // console.log(body);
             expect(body.users.user_name).to.equal(newUser.user_name);
             expect(body.users.user_id).to.equal(13);
           });
