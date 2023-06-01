@@ -54,91 +54,91 @@ exports.sendUsersByName = (req, res, next) => {
 exports.sendUsersByLanguage = (req, res, next) => {
   const languageName = req.params.language;
   getUsersByLanguage(languageName)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That language doesn't exist`
+          message: `No users found for the specified language`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendUsersByRegion = (req, res, next) => {
   const regionName = req.params.region;
   getUsersByRegion(regionName)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That region doesn't exist`
+          message: `No users found for the specified region`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendUsersByPlatform = (req, res, next) => {
   const platformName = req.params.platform;
   getUsersByPlatform(platformName)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That platform doesn't exist`
+          message: `No users found for the specified region`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendUsersBySkillLevel = (req, res, next) => {
   const skillLevelName = req.params.skill_level;
   getUsersBySkillLevel(skillLevelName)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That skill level doesn't exist`
+          message: `No users found for the specified skill level`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendUsersByRole = (req, res, next) => {
   const roleName = req.params.role;
   getUsersByRole(roleName)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That roll doesn't exist`
+          message: `No users found for the specified role`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendUsersByTeam = (req, res, next) => {
   const teamID = req.params.team_id;
   getUsersByTeam(teamID)
-    .then(([users]) => {
-      if (!users) {
+    .then((users) => {
+      if (users.length === 0) {
         return Promise.reject({
           status: 404,
-          message: `That team doesn't exist`
+          message: `No users found for the specified team`,
         });
       }
       res.status(200).send({ users });
     })
-    .catch(err => next(err));
+    .catch((err) => next(err));
 };
 
 exports.sendNewUser = (req, res, next) => {

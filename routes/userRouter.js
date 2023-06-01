@@ -27,37 +27,37 @@ userRouter
   .all(handle405);
 
 userRouter
-  .route(':user_name')
+  .route('/name/:user_name')
   .get(sendUsersByName)
   .all(handle405);
 
 userRouter
-  .route(':language')
+  .route('/lang/:language')
   .get(sendUsersByLanguage)
   .all(handle405);
 
 userRouter
-  .route(':region')
+  .route('/reg/:region')
   .get(sendUsersByRegion)
   .all(handle405);
 
 userRouter
-  .route(':platform')
+  .route('/plat/:platform')
   .get(sendUsersByPlatform)
   .all(handle405);
 
 userRouter
-  .route(':skill_level')
+  .route('/skill/:skill_level')
   .get(sendUsersBySkillLevel)
   .all(handle405);  
 
 userRouter
-  .route(':role')
+  .route('/role/:role')
   .get(sendUsersByRole)
   .all(handle405);    
 
 userRouter
-  .route(':team_id')
+  .route('/team/:team_id')
   .get(sendUsersByTeam)
   .all(handle405);  
 

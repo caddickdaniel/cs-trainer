@@ -221,14 +221,14 @@ describe('/api', () => {
           expect(body.tactics.tactic_name).to.equal('Tactic C');
         })
     );
-    it('GET/ status 200/ responds with a single tactic object that has a tactic name of Tactic A', () =>
+    it('GET/ status 200/ responds with a single tactic object that has a tactic name of Tactic C', () =>
       request
-        .get('/api/tactics/name/Tactic%20A')
+        .get('/api/tactics/name/Tactic%20C')
         .expect(200)
         .then(({ body }) => {
         //   console.log(body.tactics);
           expect(body.tactics).to.be.an('object');
-          expect(body.tactics.tactic_name).to.equal('Tactic A');
+          expect(body.tactics.tactic_name).to.equal('Tactic C');
         })
     );
     it('GET/ status 200/ responds with an array of tactic objects that has a economy of Fullbuy', () =>
@@ -258,6 +258,180 @@ describe('/api', () => {
             // console.log(body);
             expect(body.tactics.tactic_name).to.equal(newTactic.tactic_name);
             expect(body.tactics.tactic_id).to.equal(13);
+          });
+      });
+    it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));
+  });
+  describe('/users', () => {
+    it('GET/ status 200/ responds with an array of user objects', () =>
+      request
+        .get('/api/users')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0]).to.have.property('user_name');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects sorted by user name (DEFAULT_CASE)', () =>
+      request
+        .get('/api/users')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[1]).to.be.an('object');
+          expect(body.users[1].user_name).to.equal('User B');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects sorted by language (QUERY)', () =>
+      request
+        .get('/api/users?sort_by=language')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].language).to.equal('English');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects ordered by ascending (DEFAULT_CASE)', () =>
+      request
+        .get('/api/users')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[1]).to.be.an('object');
+          expect(body.users[1].user_name).to.equal('User B');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects ordered by descending (QUERY)', () =>
+      request
+        .get('/api/users?order=desc')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].user_name).to.equal('User L');
+        })
+    );
+    it('GET/ status 200/ responds with a user object with the id of 3', () =>
+      request
+        .get('/api/users/3')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('object');
+          expect(body.users.user_id).to.equal(3);
+        })
+    );
+    it('GET/ status 200/ responds with a user object with the id of 3', () =>
+      request
+        .get('/api/users/3')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('object');
+          expect(body.users.user_id).to.equal(3);
+        })
+    );
+    it('GET/ status 200/ responds with a user object with the user name User C', () =>
+      request
+        .get('/api/users/name/User%20C')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('object');
+          expect(body.users.user_name).to.equal('User C');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the language Swedish', () =>
+      request
+        .get('/api/users/lang/Swedish')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].language).to.equal('Swedish');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the region US', () =>
+      request
+        .get('/api/users/reg/US')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].region).to.equal('US');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the platform ESEA', () =>
+      request
+        .get('/api/users/plat/ESEA')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].platform).to.equal('ESEA');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the skill level A', () =>
+      request
+        .get('/api/users/skill/A')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].skill_level).to.equal('A');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the role IGL', () =>
+      request
+        .get('/api/users/role/IGL')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].role).to.equal('IGL');
+        })
+    );
+    it('GET/ status 200/ responds with an array of user objects with the team id 1', () =>
+      request
+        .get('/api/users/team/1')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body);
+          expect(body.users).to.be.an('array');
+          expect(body.users[0]).to.be.an('object');
+          expect(body.users[0].team_name).to.equal('Team A');
+        })
+    );
+    it('POST/ status 201/ responds with the posted user', () => {
+        const newUser = {
+          user_name: 'User 20',
+          language: 'French', 
+          region: 'EU', 
+          platform: 'Faceit', 
+          skill_level: '10', 
+          role: 'Awper', 
+          team_id: 2
+        };
+        return request
+          .post('/api/users')
+          .send(newUser)
+          .expect(201)
+          .then(({ body }) => {
+            // console.log(body);
+            expect(body.users.user_name).to.equal(newUser.user_name);
+            expect(body.users.user_id).to.equal(13);
           });
       });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));

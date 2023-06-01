@@ -51,7 +51,6 @@ exports.getUsersByName = userName =>
       )
       .from('users')
       .join('teams', 'users.team_id', '=', 'teams.team_id')
-      .groupBy('users.user_name')
       .where('users.user_name', '=', userName)
       .returning('*');
 
@@ -70,7 +69,6 @@ exports.getUsersByLanguage = languageName =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.language')
     .where('users.language', '=', languageName)
     .returning('*');
 
@@ -89,7 +87,6 @@ exports.getUsersByRegion = regionName =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.region')
     .where('users.region', '=', regionName)
     .returning('*');
 
@@ -108,7 +105,6 @@ exports.getUsersByPlatform = platformName =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.platform')
     .where('users.platform', '=', platformName)
     .returning('*');
 
@@ -127,7 +123,6 @@ exports.getUsersBySkillLevel = skillLevelName =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.skill_level')
     .where('users.skill_level', '=', skillLevelName)
     .returning('*');
 
@@ -146,7 +141,6 @@ exports.getUsersByRole = roleName =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.role')
     .where('users.role', '=', roleName)
     .returning('*');
   
@@ -165,9 +159,8 @@ exports.getUsersByTeam = teamID =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.team_id')
     .where('users.team_id', '=', teamID)
-    .returning('*');    
+    .returning('*');  
 
 exports.addUser = newUser =>
   connection
