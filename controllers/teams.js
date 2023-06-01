@@ -48,51 +48,51 @@ const {
       })
       .catch(err => next(err));
   };
-  
+
   exports.sendTeamsByLanguage = (req, res, next) => {
     const languageName = req.params.language;
     getTeamsByLanguage(languageName)
-      .then(([teams]) => {
-        if (!teams) {
+      .then((teams) => {
+        if (teams.length === 0) {
           return Promise.reject({
             status: 404,
-            message: `That language doesn't exist`
+            message: `No teams found for the specified language`,
           });
         }
         res.status(200).send({ teams });
       })
-      .catch(err => next(err));
+      .catch((err) => next(err));
   };
-  
+
   exports.sendTeamsByRegion = (req, res, next) => {
     const regionName = req.params.region;
     getTeamsByRegion(regionName)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That region doesn't exist`
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
+    .then((teams) => {
+      if (teams.length === 0) {
+        return Promise.reject({
+          status: 404,
+          message: `No teams found for the specified region`,
+        });
+      }
+      res.status(200).send({ teams });
+    })
+    .catch((err) => next(err));
+};
   
   exports.sendTeamsByPlatform = (req, res, next) => {
     const platformName = req.params.platform;
     getTeamsByPlatform(platformName)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That platform doesn't exist`
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
+    .then((teams) => {
+      if (teams.length === 0) {
+        return Promise.reject({
+          status: 404,
+          message: `No teams found for the specified platform`,
+        });
+      }
+      res.status(200).send({ teams });
+    })
+    .catch((err) => next(err));
+};
   
   exports.sendTeamsBySkillLevel = (req, res, next) => {
     const skillLevelName = req.params.skill_level;

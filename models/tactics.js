@@ -1,6 +1,6 @@
 const connection = require('../db/connection');
 
-exports.getTactics = (sort_by = 'tactic_name', order = 'desc') =>
+exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
   connection
     .select(
         'tactics.tactic_id',

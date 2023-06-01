@@ -1,6 +1,6 @@
 const connection = require('../db/connection');
 
-exports.getUsers = (sort_by = 'user_name', order = 'desc') =>
+exports.getUsers = (sort_by = 'user_name', order = 'asc') =>
   connection
     .select(
         'users.user_id',
@@ -33,7 +33,6 @@ exports.getUsersByID = userID =>
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .groupBy('users.user_id')
     .where('users.user_id', '=', userID)
     .returning('*');
 

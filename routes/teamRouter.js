@@ -25,27 +25,27 @@ teamRouter
   .all(handle405); 
 
 teamRouter
-  .route('/:team_name')
+  .route('/name/:team_name')
   .get(sendTeamsByName)
   .all(handle405);
 
 teamRouter
-  .route('/:language')
+  .route('/lang/:language')
   .get(sendTeamsByLanguage)
   .all(handle405);
 
 teamRouter
-  .route('/:region')
+  .route('/reg/:region')
   .get(sendTeamsByRegion)
   .all(handle405);
 
 teamRouter
-  .route('/:platform')
+  .route('/plat/:platform')
   .get(sendTeamsByPlatform)
   .all(handle405);
 
 teamRouter
-  .route('/:skill_level')
+  .route('/skill/:skill_level')
   .get(sendTeamsBySkillLevel)
   .all(handle405);  
 

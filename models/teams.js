@@ -1,6 +1,6 @@
 const connection = require('../db/connection');
 
-exports.getTeams = (sort_by = 'team_name', order = 'desc') =>
+exports.getTeams = (sort_by = 'team_name', order = 'asc') =>
   connection
     .select(
         'teams.team_id',
@@ -47,8 +47,8 @@ exports.getTeamsByName = teamName =>
       )
       .from('teams')
       .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-      .groupBy('teams.team_name')
       .where('teams.team_name', '=', teamName)
+      .groupBy('teams.team_id')
       .returning('*');
 
 exports.getTeamsByLanguage = languageName =>
@@ -64,8 +64,8 @@ exports.getTeamsByLanguage = languageName =>
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .groupBy('teams.language')
     .where('teams.language', '=', languageName)
+    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
 
 exports.getTeamsByRegion = regionName =>
@@ -81,8 +81,8 @@ exports.getTeamsByRegion = regionName =>
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .groupBy('teams.region')
     .where('teams.region', '=', regionName)
+    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
 
 exports.getTeamsByPlatform = platformName =>
@@ -98,8 +98,8 @@ exports.getTeamsByPlatform = platformName =>
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .groupBy('teams.platform')
     .where('teams.platform', '=', platformName)
+    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
 
 exports.getTeamsBySkillLevel = skillLevelName =>
