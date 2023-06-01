@@ -6,6 +6,10 @@ exports.getTactics = (sort_by = 'tactic_name', order = 'desc') =>
         'tactics.tactic_id',
         'tactics.tactic_name',
         'tactics.economy',
+        'tactics.grenade',
+        'tactics.molly',
+        'tactics.flash',
+        'tactics.smoke',
     )
     .from('tactics')
     .orderBy(sort_by, order)
@@ -17,6 +21,10 @@ exports.getTacticsByID = tacticID =>
         'tactics.tactic_id',
         'tactics.tactic_name',
         'tactics.economy',
+        'tactics.grenade',
+        'tactics.molly',
+        'tactics.flash',
+        'tactics.smoke',
       )
       .groupBy('tactics.tactic_id')
       .from('tactics')
@@ -29,6 +37,10 @@ exports.getTacticsByName = tacticName =>
         'tactics.tactic_id',
         'tactics.tactic_name',
         'tactics.economy',
+        'tactics.grenade',
+        'tactics.molly',
+        'tactics.flash',
+        'tactics.smoke',
       )
       .groupBy('tactics.tactic_name')
       .from('tactics')
@@ -41,6 +53,10 @@ exports.getTacticsByEconomy = economyName =>
         'tactics.tactic_id',
         'tactics.tactic_name',
         'tactics.economy',
+        'tactics.grenade',
+        'tactics.molly',
+        'tactics.flash',
+        'tactics.smoke',
       )
       .groupBy('tactics.economy')
       .from('tactics')
