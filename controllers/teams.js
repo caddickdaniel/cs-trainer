@@ -97,17 +97,17 @@ const {
   exports.sendTeamsBySkillLevel = (req, res, next) => {
     const skillLevelName = req.params.skill_level;
     getTeamsBySkillLevel(skillLevelName)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That skill level doesn't exist`
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
+    .then((teams) => {
+      if (teams.length === 0) {
+        return Promise.reject({
+          status: 404,
+          message: `No teams found for the specified platform`,
+        });
+      }
+      res.status(200).send({ teams });
+    })
+    .catch((err) => next(err));
+};
 
   exports.sendNewTeam = (req, res, next) => {
     const teamToAdd = req.body;

@@ -115,8 +115,8 @@ exports.getTeamsBySkillLevel = skillLevelName =>
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .groupBy('teams.skill_level')
     .where('teams.skill_level', '=', skillLevelName)
+    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
 
 exports.addTeam = newTeam =>

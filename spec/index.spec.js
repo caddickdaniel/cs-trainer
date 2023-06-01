@@ -110,7 +110,7 @@ describe('/api', () => {
         //   console.log(body.teams);
           expect(body.teams).to.be.an('array');
           expect(body.teams[1]).to.be.an('object');
-          expect(body.teams[1].team_name).to.equal('Team B');
+          expect(body.teams[1].region).to.equal('EU');
         })
     );
     it('GET/ status 200/ responds with an array of teams that has a platform of Faceit', () =>
@@ -121,8 +121,38 @@ describe('/api', () => {
         //   console.log(body.teams);
           expect(body.teams).to.be.an('array');
           expect(body.teams[2]).to.be.an('object');
-          expect(body.teams[2].team_id).to.equal(4);
+          expect(body.teams[2].platform).to.equal('Faceit');
         })
     );
+    it('GET/ status 200/ responds with an array of teams that has a platform of Faceit', () =>
+      request
+        .get('/api/teams/skill/10')
+        .expect(200)
+        .then(({ body }) => {
+        //   console.log(body.teams);
+          expect(body.teams).to.be.an('array');
+          expect(body.teams[2]).to.be.an('object');
+          expect(body.teams[2].skill_level).to.equal('10');
+        })
+    );
+    it('POST/ status 201/ responds with the posted team', () => {
+        const newTeam = {
+          team_name: 'Team 10',
+          language: 'French',
+          region: 'EU',
+          platform: 'MM',
+          skill_level: 'Global'
+        };
+        return request
+          .post('/api/teams')
+          .send(newTeam)
+          .expect(201)
+          .then(({ body }) => {
+            // console.log(body);
+            expect(body.teams.team_name).to.equal(newTeam.team_name);
+            expect(body.teams.team_id).to.equal(13);
+          });
+      });
+    it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/teams/12').expect(204));
   });
 });
