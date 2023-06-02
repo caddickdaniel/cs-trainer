@@ -73,3 +73,9 @@ exports.deleteTacticByID = tacticID =>
   connection('tactics')
     .where('tactics.tactic_id', '=', tacticID)
     .del();
+
+exports.updateTacticByID = (tacticID, updatedTactic) => {
+  return connection('tactics')
+    .where('tactic_id', tacticID)
+    .update(updatedTactic);
+};

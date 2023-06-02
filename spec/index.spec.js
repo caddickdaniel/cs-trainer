@@ -256,6 +256,24 @@ describe('/api', () => {
             expect(body.tactics.tactic_id).to.equal(13);
           });
       });
+    it('PATCH/ status 200/ responds with the tactic that has just been patched', () => {
+        const updatedTactic = {
+          tactic_name: "Shark",
+          economy: "Eco",
+          grenade: 1,
+          molly: 3,
+          flash: 5,
+          smoke: 3
+        };
+        return request
+          .patch('/api/tactics/1')
+          .send(updatedTactic)
+          .expect(200)
+          .then(({ body }) => {
+            expect(body).to.be.an('object');
+            expect(body.tactic_name).to.equal("Shark");
+          });
+      });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));
   });
   describe('/users', () => {

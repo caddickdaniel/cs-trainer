@@ -6,6 +6,7 @@ const {
   sendTacticsByEconomy,
   sendNewTactic,
   sendDeletedTactic,
+  sendPatchedTactic
 } = require('../controllers/tactics');
 const { handle405 } = require('../errors');
 
@@ -18,6 +19,7 @@ tacticRouter
 tacticRouter
   .route('/:tactic_id')
   .get(sendTacticsByID)
+  .patch(sendPatchedTactic)
   .delete(sendDeletedTactic)
   .all(handle405);
 

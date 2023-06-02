@@ -5,6 +5,7 @@ const {
     getTacticsByEconomy,
     addTactic,
     deleteTacticByID,
+    updateTacticByID,
   } = require('../models/tactics');
   
   exports.sendTactics = (req, res, next) => {
@@ -81,6 +82,39 @@ const {
           });
         }
         res.sendStatus(204);
+      })
+      .catch(err => next(err));
+  };
+
+  exports.sendPatchedTactic = (req, res, next) => {
+    const {tactic_name, economy, grenade, molly, flash, smoke} = req.body;
+    const {tactic_id} = req.params;
+  
+    getTacticsByID(tactic_id)
+      .then((tactic) => {
+        if (!tactic) {
+          return Promise.reject({
+            status: 404,
+            message: `Tactic not found with the ID ${tactic_id}`
+          });
+        }
+  
+        const updatedTactic = {
+          tactic_name: tactic_name || tactic.tactic_name,
+          economy: economy || tactic.economy,
+          grenade: grenade || tactic.grenade,
+          molly: molly || tactic.molly,
+          flash: flash || tactic.flash,
+          smoke: smoke || tactic.smoke,
+        };
+  
+        return updateTacticByID(tactic_id, updatedTactic)
+          .then(() => {
+            return getTacticsByID(tactic_id); 
+          });
+      })
+      .then((updatedTactic) => {
+        res.status(200).send(updatedTactic[0]);
       })
       .catch(err => next(err));
   };
