@@ -11,6 +11,7 @@ const {
   sendUsersByTeam,
   sendNewUser,
   sendDeletedUser,
+  sendPatchedUser,
 } = require('../controllers/users');
 const { handle405 } = require('../errors');
 
@@ -23,6 +24,7 @@ userRouter
 userRouter
   .route('/:user_id')
   .get(sendUsersByID)
+  .patch(sendPatchedUser)
   .delete(sendDeletedUser)
   .all(handle405);
 

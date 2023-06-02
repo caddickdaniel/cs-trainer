@@ -190,3 +190,9 @@ exports.deleteUserByID = userID =>
   connection('users')
     .where('users.user_id', '=', userID)
     .del();
+
+exports.updateUserByID = (userID, updatedUser) => {
+  return connection('users')
+    .where('user_id', userID)
+    .update(updatedUser);
+};    

@@ -9,7 +9,8 @@ const {
   getUsersByRole,
   getUsersByTeam,
   addUser,
-  deleteUserByID
+  deleteUserByID,
+  updateUserByID
 } = require('../models/users');
 
 exports.sendUsers = (req, res, next) => {
@@ -164,3 +165,35 @@ exports.sendDeletedUser = (req, res, next) => {
     })
     .catch(err => next(err));
 };
+
+exports.sendPatchedUser = (req, res, next) => {
+  const {language, region, platform, skill_level, role, team_id, avatar_url, bio} = req.body;
+  const {user_id} = req.params;
+
+  getUsersByID(user_id)
+    .then((user) => {
+      if (!user) {
+        return Promise.reject({
+          status: 404,
+          message: `User not found with the ID ${user_id}`
+        });
+      }
+
+      const updatedUser = {
+        language: language || user.language,
+        region: region || user.region,
+        platform: platform || user.platform,
+        skill_level: skill_level || user.skill_level,
+        role: role || user.role,
+        team_id: team_id || user.team_id,
+        avatar_url: avatar_url || user.avatar_url,
+        bio: bio || user.bio,
+      };
+
+      return updateUserByID(user_id, updatedUser);
+    })
+    .then(() => {
+      res.sendStatus(204);
+    })
+    .catch(err => next(err));
+}
