@@ -398,6 +398,27 @@ describe('/api', () => {
             expect(body.users.user_id).to.equal(13);
           });
       });
+    it('PATCH/ status 200/ responds with the user that has just been patched', () => {
+        const userID = 1
+        const updatedUser = {
+          language: "Shark",
+          region: "Shark",
+          platform: "Shark",
+          skill_level: "Shark",
+          role: "Shark",
+          team_id: 2,
+          avatar_url: "www.google.com/hello",
+          bio: "hello there"
+        };
+        return request
+          .patch('/api/users/1')
+          .send(updatedUser)
+          .expect(200)
+          .then(({ body }) => {
+            expect(body).to.be.an('object');
+            expect(body.team_id).to.equal(2);
+          });
+      });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));
   })
 });

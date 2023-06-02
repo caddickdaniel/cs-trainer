@@ -190,10 +190,13 @@ exports.sendPatchedUser = (req, res, next) => {
         bio: bio || user.bio,
       };
 
-      return updateUserByID(user_id, updatedUser);
+      return updateUserByID(user_id, updatedUser)
+        .then(() => {
+          return getUsersByID(user_id); 
+        });
     })
-    .then(() => {
-      res.sendStatus(204);
+    .then((updatedUser) => {
+      res.status(200).send(updatedUser[0]);
     })
     .catch(err => next(err));
-}
+};
