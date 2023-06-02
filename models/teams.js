@@ -129,3 +129,9 @@ exports.deleteTeamByID = teamID =>
   connection('teams')
     .where('teams.team_id', '=', teamID)
     .del();
+
+exports.updateTeamByID = (teamID, updatedTeam) => {
+  return connection('teams')
+    .where('team_id', teamID)
+    .update(updatedTeam);
+};    

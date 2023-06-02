@@ -7,7 +7,8 @@ const {
     getTeamsByPlatform,
     getTeamsBySkillLevel,
     addTeam,
-    deleteTeamByID
+    deleteTeamByID,
+    updateTeamByID
   } = require('../models/teams');
   
   exports.sendTeams = (req, res, next) => {
@@ -129,6 +130,38 @@ const {
           });
         }
         res.sendStatus(204);
+      })
+      .catch(err => next(err));
+  };
+
+  exports.sendPatchedTeam = (req, res, next) => {
+    const {team_name, language, region, platform, skill_level} = req.body;
+    const {team_id} = req.params;
+  
+    getTeamsByID(team_id)
+      .then((team) => {
+        if (!team) {
+          return Promise.reject({
+            status: 404,
+            message: `Team not found with the ID ${team_id}`
+          });
+        }
+  
+        const updatedTeam = {
+          team_name: team_name || team.team_name,
+          language: language || team.language,
+          region: region || team.region,
+          platform: platform || team.platform,
+          skill_level: skill_level || team.skill_level,
+        };
+  
+        return updateTeamByID(team_id, updatedTeam)
+          .then(() => {
+            return getTeamsByID(team_id); 
+          });
+      })
+      .then((updatedTeam) => {
+        res.status(200).send(updatedTeam[0]);
       })
       .catch(err => next(err));
   };

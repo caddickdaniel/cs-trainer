@@ -9,6 +9,7 @@ const {
   sendTeamsBySkillLevel,
   sendNewTeam,
   sendDeletedTeam,
+  sendPatchedTeam
 } = require('../controllers/teams');
 const { handle405 } = require('../errors');
 
@@ -21,6 +22,7 @@ teamRouter
 teamRouter
   .route('/:team_id')
   .get(sendTeamsByID)
+  .patch(sendPatchedTeam)
   .delete(sendDeletedTeam)
   .all(handle405); 
 

@@ -141,6 +141,24 @@ describe('/api', () => {
             expect(body.teams.team_id).to.equal(13);
           });
       });
+    it('PATCH/ status 200/ responds with the team that has just been patched', () => {
+        const updatedTeam = {
+          team_name: "Shark",
+          language: "Shark",
+          region: "Shark",
+          platform: "Shark",
+          skill_level: "Shark",
+        };
+        return request
+          .patch('/api/teams/1')
+          .send(updatedTeam)
+          .expect(200)
+          .then(({ body }) => {
+            console.log(body);
+            expect(body).to.be.an('object');
+            expect(body.team_name).to.equal("Shark");
+          });
+      });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/teams/12').expect(204));
   });
   describe('/tactics', () => {
@@ -399,7 +417,6 @@ describe('/api', () => {
           });
       });
     it('PATCH/ status 200/ responds with the user that has just been patched', () => {
-        const userID = 1
         const updatedUser = {
           language: "Shark",
           region: "Shark",
