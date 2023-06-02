@@ -154,7 +154,6 @@ describe('/api', () => {
           .send(updatedTeam)
           .expect(200)
           .then(({ body }) => {
-            console.log(body);
             expect(body).to.be.an('object');
             expect(body.team_name).to.equal("Shark");
           });
