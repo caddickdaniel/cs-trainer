@@ -8,6 +8,8 @@ exports.up = function (knex) {
       userTable.string('skill_level');
       userTable.string('role');
       userTable.integer('team_id');
+      userTable.string('avatar_url');
+      userTable.text('bio');
       userTable.timestamps(true, true);
     });
   };

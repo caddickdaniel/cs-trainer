@@ -12,6 +12,8 @@ exports.getUsers = (sort_by = 'user_name', order = 'asc') =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -30,6 +32,8 @@ exports.getUsersByID = userID =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -48,6 +52,8 @@ exports.getUsersByName = userName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
       )
       .from('users')
       .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -66,6 +72,8 @@ exports.getUsersByLanguage = languageName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -84,6 +92,8 @@ exports.getUsersByRegion = regionName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -102,6 +112,8 @@ exports.getUsersByPlatform = platformName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -120,6 +132,8 @@ exports.getUsersBySkillLevel = skillLevelName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -138,6 +152,8 @@ exports.getUsersByRole = roleName =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
@@ -156,6 +172,8 @@ exports.getUsersByTeam = teamID =>
         'users.role',
         'users.team_id',
         'teams.team_name AS team_name',
+        'users.avatar_url',
+        'users.bio',
     )
     .from('users')
     .join('teams', 'users.team_id', '=', 'teams.team_id')
