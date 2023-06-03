@@ -158,6 +158,13 @@ describe('/api', () => {
             expect(body.team_name).to.equal("Shark");
           });
       });
+      it('PATCH/ should remove the user from the team and return 204 status', async () => {
+        const response = await request
+          .patch('/api/teams/1/users/1')
+          .expect(204);
+    
+        expect(response.body).to.be.empty;
+      });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/teams/12').expect(204));
   });
   describe('/tactics', () => {

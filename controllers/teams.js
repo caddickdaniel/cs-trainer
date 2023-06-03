@@ -6,6 +6,7 @@ const {
     getTeamsByRegion,
     getTeamsByPlatform,
     getTeamsBySkillLevel,
+    removeUserFromTeam,
     addTeam,
     deleteTeamByID,
     updateTeamByID
@@ -165,3 +166,14 @@ const {
       })
       .catch(err => next(err));
   };
+
+exports.sendRemovedUser = (req, res, next) => {
+  const { team_id, user_id } = req.params;
+
+  removeUserFromTeam(team_id, user_id)
+    .then(() => {
+      const message = 'User has been removed from the team';
+      res.status(204).send({ message });
+    })
+    .catch(err => next(err));
+};

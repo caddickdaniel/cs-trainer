@@ -9,7 +9,8 @@ const {
   sendTeamsBySkillLevel,
   sendNewTeam,
   sendDeletedTeam,
-  sendPatchedTeam
+  sendPatchedTeam,
+  sendRemovedUser
 } = require('../controllers/teams');
 const { handle405 } = require('../errors');
 
@@ -50,5 +51,10 @@ teamRouter
   .route('/skill/:skill_level')
   .get(sendTeamsBySkillLevel)
   .all(handle405);  
+
+teamRouter
+  .route('/:team_id/users/:user_id')
+  .patch(sendRemovedUser)
+  .all(handle405);
 
 module.exports = teamRouter;

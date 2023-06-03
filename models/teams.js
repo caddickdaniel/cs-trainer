@@ -149,3 +149,10 @@ exports.updateTeamByID = (teamID, updatedTeam) => {
     .where('team_id', teamID)
     .update(updatedTeam);
 };    
+
+exports.removeUserFromTeam = (teamID, userID) => {
+  return connection('users')
+    .where({ user_id: userID })
+    .andWhere({ team_id: teamID })
+    .update({ team_id: null });
+};
