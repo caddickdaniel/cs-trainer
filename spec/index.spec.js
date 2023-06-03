@@ -238,6 +238,15 @@ describe('/api', () => {
           expect(body.tactics[0].tactic_name).to.equal('Tactic D');
         })
     );
+    it('GET/ status 200/ responds with an array of tactic objects that has a team_id of 1', () =>
+      request
+        .get('/api/tactics/team/1')
+        .expect(200)
+        .then(({ body }) => {
+          expect(body.tactics).to.be.an('array');
+          expect(body.tactics[2].tactic_name).to.equal('Tactic C');
+        })
+    );
     it('POST/ status 201/ responds with the posted tactic', () => {
         const newTactic = {
           tactic_name: 'Tactic 20',

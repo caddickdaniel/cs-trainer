@@ -3,6 +3,7 @@ const {
     getTacticsByID,
     getTacticsByName,
     getTacticsByEconomy,
+    getTacticsByTeam,
     addTactic,
     deleteTacticByID,
     updateTacticByID,
@@ -60,6 +61,21 @@ const {
         res.status(200).send({ tactics });
       })
       .catch((err) => next(err));
+};
+
+exports.sendTacticsByTeam = (req, res, next) => {
+  const teamID = req.params.team_id;
+  getTacticsByTeam(teamID)
+    .then((tactics) => {
+      if (tactics.length === 0) {
+        return Promise.reject({
+          status: 404,
+          message: `No tactics found for the specified team`,
+        });
+      }
+      res.status(200).send({ tactics });
+    })
+    .catch((err) => next(err));
 };
 
   exports.sendNewTactic = (req, res, next) => {

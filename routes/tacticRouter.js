@@ -4,6 +4,7 @@ const {
   sendTacticsByID,
   sendTacticsByName,
   sendTacticsByEconomy,
+  sendTacticsByTeam,
   sendNewTactic,
   sendDeletedTactic,
   sendPatchedTactic
@@ -31,6 +32,11 @@ tacticRouter
 tacticRouter
   .route('/econ/:economy')
   .get(sendTacticsByEconomy)
+  .all(handle405);
+
+tacticRouter
+  .route('/team/:team_id')
+  .get(sendTacticsByTeam)
   .all(handle405);
 
 module.exports = tacticRouter;

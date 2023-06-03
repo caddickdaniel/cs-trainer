@@ -10,8 +10,11 @@ exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
         'tactics.molly',
         'tactics.flash',
         'tactics.smoke',
+        'tactics.team_id',
+        'teams.team_name AS team_name'
     )
     .from('tactics')
+    .join('teams', 'tactics.team_id', '=', 'teams.team_id')
     .orderBy(sort_by, order)
     .returning('*');
 
@@ -25,9 +28,11 @@ exports.getTacticsByID = tacticID =>
         'tactics.molly',
         'tactics.flash',
         'tactics.smoke',
+        'tactics.team_id',
+        'teams.team_name AS team_name'
       )
-      .groupBy('tactics.tactic_id')
       .from('tactics')
+      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
       .where('tactics.tactic_id', '=', tacticID)
       .returning('*');
 
@@ -41,10 +46,12 @@ exports.getTacticsByName = tacticName =>
         'tactics.molly',
         'tactics.flash',
         'tactics.smoke',
+        'tactics.team_id',
+        'teams.team_name AS team_name'
       )
       .from('tactics')
+      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
       .where('tactics.tactic_name', '=', tacticName)
-      .groupBy('tactics.tactic_id')
       .returning('*');
 
 exports.getTacticsByEconomy = economyName =>
@@ -57,11 +64,31 @@ exports.getTacticsByEconomy = economyName =>
         'tactics.molly',
         'tactics.flash',
         'tactics.smoke',
+        'tactics.team_id',
+        'teams.team_name AS team_name'
       )
       .from('tactics')
+      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
       .where('tactics.economy', '=', economyName)
-      .groupBy('tactics.tactic_id', 'tactics.tactic_name', 'tactics.economy')
       .returning('*');
+
+exports.getTacticsByTeam = teamID =>
+  connection
+    .select(
+      'tactics.tactic_id',
+      'tactics.tactic_name',
+      'tactics.economy',
+      'tactics.grenade',
+      'tactics.molly',
+      'tactics.flash',
+      'tactics.smoke',
+      'tactics.team_id',
+      'teams.team_name AS team_name'
+    )
+    .from('tactics')
+    .join('teams', 'tactics.team_id', '=', 'teams.team_id')
+    .where('tactics.team_id', '=', teamID)
+    .returning('*'); 
 
 exports.addTactic = newTactic =>
   connection
