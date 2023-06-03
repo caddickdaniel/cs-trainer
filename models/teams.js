@@ -9,10 +9,12 @@ exports.getTeams = (sort_by = 'team_name', order = 'asc') =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .groupBy('teams.team_id')
     .orderBy(sort_by, order)
     .returning('*');
@@ -26,10 +28,12 @@ exports.getTeamsByID = teamID =>
       'teams.region',
       'teams.platform',
       'teams.skill_level',
-      connection.raw('ARRAY_AGG(users.user_name) AS users')
+      connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+      connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .groupBy('teams.team_id')
     .where('teams.team_id', '=', teamID)
     .returning('*');
@@ -43,10 +47,12 @@ exports.getTeamsByName = teamName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
       )
       .from('teams')
       .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+      .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
       .where('teams.team_name', '=', teamName)
       .groupBy('teams.team_id')
       .returning('*');
@@ -60,10 +66,12 @@ exports.getTeamsByLanguage = languageName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .where('teams.language', '=', languageName)
     .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
@@ -77,10 +85,12 @@ exports.getTeamsByRegion = regionName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .where('teams.region', '=', regionName)
     .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
@@ -94,10 +104,12 @@ exports.getTeamsByPlatform = platformName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .where('teams.platform', '=', platformName)
     .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
@@ -111,10 +123,12 @@ exports.getTeamsBySkillLevel = skillLevelName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
-        connection.raw('ARRAY_AGG(users.user_name) AS users')
+        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
+        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
     .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
     .where('teams.skill_level', '=', skillLevelName)
     .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
     .returning('*');
