@@ -9,6 +9,7 @@ exports.getTeams = (sort_by = 'team_name', order = 'asc') =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
@@ -28,6 +29,7 @@ exports.getTeamsByID = teamID =>
       'teams.region',
       'teams.platform',
       'teams.skill_level',
+      'teams.description',
       connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
       connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
@@ -47,6 +49,7 @@ exports.getTeamsByName = teamName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
       )
@@ -66,6 +69,7 @@ exports.getTeamsByLanguage = languageName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
@@ -85,6 +89,7 @@ exports.getTeamsByRegion = regionName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
@@ -104,6 +109,7 @@ exports.getTeamsByPlatform = platformName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
@@ -123,6 +129,7 @@ exports.getTeamsBySkillLevel = skillLevelName =>
         'teams.region',
         'teams.platform',
         'teams.skill_level',
+        'teams.description',
         connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
         connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )

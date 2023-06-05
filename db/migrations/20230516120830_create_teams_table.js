@@ -6,6 +6,7 @@ exports.up = function (knex) {
       teamTable.string('region');
       teamTable.string('platform');
       teamTable.string('skill_level');
+      teamTable.string('description');
       teamTable.specificType('users', 'integer[]')
       teamTable.specificType('tactics', 'integer[]')
       teamTable.timestamps(true, true);

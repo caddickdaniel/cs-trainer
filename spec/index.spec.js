@@ -11,9 +11,7 @@ describe('/api', () => {
       .then(() => connection.migrate.latest())
       .then(() => connection.seed.run())
   );
-
   after(() => connection.destroy());
-
   describe('/teams', () => {
     it('GET/ status 200/ responds with an array of team objects', () =>
       request
@@ -130,7 +128,8 @@ describe('/api', () => {
           language: 'French',
           region: 'EU',
           platform: 'MM',
-          skill_level: 'Global'
+          skill_level: 'Global',
+          description: 'This is the new teams description'
         };
         return request
           .post('/api/teams')
@@ -148,6 +147,7 @@ describe('/api', () => {
           region: "Shark",
           platform: "Shark",
           skill_level: "Shark",
+          description: "This is the updated team description"
         };
         return request
           .patch('/api/teams/1')
