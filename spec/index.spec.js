@@ -125,6 +125,7 @@ describe('/api', () => {
     it('POST/ status 201/ responds with the posted team', () => {
         const newTeam = {
           team_name: 'Team 10',
+          owner: 1,
           language: 'French',
           region: 'EU',
           platform: 'MM',
