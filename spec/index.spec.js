@@ -281,6 +281,16 @@ describe('/api', () => {
           expect(body.tactics[2].tactic_name).to.equal('Tactic C');
         })
     );
+    it('GET/ status 200/ responds with an array of tactic steps for user 1 in tactic 1', () =>
+      request
+        .get('/api/tactics/1/user/1')
+        .expect(200)
+        .then(({ body }) => {
+          expect(body.steps).to.be.an('array');
+          expect(body.steps[0].step).to.equal(1);
+          expect(body.steps[1].desc).to.equal('run here now');
+        })
+    );
     it('POST/ status 201/ responds with the posted tactic', () => {
         const newTactic = {
           tactic_name: 'Tactic 20',
