@@ -12,6 +12,7 @@ const {
   sendNewUser,
   sendDeletedUser,
   sendPatchedUser,
+  removeTeamFromUser
 } = require('../controllers/users');
 const { handle405 } = require('../errors');
 
@@ -62,5 +63,10 @@ userRouter
   .route('/team/:team_id')
   .get(sendUsersByTeam)
   .all(handle405);  
+
+userRouter
+  .route('/:user_id/remove-team')
+  .patch(removeTeamFromUser)
+  .all(handle405);
 
 module.exports = userRouter;

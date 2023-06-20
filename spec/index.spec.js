@@ -2,7 +2,14 @@ process.env.NODE_ENV = 'test';
 const { expect } = require('chai');
 const app = require('../app');
 const request = require('supertest')(app);
+const models = require('../models/teams');
+const controllers = require('../controllers/teams');
 const connection = require('../db/connection');
+const assert = require('assert');
+const chai = require('chai');
+const chaiHttp = require('chai-http');
+
+chai.use(chaiHttp);
 
 describe('/api', () => {
   beforeEach(() =>
@@ -122,6 +129,15 @@ describe('/api', () => {
           expect(body.teams[2].skill_level).to.equal('10');
         })
     );
+    it('GET/ status 200/ responds with the owner of the team with team_id 2', () =>
+      request
+        .get('/api/teams/2/owner')
+        .expect(200)
+        .then(({ body }) => {
+          expect(body.team).to.be.an('object');
+          expect(body.team.owner).to.equal(2);
+        })
+    );
     it('POST/ status 201/ responds with the posted team', () => {
         const newTeam = {
           team_name: 'Team 10',
@@ -159,13 +175,14 @@ describe('/api', () => {
             expect(body.team_name).to.equal("Shark");
           });
       });
-      it('PATCH/ should remove the user from the team and return 204 status', async () => {
-        const response = await request
-          .patch('/api/teams/1/users/1')
-          .expect(204);
-    
-        expect(response.body).to.be.empty;
-      });
+    it('PATCH/ checks for owner carrying out request them removes user 2 from team 1', () => {
+      const ownerCheck = {user_id: 1}
+      
+      request
+        .patch('/api/teams/1/users/2')
+        .send(ownerCheck)
+        .expect(204)
+    })
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/teams/12').expect(204));
   });
   describe('/tactics', () => {
@@ -469,6 +486,42 @@ describe('/api', () => {
             expect(body).to.be.an('object');
             expect(body.team_id).to.equal(2);
           });
+      });
+      it('PATCH/ status 200/ responds with the user that has just been patched', () => {
+        const updatedUser = {
+          language: "Shark",
+          region: "Shark",
+          platform: "Shark",
+          skill_level: "Shark",
+          role: "Shark",
+          team_id: 2,
+          avatar_url: "www.google.com/hello",
+          bio: "hello there"
+        };
+        return request
+          .patch('/api/users/1')
+          .send(updatedUser)
+          .expect(200)
+          .then(({ body }) => {
+            expect(body).to.be.an('object');
+            expect(body.team_id).to.equal(2);
+          });
+      });
+      it('PATCH/ status 204/ should update the team_id of the user to null', async () => {
+        const user = {
+          user_name: 'User A',
+          team_id: 1,
+        };
+        const insertedUser = await connection('users').insert(user).returning('*');
+        const response = await request
+          .patch(`/api/users/${insertedUser[0].user_id}/remove-team`)
+          .expect(204);
+    
+        const updatedUser = await connection('users')
+          .where({ user_id: insertedUser[0].user_id })
+          .first();
+    
+        expect(updatedUser.team_id).to.be.null;
       });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));
   })

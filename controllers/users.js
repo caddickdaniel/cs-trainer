@@ -10,7 +10,8 @@ const {
   getUsersByTeam,
   addUser,
   deleteUserByID,
-  updateUserByID
+  updateUserByID,
+  updateUserTeam
 } = require('../models/users');
 
 exports.sendUsers = (req, res, next) => {
@@ -197,6 +198,16 @@ exports.sendPatchedUser = (req, res, next) => {
     })
     .then((updatedUser) => {
       res.status(200).send(updatedUser[0]);
+    })
+    .catch(err => next(err));
+};
+
+exports.removeTeamFromUser = (req, res, next) => {
+  const userID = req.params.user_id;
+
+  updateUserTeam(userID, null)
+    .then(() => {
+      res.status(204).send();
     })
     .catch(err => next(err));
 };

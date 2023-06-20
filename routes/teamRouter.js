@@ -10,7 +10,8 @@ const {
   sendNewTeam,
   sendDeletedTeam,
   sendPatchedTeam,
-  sendRemovedUser
+  removeUserFromTeam,
+  sendTeamOwner,
 } = require('../controllers/teams');
 const { handle405 } = require('../errors');
 
@@ -53,8 +54,13 @@ teamRouter
   .all(handle405);  
 
 teamRouter
+  .route('/:team_id/owner')
+  .get(sendTeamOwner)
+  .all(handle405)
+
+teamRouter
   .route('/:team_id/users/:user_id')
-  .patch(sendRemovedUser)
+  .patch(removeUserFromTeam)
   .all(handle405);
 
 module.exports = teamRouter;

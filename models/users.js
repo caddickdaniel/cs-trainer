@@ -196,3 +196,9 @@ exports.updateUserByID = (userID, updatedUser) => {
     .where('user_id', userID)
     .update(updatedUser);
 };    
+
+exports.updateUserTeam = (userID, teamID) => {
+  return connection('users')
+    .where({ user_id: userID })
+    .update({ team_id: teamID });
+};

@@ -1,17 +1,18 @@
 const {
-    getTeams,
-    getTeamsByID,
-    getTeamsByName,
-    getTeamsByLanguage,
-    getTeamsByRegion,
-    getTeamsByPlatform,
-    getTeamsBySkillLevel,
-    removeUserFromTeam,
-    addTeam,
-    deleteTeamByID,
-    updateTeamByID
-  } = require('../models/teams');
-  
+  getTeams,
+  getTeamsByID,
+  getTeamsByName,
+  getTeamsByLanguage,
+  getTeamsByRegion,
+  getTeamsByPlatform,
+  getTeamsBySkillLevel,
+  addTeam,
+  deleteTeamByID,
+  updateTeamByID,
+  getTeamOwner,
+  updateUserTeam
+} = require('../models/teams');
+
   exports.sendTeams = (req, res, next) => {
     const { sort_by, order } = req.query;
     Promise.all([getTeams(sort_by, order)])
@@ -167,13 +168,36 @@ const {
       .catch(err => next(err));
   };
 
-exports.sendRemovedUser = (req, res, next) => {
-  const { team_id, user_id } = req.params;
+exports.sendTeamOwner = (req, res, next) => {
+    const teamID = req.params.team_id;
+    getTeamOwner(teamID)
+      .then((team) => {
+        if (!team) {
+          return Promise.reject({
+            status: 404,
+            message: `That team doesn't exist`,
+          });
+        }
+        res.status(200).send({ team });
+      })
+      .catch((err) => next(err));
+  };
 
-  removeUserFromTeam(team_id, user_id)
+exports.removeUserFromTeam = (req, res, next) => {
+  const ownerID = req.body.user_id;
+  const teamID = req.params.team_id;
+  const userID = req.params.user_id;
+
+  getTeamOwner(teamID)
+    .then(team => {
+      if (team.owner === ownerID) {
+        return updateUserTeam(userID);
+      } else {
+        throw new Error('Only the team owner can remove users from the team.');
+      }
+    })
     .then(() => {
-      const message = 'User has been removed from the team';
-      res.status(204).send({ message });
+      res.status(204).send();
     })
     .catch(err => next(err));
 };
