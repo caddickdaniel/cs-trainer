@@ -7,6 +7,7 @@ const {
     addTactic,
     deleteTacticByID,
     updateTacticByID,
+    getStepsByUserAndTactic
   } = require('../models/tactics');
   
   exports.sendTactics = (req, res, next) => {
@@ -134,3 +135,16 @@ exports.sendTacticsByTeam = (req, res, next) => {
       })
       .catch(err => next(err));
   };
+
+exports.sendStepsByUserAndTactic = (req, res, next) => {
+  const tacticID = req.params.tactic_id;
+  const userID = req.params.user_id;
+
+  getStepsByUserAndTactic(userID, tacticID)
+    .then(steps => {
+      res.status(200).json({ steps });
+    })
+    .catch(err => {
+      next(err);
+    });
+};  

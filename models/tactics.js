@@ -1,4 +1,5 @@
 const connection = require('../db/connection');
+const knex = require('../db/connection');
 
 exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
   connection
@@ -11,7 +12,10 @@ exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
         'tactics.flash',
         'tactics.smoke',
         'tactics.team_id',
-        'teams.team_name AS team_name'
+        'teams.team_name AS team_name',
+        'tactics.T',
+        'tactics.CT',
+        'tactics.steps'
     )
     .from('tactics')
     .join('teams', 'tactics.team_id', '=', 'teams.team_id')
@@ -29,7 +33,10 @@ exports.getTacticsByID = tacticID =>
         'tactics.flash',
         'tactics.smoke',
         'tactics.team_id',
-        'teams.team_name AS team_name'
+        'teams.team_name AS team_name',
+        'tactics.T',
+        'tactics.CT',
+        'tactics.steps'
       )
       .from('tactics')
       .join('teams', 'tactics.team_id', '=', 'teams.team_id')
@@ -47,7 +54,10 @@ exports.getTacticsByName = tacticName =>
         'tactics.flash',
         'tactics.smoke',
         'tactics.team_id',
-        'teams.team_name AS team_name'
+        'teams.team_name AS team_name',
+        'tactics.T',
+        'tactics.CT',
+        'tactics.steps'
       )
       .from('tactics')
       .join('teams', 'tactics.team_id', '=', 'teams.team_id')
@@ -65,7 +75,10 @@ exports.getTacticsByEconomy = economyName =>
         'tactics.flash',
         'tactics.smoke',
         'tactics.team_id',
-        'teams.team_name AS team_name'
+        'teams.team_name AS team_name',
+        'tactics.T',
+        'tactics.CT',
+        'tactics.steps'
       )
       .from('tactics')
       .join('teams', 'tactics.team_id', '=', 'teams.team_id')
@@ -83,7 +96,10 @@ exports.getTacticsByTeam = teamID =>
       'tactics.flash',
       'tactics.smoke',
       'tactics.team_id',
-      'teams.team_name AS team_name'
+      'teams.team_name AS team_name',
+      'tactics.T',
+      'tactics.CT',
+      'tactics.steps'
     )
     .from('tactics')
     .join('teams', 'tactics.team_id', '=', 'teams.team_id')
@@ -105,4 +121,20 @@ exports.updateTacticByID = (tacticID, updatedTactic) => {
   return connection('tactics')
     .where('tactic_id', tacticID)
     .update(updatedTactic);
+};
+
+exports.getStepsByUserAndTactic = (userID, tacticID) => {
+  return knex('tactics')
+    .select('steps')
+    .where({
+      tactic_id: tacticID
+    })
+    .first()
+    .then(result => {
+      if (result && result.steps) {
+        const filteredSteps = result.steps.filter(step => step.user_id === Number(userID));
+        return filteredSteps;
+      }
+      return [];
+    });
 };
