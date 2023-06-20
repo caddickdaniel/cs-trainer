@@ -2,10 +2,7 @@ process.env.NODE_ENV = 'test';
 const { expect } = require('chai');
 const app = require('../app');
 const request = require('supertest')(app);
-const models = require('../models/teams');
-const controllers = require('../controllers/teams');
 const connection = require('../db/connection');
-const assert = require('assert');
 const chai = require('chai');
 const chaiHttp = require('chai-http');
 
@@ -175,14 +172,26 @@ describe('/api', () => {
             expect(body.team_name).to.equal("Shark");
           });
       });
-    it('PATCH/ checks for owner carrying out request them removes user 2 from team 1', () => {
-      const ownerCheck = {user_id: 1}
-      
+    it('PATCH/ checks for owner carrying out request then removes user 2 from team 1', (done) => {
+      const ownerCheck = { user_id: 1 };
+    
       request
         .patch('/api/teams/1/users/2')
         .send(ownerCheck)
         .expect(204)
-    })
+        .then(() => {
+          request
+            .get('/api/teams/1')
+            .expect(200)
+            .then((response) => {
+              const updatedTeam = response.body.teams;
+              expect(updatedTeam.users).to.not.include('User B');
+              done();
+            })
+            .catch((err) => done(err));
+        })
+        .catch((err) => done(err));
+    });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/teams/12').expect(204));
   });
   describe('/tactics', () => {
