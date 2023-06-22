@@ -7,7 +7,8 @@ const {
     addTactic,
     deleteTacticByID,
     updateTacticByID,
-    getStepsByUserAndTactic
+    getStepsByUserAndTactic,
+    updateTacticStepsByID
   } = require('../models/tactics');
   
   exports.sendTactics = (req, res, next) => {
@@ -148,3 +149,16 @@ exports.sendStepsByUserAndTactic = (req, res, next) => {
       next(err);
     });
 };  
+
+exports.sendPatchedSteps = (req, res, next) => {
+  const tacticID = req.params.tactic_id;
+  const newSteps = req.body.steps;
+
+  updateTacticStepsByID(tacticID, newSteps)
+    .then(() => {
+      res.status(200).json({ message: 'Steps updated successfully', steps: newSteps });
+    })
+    .catch(err => {
+      next(err);
+    });
+};

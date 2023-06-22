@@ -1,5 +1,4 @@
 const connection = require('../db/connection');
-const knex = require('../db/connection');
 
 exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
   connection
@@ -124,7 +123,7 @@ exports.updateTacticByID = (tacticID, updatedTactic) => {
 };
 
 exports.getStepsByUserAndTactic = (userID, tacticID) => {
-  return knex('tactics')
+  return connection('tactics')
     .select('steps')
     .where({
       tactic_id: tacticID
@@ -137,4 +136,10 @@ exports.getStepsByUserAndTactic = (userID, tacticID) => {
       }
       return [];
     });
+};
+
+exports.updateTacticStepsByID = (tacticID, newSteps) => {
+  return connection('tactics')
+    .where({ tactic_id: tacticID })
+    .update({ steps: JSON.stringify(newSteps) });
 };

@@ -3,10 +3,7 @@ const { expect } = require('chai');
 const app = require('../app');
 const request = require('supertest')(app);
 const connection = require('../db/connection');
-const chai = require('chai');
-const chaiHttp = require('chai-http');
-
-chai.use(chaiHttp);
+const {sendTacticsByID} = require('../controllers/tactics');
 
 describe('/api', () => {
   beforeEach(() =>
@@ -283,7 +280,7 @@ describe('/api', () => {
     );
     it('GET/ status 200/ responds with an array of tactic steps for user 1 in tactic 1', () =>
       request
-        .get('/api/tactics/1/user/1')
+        .get('/api/tactics/1/user/1/steps')
         .expect(200)
         .then(({ body }) => {
           expect(body.steps).to.be.an('array');
@@ -325,6 +322,24 @@ describe('/api', () => {
           .then(({ body }) => {
             expect(body).to.be.an('object');
             expect(body.tactic_name).to.equal("Shark");
+          });
+      });
+      it('PATCH/ status 200/ responds with the steps that have just been patched', () => {
+        const updatedSteps = {
+          steps: [
+            { user_id: 1, step: 1, desc: 'Updated step 1', ref_img: 'updatedimage.com' },
+            { user_id: 1, step: 2, desc: 'Updated step 2', ref_img: 'updatedimage.com' },
+            { user_id: 1, step: 3, desc: 'Updated step 3', ref_img: 'updatedimage.com' },
+          ],
+        };
+        return request
+          .patch('/api/tactics/1/steps')
+          .send(updatedSteps)
+          .expect(200)
+          .then(({ body }) => {
+            expect(body).to.be.an('object');
+            expect(body.message).to.equal('Steps updated successfully');
+            expect(body.steps).to.deep.equal(updatedSteps.steps);
           });
       });
     it('DELETE/ status 204/ responds with a 204 and no-content', () => request.delete('/api/tactics/12').expect(204));

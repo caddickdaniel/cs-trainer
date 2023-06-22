@@ -9,6 +9,7 @@ const {
   sendDeletedTactic,
   sendPatchedTactic,
   sendStepsByUserAndTactic,
+  sendPatchedSteps
 } = require('../controllers/tactics');
 const { handle405 } = require('../errors');
 
@@ -26,6 +27,16 @@ tacticRouter
   .all(handle405);
 
 tacticRouter
+  .route('/:tactic_id/steps')
+  .patch(sendPatchedSteps)
+  .all(handle405);
+
+tacticRouter
+  .route('/:tactic_id/user/:user_id/steps')
+  .get(sendStepsByUserAndTactic)
+  .all(handle405);
+
+tacticRouter
   .route('/name/:tactic_name')
   .get(sendTacticsByName)
   .all(handle405);
@@ -38,11 +49,6 @@ tacticRouter
 tacticRouter
   .route('/team/:team_id')
   .get(sendTacticsByTeam)
-  .all(handle405);
-
-tacticRouter
-  .route('/:tactic_id/user/:user_id')
-  .get(sendStepsByUserAndTactic)
   .all(handle405);
 
 module.exports = tacticRouter;
