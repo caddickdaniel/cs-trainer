@@ -51,7 +51,7 @@ If you would like to run tests do the following
 
 Once you've started the server, go to your API testing software/site and referencing the endpoints.js file feel free to get/post/delete to your hearts content
 
-## Screenshots
+## Screenshots (Frontend Design)
 
 1. Home (incomplete) - https://imgur.com/DvG9xKb
 2. Team (joined/not joined) - https://imgur.com/hJEACD5 https://imgur.com/ALmpUlA
