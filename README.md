@@ -36,7 +36,26 @@ CS-Trainer is a backend database project to accompany my front end website (yet 
     ```sh
     npm install
     ```
-3. Start the server
+3. Create a knexfile.js using this template and replace the 'user' and 'password' to match your psql user/password
+    ```sh
+    const ENV = process.env.NODE_ENV || 'development';
+    const dbConfig = {
+        client: 'pg',
+        migrations: {
+            directory: './db/migrations',
+        },
+        seeds: {
+            directory: './db/seeds',
+        },
+    };
+    const customConfigs = {
+        development: { connection: { database: 'cs_trainer_test', user: 'danny', password: 'password', } },
+        test: { connection: { database: 'cs_trainer_test', user: 'danny', password: 'password', } },
+        production: { connection: { database: 'cs_trainer', user: 'danny', password: 'password', } }
+    };
+    module.exports = { ...dbConfig, ...customConfigs[ENV] };
+    ```
+4. Start the server
     ```sh
     npm start
     ```
