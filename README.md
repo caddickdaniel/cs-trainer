@@ -36,7 +36,7 @@ CS-Trainer is a backend database project to accompany my front end website (yet 
     ```sh
     npm install
     ```
-3. Create a knexfile.js using this template and replace the 'user' and 'password' to match your psql user/password
+3. Create a knexfile.js using this template
     ```sh
     const ENV = process.env.NODE_ENV || 'development';
     const dbConfig = {
