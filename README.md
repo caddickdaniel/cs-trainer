@@ -49,9 +49,9 @@ CS-Trainer is a backend database project to accompany my front end website (yet 
         },
     };
     const customConfigs = {
-        development: { connection: { database: 'cs_trainer_test', user: 'danny', password: 'password', } },
-        test: { connection: { database: 'cs_trainer_test', user: 'danny', password: 'password', } },
-        production: { connection: { database: 'cs_trainer', user: 'danny', password: 'password', } }
+        development: { connection: { database: 'cs_trainer_test', user: 'Username (Linux only)', password: 'Password (Linux only)', } },
+        test: { connection: { database: 'cs_trainer_test', user: 'Username (Linux only)', password: 'Password (Linux only)', } },
+        production: { connection: { database: 'cs_trainer', user: 'Username (Linux only)', password: 'Password (Linux only)', } }
     };
     module.exports = { ...dbConfig, ...customConfigs[ENV] };
     ```
