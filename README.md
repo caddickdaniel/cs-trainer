@@ -72,12 +72,12 @@ Once you've started the server, go to your API testing software/site and referen
 
 ## Screenshots (Frontend Design)
 
-1. Home (incomplete) - https://imgur.com/DvG9xKb
-2. Team (joined/not joined) - https://imgur.com/hJEACD5 https://imgur.com/ALmpUlA
-3. Training - https://imgur.com/ncidJxo
-4. Schedule - https://imgur.com/J5Spigj
-5. Tactics - https://imgur.com/hwwcyD0
-6. Gamemode (incomplete) - https://imgur.com/U6phOB4
+1. Home (incomplete) - https://ibb.co/DfQMrDdS
+2. Team (joined/not joined) - https://ibb.co/Qj1NVzBg https://ibb.co/nqW0pwJP
+3. Training - https://ibb.co/h1f47SY3
+4. Schedule - https://ibb.co/gZMz8b6S
+5. Tactics - https://ibb.co/6RbRbjsh
+6. Gamemode (incomplete) - https://ibb.co/qY6yx54F
 
 ## Contact
 
