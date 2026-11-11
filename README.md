@@ -61,6 +61,8 @@ In production, Express serves `client/dist` and the API from one origin, with no
 | `npm run build` | Type-checks and builds the client |
 | `npm run check` | lint + typecheck + test + build (all passed together) |
 
+**CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on pull requests and on pushes to `main`, on Node 22 and 24, with a PostgreSQL 17 service container. It runs lint, typecheck, the test suite and the build, then migrates and seeds a fresh development database.
+
 **Test database safety.** `spec/setup.js` and the seed both call [db/guard.js](db/guard.js). The guard refuses to reset any database unless `NODE_ENV=test` and the database name ends in `_test`. `db:reset` also refuses production.
 
 ## Architecture
