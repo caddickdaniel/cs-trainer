@@ -1,213 +1,90 @@
-const {
-  getUsers,
-  getUsersByID,
-  getUsersByName,
-  getUsersByLanguage,
-  getUsersByRegion,
-  getUsersByPlatform,
-  getUsersBySkillLevel,
-  getUsersByRole,
-  getUsersByTeam,
-  addUser,
-  deleteUserByID,
-  updateUserByID,
-  updateUserTeam
-} = require('../models/users');
+const model = require('../models/users');
+const db = require('../db/connection');
+const { requireMember } = require('../services/access');
+const { syncActiveTeam } = require('../services/users');
+const teams = require('../services/teams');
+const v = require('../validation');
+const { asyncHandler, notFound, forbidden, badRequest, conflict, httpError } = require('../errors');
 
-exports.sendUsers = (req, res, next) => {
-  const { sort_by, order } = req.query;
-  Promise.all([getUsers(sort_by, order)])
-    .then(([users]) => {
-      res.status(200).send({ users });
-    })
-    .catch(err => next(err));
+const me = (req) => req.user.user_id;
+const userId = (req) => v.parseId(req.params.user_id, 'user_id');
+
+const assertSelf = (req) => {
+  const id = userId(req);
+  if (id !== me(req)) throw forbidden('You can only change your own account');
+  return id;
 };
 
-exports.sendUsersByID = (req, res, next) => {
-  const userID = req.params.user_id;
-  getUsersByID(userID)
-    .then(([users]) => {
-      if (!users) {
-        return Promise.reject({
-          status: 404,
-          message: `That user doesn't exist`
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch(err => next(err));
-};
+exports.sendUsers = asyncHandler(async (req, res) => {
+  const { sort_by, order } = v.sortQuery(model.SORTABLE, 'user_name').parse(req.query);
+  res.status(200).send({ users: await model.getUsers(me(req), sort_by, order) });
+});
 
-exports.sendUsersByName = (req, res, next) => {
-  const userName = req.params.user_name;
-  getUsersByName(userName)
-    .then(([users]) => {
-      if (!users) {
-        return Promise.reject({
-          status: 404,
-          message: `That user doesn't exist`
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch(err => next(err));
-};
+exports.sendUsersByID = asyncHandler(async (req, res) => {
+  const [user] = await model.getUsersByColumn(me(req), 'user_id', userId(req));
+  if (!user) throw notFound("That user doesn't exist");
+  res.status(200).send({ users: user });
+});
 
-exports.sendUsersByLanguage = (req, res, next) => {
-  const languageName = req.params.language;
-  getUsersByLanguage(languageName)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified language`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+const byColumn = (column, param, single, emptyMessage) =>
+  asyncHandler(async (req, res) => {
+    const rows = await model.getUsersByColumn(me(req), column, req.params[param]);
+    if (!rows.length) throw notFound(emptyMessage);
+    res.status(200).send({ users: single ? rows[0] : rows });
+  });
 
-exports.sendUsersByRegion = (req, res, next) => {
-  const regionName = req.params.region;
-  getUsersByRegion(regionName)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified region`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+exports.sendUsersByName = byColumn('user_name', 'user_name', true, "That user doesn't exist");
+exports.sendUsersByLanguage = byColumn('language', 'language', false, 'No users found for the specified language');
+exports.sendUsersByRegion = byColumn('region', 'region', false, 'No users found for the specified region');
+exports.sendUsersByPlatform = byColumn('platform', 'platform', false, 'No users found for the specified platform');
+exports.sendUsersBySkillLevel = byColumn('skill_level', 'skill_level', false, 'No users found for the specified skill level');
+exports.sendUsersByRole = byColumn('role', 'role', false, 'No users found for the specified role');
 
-exports.sendUsersByPlatform = (req, res, next) => {
-  const platformName = req.params.platform;
-  getUsersByPlatform(platformName)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified region`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+exports.sendUsersByTeam = asyncHandler(async (req, res) => {
+  const teamId = v.parseId(req.params.team_id, 'team_id');
+  await requireMember(teamId, me(req));
+  const rows = await model.getUsersByTeam(me(req), teamId);
+  res.status(200).send({ users: rows });
+});
 
-exports.sendUsersBySkillLevel = (req, res, next) => {
-  const skillLevelName = req.params.skill_level;
-  getUsersBySkillLevel(skillLevelName)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified skill level`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+// Accounts are created through POST /api/auth/signup (with a password).
+exports.sendNewUser = (req, res, next) =>
+  next(httpError(410, 'Create accounts with POST /api/auth/signup', 'use_signup'));
 
-exports.sendUsersByRole = (req, res, next) => {
-  const roleName = req.params.role;
-  getUsersByRole(roleName)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified role`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+exports.sendDeletedUser = asyncHandler(async (req, res) => {
+  const id = assertSelf(req);
+  const owns = await db('teams').where('owner', id).first('team_id');
+  if (owns) throw conflict('Delete or hand over your team before deleting your account', 'owner_cannot_delete');
+  await db('users').where('user_id', id).del();
+  req.session.destroy(() => res.sendStatus(204));
+});
 
-exports.sendUsersByTeam = (req, res, next) => {
-  const teamID = req.params.team_id;
-  getUsersByTeam(teamID)
-    .then((users) => {
-      if (users.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No users found for the specified team`,
-        });
-      }
-      res.status(200).send({ users });
-    })
-    .catch((err) => next(err));
-};
+exports.sendPatchedUser = asyncHandler(async (req, res) => {
+  const id = assertSelf(req);
+  const body = v.legacyUserPatch.parse(req.body);
+  const { team_id: teamId, ...profile } = body;
+  const changes = Object.fromEntries(Object.entries(profile).filter(([, value]) => value !== undefined));
+  // team_id can only switch the active team between existing memberships.
+  if (teamId !== undefined && teamId !== null) {
+    const member = await db('team_memberships').where({ team_id: teamId, user_id: id }).first();
+    if (!member) throw badRequest('Join a team with an invite before making it your team', 'not_a_member');
+    changes.team_id = teamId;
+  }
+  if (Object.keys(changes).length) {
+    await db('users').where('user_id', id).update({ ...changes, updated_at: db.fn.now() });
+  }
+  const [user] = await model.getUsersByColumn(me(req), 'user_id', id);
+  res.status(200).send(user);
+});
 
-exports.sendNewUser = (req, res, next) => {
-  const userToAdd = req.body;
-
-  addUser(userToAdd)
-    .then(([users]) => res.status(201).send({ users }))
-    .catch(err => next(err));
-};
-
-exports.sendDeletedUser = (req, res, next) => {
-  const { user_id } = req.params;
-
-  deleteUserByID(user_id)
-    .then(() => {
-      if (!user_id) {
-        return Promise.reject({
-          status: 404,
-          message: `The user doesn't exist`
-        });
-      }
-      res.sendStatus(204);
-    })
-    .catch(err => next(err));
-};
-
-exports.sendPatchedUser = (req, res, next) => {
-  const {language, region, platform, skill_level, role, team_id, avatar_url, bio} = req.body;
-  const {user_id} = req.params;
-
-  getUsersByID(user_id)
-    .then((user) => {
-      if (!user) {
-        return Promise.reject({
-          status: 404,
-          message: `User not found with the ID ${user_id}`
-        });
-      }
-
-      const updatedUser = {
-        language: language || user.language,
-        region: region || user.region,
-        platform: platform || user.platform,
-        skill_level: skill_level || user.skill_level,
-        role: role || user.role,
-        team_id: team_id || user.team_id,
-        avatar_url: avatar_url || user.avatar_url,
-        bio: bio || user.bio,
-      };
-
-      return updateUserByID(user_id, updatedUser)
-        .then(() => {
-          return getUsersByID(user_id); 
-        });
-    })
-    .then((updatedUser) => {
-      res.status(200).send(updatedUser[0]);
-    })
-    .catch(err => next(err));
-};
-
-exports.removeTeamFromUser = (req, res, next) => {
-  const userID = req.params.user_id;
-
-  updateUserTeam(userID, null)
-    .then(() => {
-      res.status(204).send();
-    })
-    .catch(err => next(err));
-};
+// Legacy: leave the active team.
+exports.removeTeamFromUser = asyncHandler(async (req, res) => {
+  const id = assertSelf(req);
+  const user = await db('users').where('user_id', id).first('team_id');
+  if (user.team_id != null) {
+    await teams.removeMember(user.team_id, id, id);
+  } else {
+    await db.transaction((trx) => syncActiveTeam(trx, id));
+  }
+  res.status(204).send();
+});

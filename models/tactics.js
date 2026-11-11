@@ -1,145 +1,55 @@
+// Legacy tactic queries, scoped to teams the acting user belongs to.
 const connection = require('../db/connection');
+const { memberTeamIds } = require('../services/access');
 
-exports.getTactics = (sort_by = 'tactic_name', order = 'asc') =>
+const SORTABLE = ['tactic_id', 'tactic_name', 'economy', 'team_id', 'created_at', 'updated_at'];
+exports.SORTABLE = SORTABLE;
+
+const COLUMNS = [
+  'tactics.tactic_id',
+  'tactics.tactic_name',
+  'tactics.economy',
+  'tactics.grenade',
+  'tactics.molly',
+  'tactics.flash',
+  'tactics.smoke',
+  'tactics.team_id',
+  'teams.team_name AS team_name',
+  'tactics.T',
+  'tactics.CT',
+  'tactics.steps',
+  // Added in milestone 1 (additive).
+  'tactics.map',
+  'tactics.side',
+  'tactics.revision',
+];
+
+const baseQuery = (userId) =>
   connection
-    .select(
-        'tactics.tactic_id',
-        'tactics.tactic_name',
-        'tactics.economy',
-        'tactics.grenade',
-        'tactics.molly',
-        'tactics.flash',
-        'tactics.smoke',
-        'tactics.team_id',
-        'teams.team_name AS team_name',
-        'tactics.T',
-        'tactics.CT',
-        'tactics.steps'
-    )
+    .select(COLUMNS)
     .from('tactics')
     .join('teams', 'tactics.team_id', '=', 'teams.team_id')
-    .orderBy(sort_by, order)
-    .returning('*');
+    .whereIn('tactics.team_id', memberTeamIds(userId));
 
-exports.getTacticsByID = tacticID =>
-    connection
-      .select(
-        'tactics.tactic_id',
-        'tactics.tactic_name',
-        'tactics.economy',
-        'tactics.grenade',
-        'tactics.molly',
-        'tactics.flash',
-        'tactics.smoke',
-        'tactics.team_id',
-        'teams.team_name AS team_name',
-        'tactics.T',
-        'tactics.CT',
-        'tactics.steps'
-      )
-      .from('tactics')
-      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
-      .where('tactics.tactic_id', '=', tacticID)
-      .returning('*');
+exports.getTactics = (userId, sort_by = 'tactic_name', order = 'asc') =>
+  baseQuery(userId).orderBy(`tactics.${sort_by}`, order).orderBy('tactics.tactic_id');
 
-exports.getTacticsByName = tacticName =>
-  connection
-      .select(
-        'tactics.tactic_id',
-        'tactics.tactic_name',
-        'tactics.economy',
-        'tactics.grenade',
-        'tactics.molly',
-        'tactics.flash',
-        'tactics.smoke',
-        'tactics.team_id',
-        'teams.team_name AS team_name',
-        'tactics.T',
-        'tactics.CT',
-        'tactics.steps'
-      )
-      .from('tactics')
-      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
-      .where('tactics.tactic_name', '=', tacticName)
-      .returning('*');
+exports.getTacticsByColumn = (userId, column, value) =>
+  baseQuery(userId).where(`tactics.${column}`, '=', value).orderBy('tactics.tactic_id');
 
-exports.getTacticsByEconomy = economyName =>
-  connection
-      .select(
-        'tactics.tactic_id',
-        'tactics.tactic_name',
-        'tactics.economy',
-        'tactics.grenade',
-        'tactics.molly',
-        'tactics.flash',
-        'tactics.smoke',
-        'tactics.team_id',
-        'teams.team_name AS team_name',
-        'tactics.T',
-        'tactics.CT',
-        'tactics.steps'
-      )
-      .from('tactics')
-      .join('teams', 'tactics.team_id', '=', 'teams.team_id')
-      .where('tactics.economy', '=', economyName)
-      .returning('*');
+exports.getTacticRow = (tacticID) =>
+  connection('tactics').where('tactic_id', tacticID).first('tactic_id', 'team_id', 'steps', 'revision');
 
-exports.getTacticsByTeam = teamID =>
-  connection
-    .select(
-      'tactics.tactic_id',
-      'tactics.tactic_name',
-      'tactics.economy',
-      'tactics.grenade',
-      'tactics.molly',
-      'tactics.flash',
-      'tactics.smoke',
-      'tactics.team_id',
-      'teams.team_name AS team_name',
-      'tactics.T',
-      'tactics.CT',
-      'tactics.steps'
-    )
-    .from('tactics')
-    .join('teams', 'tactics.team_id', '=', 'teams.team_id')
-    .where('tactics.team_id', '=', teamID)
-    .returning('*'); 
+exports.addTactic = (newTactic) => connection('tactics').insert(newTactic).returning('*');
 
-exports.addTactic = newTactic =>
-  connection
-    .insert(newTactic)
-    .into('tactics')
-    .returning('*');
+exports.deleteTacticByID = (tacticID) => connection('tactics').where('tactic_id', tacticID).del();
 
-exports.deleteTacticByID = tacticID =>
+exports.updateTacticByID = (tacticID, updatedTactic) =>
   connection('tactics')
-    .where('tactics.tactic_id', '=', tacticID)
-    .del();
-
-exports.updateTacticByID = (tacticID, updatedTactic) => {
-  return connection('tactics')
     .where('tactic_id', tacticID)
-    .update(updatedTactic);
-};
+    .update({ ...updatedTactic, revision: connection.raw('revision + 1'), updated_at: connection.fn.now() });
 
-exports.getStepsByUserAndTactic = (userID, tacticID) => {
-  return connection('tactics')
-    .select('steps')
-    .where({
-      tactic_id: tacticID
-    })
-    .first()
-    .then(result => {
-      if (result && result.steps) {
-        const filteredSteps = result.steps.filter(step => step.user_id === Number(userID));
-        return filteredSteps;
-      }
-      return [];
-    });
-};
-
-exports.updateTacticStepsByID = (tacticID, newSteps) => {
-  return connection('tactics')
+exports.updateTacticStepsByID = (tacticID, newSteps) =>
+  connection('tactics')
     .where({ tactic_id: tacticID })
-    .update({ steps: JSON.stringify(newSteps) });
-};
+    .update({ steps: JSON.stringify(newSteps), updated_at: connection.fn.now() });

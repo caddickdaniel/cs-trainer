@@ -1,2 +1,0 @@
-DROP DATABASE IF EXISTS cs_trainer;
-CREATE DATABASE cs_trainer;

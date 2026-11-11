@@ -1,204 +1,37 @@
+// Legacy user queries, scoped to the acting user and their teammates.
 const connection = require('../db/connection');
+const { visibleUserIds } = require('../services/access');
 
-exports.getUsers = (sort_by = 'user_name', order = 'asc') =>
+const SORTABLE = ['user_id', 'user_name', 'language', 'region', 'platform', 'skill_level', 'role', 'team_id'];
+exports.SORTABLE = SORTABLE;
+
+// Never selects email or password_hash.
+const baseQuery = (actorId) =>
   connection
     .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
+      'users.user_id',
+      'users.user_name',
+      'users.language',
+      'users.region',
+      'users.platform',
+      'users.skill_level',
+      'users.role',
+      'users.team_id',
+      'teams.team_name AS team_name',
+      'users.avatar_url',
+      'users.bio'
     )
     .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .orderBy(sort_by, order)
-    .returning('*');
+    .leftJoin('teams', 'users.team_id', '=', 'teams.team_id')
+    .whereIn('users.user_id', visibleUserIds(actorId));
 
-exports.getUsersByID = userID =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.user_id', '=', userID)
-    .returning('*');
+exports.getUsers = (actorId, sort_by = 'user_name', order = 'asc') =>
+  baseQuery(actorId).orderBy(`users.${sort_by}`, order).orderBy('users.user_id');
 
-exports.getUsersByName = userName =>
-    connection
-      .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-      )
-      .from('users')
-      .join('teams', 'users.team_id', '=', 'teams.team_id')
-      .where('users.user_name', '=', userName)
-      .returning('*');
+exports.getUsersByColumn = (actorId, column, value) =>
+  baseQuery(actorId).where(`users.${column}`, '=', value).orderBy('users.user_id');
 
-exports.getUsersByLanguage = languageName =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.language', '=', languageName)
-    .returning('*');
-
-exports.getUsersByRegion = regionName =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.region', '=', regionName)
-    .returning('*');
-
-exports.getUsersByPlatform = platformName =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.platform', '=', platformName)
-    .returning('*');
-
-exports.getUsersBySkillLevel = skillLevelName =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.skill_level', '=', skillLevelName)
-    .returning('*');
-
-exports.getUsersByRole = roleName =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.role', '=', roleName)
-    .returning('*');
-  
-exports.getUsersByTeam = teamID =>
-  connection
-    .select(
-        'users.user_id',
-        'users.user_name',
-        'users.language',
-        'users.region',
-        'users.platform',
-        'users.skill_level',
-        'users.role',
-        'users.team_id',
-        'teams.team_name AS team_name',
-        'users.avatar_url',
-        'users.bio',
-    )
-    .from('users')
-    .join('teams', 'users.team_id', '=', 'teams.team_id')
-    .where('users.team_id', '=', teamID)
-    .returning('*');  
-
-exports.addUser = newUser =>
-  connection
-    .insert(newUser)
-    .into('users')
-    .returning('*');
-
-exports.deleteUserByID = userID =>
-  connection('users')
-    .where('users.user_id', '=', userID)
-    .del();
-
-exports.updateUserByID = (userID, updatedUser) => {
-  return connection('users')
-    .where('user_id', userID)
-    .update(updatedUser);
-};    
-
-exports.updateUserTeam = (userID, teamID) => {
-  return connection('users')
-    .where({ user_id: userID })
-    .update({ team_id: teamID });
-};
+exports.getUsersByTeam = (actorId, teamId) =>
+  baseQuery(actorId)
+    .whereIn('users.user_id', connection('team_memberships').where('team_id', teamId).select('user_id'))
+    .orderBy('users.user_id');

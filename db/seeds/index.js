@@ -1,27 +1,60 @@
-const { tacticData, userData, teamData } = require('../data');
+// Deterministic seeds for development and test databases. Legacy-shaped rows
+// are inserted first and then mapped onto the new tables through the same
+// backfill helpers the migrations use.
+const bcrypt = require('bcryptjs');
+const { tacticData, userData, teamData, extra } = require('../data');
+const { assertSafeToReset } = require('../guard');
+const {
+  backfillMemberships,
+  backfillTacticMetadata,
+  backfillPhasesFromSteps,
+} = require('../lib/legacy-backfill');
 
-exports.seed = function (connection) {
-    return connection
-      .migrate.rollback()
-      .then(() => connection.migrate.latest())
-      .then(() =>
-        connection('tactics')
-          .insert(
-            tacticData.map((tactic) => ({
-              ...tactic,
-              steps: JSON.stringify(tactic.steps),
-            }))
-          )
-          .returning('*')
-      )
-      .then(() =>
-        connection('users')
-          .insert(userData)
-          .returning('*')
-      )
-      .then(() =>
-        connection('teams')
-          .insert(teamData)
-          .returning('*')
-      );
-  };
+// Development/test password for every seeded account. Never used in production.
+const SEED_PASSWORD = 'trainer-dev-pass';
+
+exports.SEED_PASSWORD = SEED_PASSWORD;
+
+exports.seed = async function (knex) {
+  await assertSafeToReset(knex);
+  await knex.raw(`TRUNCATE lineup_images, game_sessions, team_invites, phase_assignments, tactic_phases,
+    team_memberships, migration_review_items, user_sessions, tactics, teams, users
+    RESTART IDENTITY CASCADE`);
+
+  // One hash shared by all seed users keeps seeding fast; salts differ per run only.
+  const passwordHash = await bcrypt.hash(SEED_PASSWORD, 4);
+
+  // users.team_id and teams.owner reference each other: insert users first,
+  // then teams, then restore each user's legacy team_id.
+  const users = [...userData, ...extra.users];
+  const inserted = await knex('users')
+    .insert(users.map(({ team_id, ...user }) => ({ ...user, password_hash: passwordHash })))
+    .returning('user_id');
+  await knex('teams').insert(teamData);
+  for (const [i, { user_id }] of inserted.entries()) {
+    if (users[i].team_id != null) {
+      await knex('users').where({ user_id }).update({ team_id: users[i].team_id });
+    }
+  }
+  await knex('tactics').insert(
+    tacticData.map((tactic) => ({ ...tactic, steps: JSON.stringify(tactic.steps) }))
+  );
+
+  await backfillMemberships(knex);
+  await backfillTacticMetadata(knex);
+  await backfillPhasesFromSteps(knex);
+
+  for (const { phases, ...tactic } of extra.tactics) {
+    const [{ tactic_id }] = await knex('tactics')
+      .insert({ ...tactic, steps: JSON.stringify([]) })
+      .returning('tactic_id');
+    for (const [position, { assignments, board, ...phase }] of phases.entries()) {
+      const [{ phase_id }] = await knex('tactic_phases')
+        .insert({ ...phase, board: JSON.stringify(board), tactic_id, position })
+        .returning('phase_id');
+      if (assignments.length) {
+        await knex('phase_assignments').insert(assignments.map((a) => ({ ...a, phase_id })));
+      }
+    }
+  }
+};
