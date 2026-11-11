@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { LIMITS, PLAYER_COLORS } from '../lib/constants';
+import { findMap, LIMITS, PLAYER_COLORS, radarUrl, type Level } from '../lib/constants';
 import type { Board, Marker, MarkerKind, Point, Route } from '../lib/types';
 import { PracticeYardMap } from './PracticeYardMap';
 
@@ -17,8 +17,27 @@ export function playerColor(userId: number | null, _players?: number[]) {
   return PLAYER_COLORS[userId % PLAYER_COLORS.length];
 }
 
+// Radar image (or the original schematic) for one map level, in the board's
+// 1000x1000 space. All levels of a map share the same coordinate frame.
+function MapBackground({ map, level }: { map: string; level: Level }) {
+  const def = findMap(map);
+  if (!def || !def.radar) return <PracticeYardMap />;
+  return (
+    <g aria-hidden="true">
+      <rect width={SIZE} height={SIZE} fill="#000" />
+      <image href={radarUrl(def.id, level)} x="0" y="0" width={SIZE} height={SIZE} preserveAspectRatio="none" />
+    </g>
+  );
+}
+
+const levelOf = (item: { level?: Level }) => item.level ?? 'main';
+
 interface Props {
   board: Board;
+  map: string;
+  level?: Level;
+  // View mode: called when a marker with lineup screenshots is activated.
+  onMarkerActivate?: (marker: Marker) => void;
   players: { user_id: number; user_name: string }[];
   // Editing is enabled when onChange is provided.
   onChange?: (board: Board) => void;
@@ -36,8 +55,8 @@ interface Props {
 type Drag = { kind: 'marker'; id: string } | { kind: 'point'; id: string; index: number };
 
 export function MapBoard({
-  board, players, onChange, tool = 'select', selectedId = null, onSelect, activePlayer = null,
-  highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board',
+  board, map, level = 'main', onMarkerActivate, players, onChange, tool = 'select', selectedId = null, onSelect,
+  activePlayer = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board',
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -69,7 +88,7 @@ export function MapBoard({
     } else if (tool === 'route') {
       if (draftRoute.length < LIMITS.routePoints) onDraftRoute?.([...draftRoute, p]);
     } else if (board.markers.length < LIMITS.markers) {
-      const marker: Marker = { id: newId('m'), kind: tool, x: p.x, y: p.y, user_id: activePlayer, label: '' };
+      const marker: Marker = { id: newId('m'), kind: tool, x: p.x, y: p.y, level, user_id: activePlayer, label: '', images: [] };
       update({ markers: [...board.markers, marker] });
       onSelect?.(marker.id);
     }
@@ -118,6 +137,10 @@ export function MapBoard({
     }
   };
 
+  // Only items on the level being shown are drawn.
+  const markers = board.markers.filter((m) => levelOf(m) === level);
+  const routes = board.routes.filter((r) => levelOf(r) === level);
+
   const dim = (userId: number | null) => highlightUserId != null && userId !== highlightUserId;
 
   const renderRoute = (route: Route, draft = false) => {
@@ -152,6 +175,8 @@ export function MapBoard({
   const renderMarker = (m: Marker) => {
     const color = playerColor(m.user_id, playerIds);
     const selected = m.id === selectedId;
+    const hasImages = Boolean(m.images?.length);
+    const activatable = !editable && hasImages && Boolean(onMarkerActivate);
     const cx = m.x * SIZE;
     const cy = m.y * SIZE;
     let shape;
@@ -176,10 +201,22 @@ export function MapBoard({
     }
     return (
       <g key={m.id} transform={`translate(${cx},${cy})`} opacity={dim(m.user_id) ? 0.3 : 1}
-        style={{ cursor: editable && tool === 'select' ? 'grab' : undefined }} data-marker-id={m.id}
-        onPointerDown={(e) => startDrag(e, { kind: 'marker', id: m.id }, m.id)}>
+        style={{ cursor: editable && tool === 'select' ? 'grab' : activatable ? 'pointer' : undefined }} data-marker-id={m.id}
+        role={activatable ? 'button' : undefined} tabIndex={activatable ? 0 : undefined}
+        aria-label={activatable ? `Show lineup for ${m.label || m.kind}` : undefined}
+        onKeyDown={(e) => { if (activatable && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onMarkerActivate?.(m); } }}
+        onPointerDown={(e) => {
+          if (activatable) { e.stopPropagation(); onMarkerActivate?.(m); return; }
+          startDrag(e, { kind: 'marker', id: m.id }, m.id);
+        }}>
         {selected ? <circle r="50" fill="none" stroke="#fff" strokeWidth="3" strokeDasharray="8 6" /> : null}
         {shape}
+        {hasImages ? (
+          <g transform="translate(24,-30)" pointerEvents="none">
+            <rect x="-13" y="-10" width="26" height="20" rx="4" fill="#111" stroke="#fff" strokeWidth="2" />
+            <circle r="5" fill="none" stroke="#fff" strokeWidth="2" />
+          </g>
+        ) : null}
         {m.label ? (
           <text y={m.kind === 'smoke' ? 66 : 46} textAnchor="middle" fontSize="20" fontWeight="600" fill="#fff"
             stroke="#000" strokeWidth="4" paintOrder="stroke">{m.label}</text>
@@ -194,11 +231,11 @@ export function MapBoard({
         aria-label={label} tabIndex={editable ? 0 : undefined} className={`board${editable ? ' editable' : ''} tool-${tool}`}
         onPointerDown={handleBackgroundDown} onPointerMove={handleMove} onKeyDown={handleKey}
         fontFamily="system-ui, sans-serif">
-        <PracticeYardMap />
-        {board.routes.map((r) => renderRoute(r))}
+        <MapBackground map={map} level={level} />
+        {routes.map((r) => renderRoute(r))}
         {draftRoute.length ? renderRoute({ id: 'draft', user_id: activePlayer, color: '#ffffff', points: draftRoute }, true) : null}
-        {board.markers.filter((m) => m.kind === 'smoke' || m.kind === 'molly').map(renderMarker)}
-        {board.markers.filter((m) => m.kind !== 'smoke' && m.kind !== 'molly').map(renderMarker)}
+        {markers.filter((m) => m.kind === 'smoke' || m.kind === 'molly').map(renderMarker)}
+        {markers.filter((m) => m.kind !== 'smoke' && m.kind !== 'molly').map(renderMarker)}
       </svg>
     </div>
   );

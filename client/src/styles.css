@@ -175,3 +175,30 @@ legend { padding: 0 6px; font-weight: 600; display: inline-flex; align-items: ce
   .content { padding: 16px; }
   .grid3, .grid2 { grid-template-columns: 1fr; }
 }
+
+/* Map levels and lineup screenshots */
+.level-switch { align-self: flex-start; }
+.level-switch .count { margin-left: 6px; font-size: 0.75rem; opacity: 0.7; }
+.field-label { font-size: 0.85rem; color: #c8c8c8; }
+.lineup-editor { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.lineup-edit-row { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: start; }
+.lineup-edit-row img { width: 96px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #444; display: block; }
+.stack.tight { gap: 6px; }
+.lineups { display: flex; flex-direction: column; gap: 12px; }
+.lineup { margin: 0; }
+.lineup figcaption { margin-bottom: 6px; }
+.lineup-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.lineups.large .lineup-images { grid-template-columns: 1fr; }
+.lineup-thumb { background: #111; border: 1px solid #444; border-radius: 8px; padding: 0; overflow: hidden; cursor: zoom-in;
+  color: var(--text); font: inherit; text-align: left; display: flex; flex-direction: column; }
+.lineup-thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
+.lineups.large .lineup-thumb img { aspect-ratio: auto; max-height: 46vh; object-fit: contain; background: #000; }
+.lineup-thumb span { padding: 6px 8px; font-size: 0.9rem; }
+.lineups.large .lineup-thumb span { font-size: 1.05rem; }
+.lineup-heading { margin-top: 16px !important; }
+details.panel summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.lightbox { border: 0; padding: 0; background: transparent; max-width: 96vw; max-height: 96vh; }
+.lightbox::backdrop { background: rgba(0, 0, 0, 0.85); }
+.lightbox-body { background: var(--panel); color: var(--text); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.lightbox-body img { max-width: calc(96vw - 28px); max-height: calc(96vh - 140px); object-fit: contain; display: block; margin: 0 auto; background: #000; }
+.lightbox-caption { font-size: 1.15rem; margin: 0; }

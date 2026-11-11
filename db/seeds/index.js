@@ -17,7 +17,7 @@ exports.SEED_PASSWORD = SEED_PASSWORD;
 
 exports.seed = async function (knex) {
   await assertSafeToReset(knex);
-  await knex.raw(`TRUNCATE game_sessions, team_invites, phase_assignments, tactic_phases,
+  await knex.raw(`TRUNCATE lineup_images, game_sessions, team_invites, phase_assignments, tactic_phases,
     team_memberships, migration_review_items, user_sessions, tactics, teams, users
     RESTART IDENTITY CASCADE`);
 

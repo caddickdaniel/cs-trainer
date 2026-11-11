@@ -75,7 +75,36 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
   return data as T;
 }
 
+// Uploads a PNG as the raw request body.
+async function uploadPng<T>(path: string, file: Blob, retry = true): Promise<T> {
+  if (!csrfToken) await refreshCsrf();
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png', 'X-CSRF-Token': csrfToken as string, Accept: 'application/json' },
+      credentials: 'same-origin',
+      body: file,
+    });
+  } catch {
+    throw new ApiError(0, 'Cannot reach the server. Check your connection.', 'network', {});
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    if (res.status === 403 && data.code === 'csrf_invalid' && retry) {
+      await refreshCsrf();
+      return uploadPng<T>(path, file, false);
+    }
+    const message = res.status === 413 ? 'That image is larger than 8 MB.' : (data.message as string) || res.statusText;
+    throw new ApiError(res.status, message, data.code as string | undefined, data);
+  }
+  return data as T;
+}
+
+export const imageUrl = (imageId: string) => `/api/lineup-images/${imageId}`;
+
 export const api = {
+  uploadPng,
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),

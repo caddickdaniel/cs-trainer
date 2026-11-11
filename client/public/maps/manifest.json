@@ -1,0 +1,119 @@
+[
+  {
+    "map": "de_ancient",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_ancient.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_ancient.png"
+  },
+  {
+    "map": "de_anubis",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_anubis.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_anubis.png"
+  },
+  {
+    "map": "de_cache",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_cache.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_cache.png"
+  },
+  {
+    "map": "de_dust2",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_dust2.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_dust2.png"
+  },
+  {
+    "map": "de_inferno",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_inferno.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_inferno.png"
+  },
+  {
+    "map": "de_mirage",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_mirage.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_mirage.png"
+  },
+  {
+    "map": "de_nuke",
+    "pool": "active-duty",
+    "layer": "main",
+    "file": "active-duty/de_nuke.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_nuke.png"
+  },
+  {
+    "map": "de_nuke",
+    "pool": "active-duty",
+    "layer": "lower",
+    "file": "active-duty/de_nuke_lower.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_nuke_lower.png"
+  },
+  {
+    "map": "de_overpass",
+    "pool": "reserve",
+    "layer": "main",
+    "file": "reserve/de_overpass.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_overpass.png"
+  },
+  {
+    "map": "de_train",
+    "pool": "reserve",
+    "layer": "main",
+    "file": "reserve/de_train.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_train.png"
+  },
+  {
+    "map": "de_train",
+    "pool": "reserve",
+    "layer": "lower",
+    "file": "reserve/de_train_lower.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_train_lower.png"
+  },
+  {
+    "map": "de_vertigo",
+    "pool": "reserve",
+    "layer": "main",
+    "file": "reserve/de_vertigo.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_vertigo.png"
+  },
+  {
+    "map": "de_vertigo",
+    "pool": "reserve",
+    "layer": "lower",
+    "file": "reserve/de_vertigo_lower.png",
+    "width": 1024,
+    "height": 1024,
+    "source": "https://github.com/akiver/cs-demo-manager/blob/d6c3ac261edc8053b216144e291a6aa1f2585f2d/static/images/maps/cs2/radars/de_vertigo_lower.png"
+  }
+]

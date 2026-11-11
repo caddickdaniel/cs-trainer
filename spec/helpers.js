@@ -67,10 +67,10 @@ function tacticDoc(players, overrides = {}) {
         notes: 'Default',
         board: {
           markers: [
-            { id: 'm1', kind: 'player', x: 0.25, y: 0.75, user_id: p1, label: 'P1' },
-            { id: 'm2', kind: 'smoke', x: 0.123456, y: 0.654321, user_id: null, label: 'Smoke' },
+            { id: 'm1', kind: 'player', x: 0.25, y: 0.75, level: 'main', user_id: p1, label: 'P1', images: [] },
+            { id: 'm2', kind: 'smoke', x: 0.123456, y: 0.654321, level: 'main', user_id: null, label: 'Smoke', images: [] },
           ],
-          routes: [{ id: 'r1', user_id: p1, color: '#ff0000', points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }, { x: 0.9, y: 0.95 }] }],
+          routes: [{ id: 'r1', level: 'main', user_id: p1, color: '#ff0000', points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }, { x: 0.9, y: 0.95 }] }],
         },
         assignments: [
           { user_id: p1, instruction: 'Hold mid', utility: 'Smoke window' },

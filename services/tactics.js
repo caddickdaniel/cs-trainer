@@ -3,6 +3,7 @@
 const db = require('../db/connection');
 const { notFound, conflict, httpError } = require('../errors');
 const { requireMember, requireLead } = require('./access');
+const { assertTeamImages } = require('./images');
 
 const SUMMARY_COLUMNS = [
   'tactic_id', 'tactic_name', 'team_id', 'map', 'side', 'economy',
@@ -91,6 +92,11 @@ async function assertAssigneesAreMembers(trx, teamId, doc) {
   }
 }
 
+function assertImages(trx, teamId, doc) {
+  const ids = doc.phases.flatMap((p) => p.board.markers.flatMap((m) => m.images.map((i) => i.image_id)));
+  return assertTeamImages(trx, teamId, ids);
+}
+
 const tacticRow = (doc) => ({
   tactic_name: doc.tactic_name,
   map: doc.map,
@@ -134,6 +140,7 @@ async function createDocument(teamId, userId, doc) {
   await requireLead(teamId, userId);
   const tacticId = await db.transaction(async (trx) => {
     await assertAssigneesAreMembers(trx, teamId, doc);
+    await assertImages(trx, teamId, doc);
     const [{ tactic_id }] = await trx('tactics')
       .insert({
         ...tacticRow(doc),
@@ -164,6 +171,7 @@ async function updateDocument(tacticId, userId, doc) {
       });
     }
     await assertAssigneesAreMembers(trx, tactic.team_id, doc);
+    await assertImages(trx, tactic.team_id, doc);
     await trx('tactic_phases').where('tactic_id', tacticId).del();
     await writePhases(trx, tacticId, doc.phases);
     await trx('tactics').where('tactic_id', tacticId).update({

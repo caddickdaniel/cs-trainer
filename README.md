@@ -82,7 +82,15 @@ spec/                    mocha + supertest
 
 The client has pages for Home, Team, Invite, Tactics (library, view, editor) and Game Mode. Training and Schedule are not in the navigation; see the [roadmap](#roadmap).
 
-- **Board.** An SVG with a 1000×1000 viewBox over an original schematic map, *Practice Yard*. Annotations are stored as 0–1 fractions of the map, so they stay aligned at any rendered size. The editor supports placing markers (player, smoke, flash, molotov, HE, note), dragging them, drawing routes and dragging route points. Markers can also be moved with the arrow keys or exact X/Y fields. Player instructions are edited in a plain form, so no drag gestures are needed.
+- **Maps.** Radar images for Ancient, Anubis, Cache, Dust II, Inferno, Mirage and Nuke (Active Duty) and Overpass, Train and Vertigo (Reserve) are in [client/public/maps](client/public/maps). Provenance is in `SOURCES.md` and `manifest.json` there. The original *Practice Yard* schematic is still available.
+  - Nuke, Train and Vertigo have an **Upper / main ↔ Lower** switch. Every marker and route records its `level`, and the board only draws the level being shown. The switch shows how many items are on each level.
+  - Both layers share one coordinate frame. The viewer and Game Mode open on the level that holds your own items.
+  - Moving a tactic to a single-level map moves lower items to main, after a confirmation.
+- **Board.** An SVG with a 1000×1000 viewBox over the selected radar. Annotations are stored as 0–1 fractions of the map, so they stay aligned at any rendered size. The editor supports placing markers (player, smoke, flash, molotov, HE, note), dragging them, drawing routes and dragging route points. Markers can also be moved with the arrow keys or exact X/Y fields. Player instructions are edited in a plain form, so no drag gestures are needed.
+- **Lineup screenshots.** Owners and IGLs can attach up to 4 PNG screenshots, each with an optional caption, to any smoke, flash, molotov, HE or note marker.
+  - In the editor, select the marker and use *Add PNG*, or paste a screenshot straight from the clipboard.
+  - Images upload as soon as they are added, are immutable, and are stored per team in PostgreSQL (`lineup_images`). Only members of that team can fetch them.
+  - In Game Mode, each player's own lineups appear large under "Your instruction". Any utility marker with screenshots (shown by a camera badge) opens a full-screen viewer when clicked. Teammates' lineups for the phase sit in a collapsible list.
 - **Game Mode.** The client polls `GET /api/teams/:id/game-session` every 2 s, or every 5 s when the tab is hidden. On failure it backs off up to 15 s and shows "Reconnecting…". It refetches when the tab regains focus or the browser comes back online. A "Second-screen view" button hides the app chrome. Leads can step phases with ← →.
 
 ## Security model
@@ -101,6 +109,7 @@ The client has pages for Home, Team, Invite, Tactics (library, view, editor) and
   - A partial unique index allows only one active Game Mode session per team. Overlapping starts give one `201` and `409 session_active` for the rest.
   - Phase changes are compare-and-set on `version`. The losing request gets `409 version_conflict` with the latest state, which the client applies.
   - Tactic saves carry `revision`. A stale save gets `409 stale_revision`.
+- **Uploads.** Only PNGs are accepted. The server checks the signature and reads the dimensions without decoding the image. Limits: 8 MB, 8192 px per side, 1000 images per team. A tactic may only reference images belonging to its own team (`400 image_not_found`). Image responses are served with `Cache-Control: private` and their own `default-src 'none'` CSP.
 - **Snapshots.** Starting Game Mode copies the tactic (phases, assignments, board, revision) into `game_sessions.snapshot`. Editing the saved tactic cannot change a running round.
 
 ## Data model and migration notes
@@ -113,6 +122,9 @@ The four new migrations only add things. The original tables, columns and IDs ar
 | `…0200_create_team_invites` | `team_invites` |
 | `…0300_add_tactic_phases` | `tactics.map/side/revision/created_by/updated_by`, `tactic_phases` (ordered, with `board jsonb`), `phase_assignments` (unique per phase and player) |
 | `…0400_create_game_sessions` | `game_sessions` with snapshot, version and the one-active-per-team index |
+| `…0500_create_lineup_images` | `lineup_images` (PNG bytes, size, dimensions, SHA-256, team) |
+
+Board items without a `level` (anything saved before map levels existed) are treated as `main`.
 
 **How legacy data is mapped** ([db/lib/legacy-backfill.js](db/lib/legacy-backfill.js); the seeds go through the same code):
 
@@ -188,7 +200,7 @@ All commands were run on 2026-11-11 (Linux, Node 24.21, PostgreSQL 18.6):
 
 | Command | Result |
 | --- | --- |
-| `npm test` | **88 passing**: legacy endpoints 43, auth 10, teams/invites/permissions 14, tactics 6, Game Mode 9, migrations 6 |
+| `npm test` | **93 passing**: legacy endpoints 43, auth 10, teams/invites/permissions 14, tactics 6, Game Mode 9, migrations 6, lineup images and map levels 5 |
 | `npm run lint` | 0 problems |
 | `npm run typecheck` | 0 errors |
 | `npm run build` | built (≈374 kB JS, 118 kB gzip) |
@@ -207,6 +219,14 @@ Areas the automated suite covers:
   - overlapping starts and phase changes;
   - the end-of-session state.
 - The migration backfill on conflicting legacy data, rollback/re-apply, cookie flags, CSRF and rate limiting.
+
+Lineup images and map levels: a follow-up manual check on the same day.
+
+1. The owner created a Nuke tactic with the owner's marker on upper and a smoke for the teammate on lower.
+2. A 1280×720 PNG was attached by pasting it into the lineup panel, then given a caption, and the tactic was saved.
+3. In Game Mode the teammate's screen opened on the Lower level automatically, with the screenshot shown large under the instruction.
+4. Clicking the smoke on the board opened the full-screen viewer.
+5. Automated tests cover uploads (lead only, PNG only, size and dimension limits, CSRF), member-only fetching, rejecting images from another team, images on player markers, and lower-level items on single-level maps.
 
 Manual end-to-end check: two signed-in browser sessions, `localhost` and `127.0.0.1`, with separate cookies.
 
@@ -243,7 +263,7 @@ Each follow-on milestone stays out of primary navigation until it has a usable w
 4. **Demo Review.** Start with a feasibility check of the CS Demo Manager integration suggested in this README: licensing, a headless or CLI parser, and the CS2 demo format. Then import one small sample demo into a separate `demos` store, showing rounds and a basic timeline. Linking rounds to tactics comes after that.
 5. **Native overlay.** Evaluate separately after the browser Game Mode has been playtested. Consider anti-cheat and VAC policy, OS support, and whether a second-monitor page or a minimal always-on-top window is enough.
 
-Other small follow-ups: a password reset / legacy-account claim flow, ownership transfer, a resolve action for review items, more maps, a public team directory, and push updates (SSE) instead of polling.
+Other small follow-ups: cleanup of unused lineup images (uploads are kept even if a tactic edit is abandoned, so running sessions never lose an image), moving image storage to object storage if volume grows, deriving the utility counts from board markers, a password reset / legacy-account claim flow, ownership transfer, a resolve action for review items, more maps, a public team directory, and push updates (SSE) instead of polling.
 
 ## Contact
 

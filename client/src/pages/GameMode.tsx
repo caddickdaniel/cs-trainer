@@ -4,11 +4,13 @@ import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ECONOMY_LABEL, mapName } from '../lib/constants';
 import { formatDateTime, useDocumentTitle } from '../lib/hooks';
-import type { GameSession, GameState, TacticSummary } from '../lib/types';
+import type { GameSession, GameState, Marker, TacticSummary } from '../lib/types';
+import type { Level } from '../lib/constants';
 import { Alert, Badge, Loading, NeedsTeam, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBoard } from '../components/MapBoard';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 15000;
@@ -116,7 +118,14 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
   const { user } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [levelChoice, setLevelChoice] = useState<{ key: string; level: Level } | null>(null);
+  const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
   const mine = session.my_assignment;
+  const map = session.tactic.map ?? 'practice_yard';
+  const phaseKey = `${session.session_id}:${session.current_phase}`;
+  const level = levelChoice?.key === phaseKey ? levelChoice.level : preferredLevel(map, session.phase.board, user?.user_id);
+  const myLineups = lineupMarkers(session.phase.board, user?.user_id ?? null);
+  const otherLineups = lineupMarkers(session.phase.board).filter((m) => m.user_id !== user?.user_id);
   const players = (session.assignments ?? []).map((a) => a.user_id);
   if (user && !players.includes(user.user_id)) players.push(user.user_id);
   const boardPlayers = (session.assignments ?? (mine ? [mine] : [])).map((a) => ({ user_id: a.user_id, user_name: a.user_name ?? '' }));
@@ -188,6 +197,12 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
             ) : (
               <p className="call-text muted">No instruction for you this phase. Hold your position and follow the IGL's call.</p>
             )}
+            {myLineups.length ? (
+              <>
+                <h2 className="lineup-heading">Your lineups</h2>
+                <LineupGallery markers={myLineups} large onOpen={(m, i) => setOpen({ marker: m, index: i })} />
+              </>
+            ) : null}
           </section>
           {session.phase.notes ? <Panel title="Team notes"><p>{session.phase.notes}</p></Panel> : null}
           {session.can_control ? (
@@ -207,9 +222,20 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
             </Panel>
           ) : <Alert kind="warn">{error}</Alert>}
         </div>
-        <MapBoard board={session.phase.board} players={boardPlayers} highlightUserId={user?.user_id ?? null}
-          label={`Board for phase ${session.phase.name}`} />
+        <div className="stack">
+          <LevelSwitch map={map} level={level} board={session.phase.board} onChange={(l) => setLevelChoice({ key: phaseKey, level: l })} />
+          <MapBoard board={session.phase.board} map={map} level={level} players={boardPlayers} highlightUserId={user?.user_id ?? null}
+            onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for phase ${session.phase.name}`} />
+          {otherLineups.length ? (
+            <details className="panel">
+              <summary>Team lineups this phase ({otherLineups.length})</summary>
+              <LineupGallery markers={otherLineups} onOpen={(m, i) => setOpen({ marker: m, index: i })} />
+            </details>
+          ) : null}
+        </div>
       </div>
+      <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}
+        onIndex={(i) => setOpen((o) => (o ? { ...o, index: i } : o))} onClose={() => setOpen(null)} />
       <p className="muted small">Started by {session.started_by?.user_name ?? 'unknown'} at {formatDateTime(session.started_at)} · tactic revision {session.tactic.revision}</p>
     </div>
   );

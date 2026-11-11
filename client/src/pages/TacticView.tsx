@@ -4,10 +4,12 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ECONOMY_LABEL, mapName } from '../lib/constants';
 import { useDocumentTitle, useLoad } from '../lib/hooks';
-import type { RosterEntry, TacticDocument } from '../lib/types';
+import type { Marker, RosterEntry, TacticDocument } from '../lib/types';
+import type { Level } from '../lib/constants';
 import { Alert, Badge, Loading, Panel, SideBadge } from '../components/ui';
 import { MapBoard } from '../components/MapBoard';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
 export interface DocumentResponse { tactic: TacticDocument; roster: RosterEntry[]; can_edit: boolean }
 
@@ -16,6 +18,8 @@ export function TacticViewPage() {
   const { user } = useAuth();
   const doc = useLoad(() => api.get<DocumentResponse>(`/tactics/${tacticId}/document`), [tacticId]);
   const [index, setIndex] = useState(0);
+  const [levelChoice, setLevelChoice] = useState<{ phase: number; level: Level } | null>(null);
+  const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
   useDocumentTitle(doc.data?.tactic.tactic_name ?? 'Tactic');
 
   if (doc.loading && !doc.data) return <Loading />;
@@ -23,6 +27,12 @@ export function TacticViewPage() {
   const { tactic, roster, can_edit: canEdit } = doc.data;
   const phase = tactic.phases[Math.min(index, tactic.phases.length - 1)];
   const players = roster.map((r) => r.user_id);
+  const phaseIndex = Math.min(index, tactic.phases.length - 1);
+  const map = tactic.map ?? 'practice_yard';
+  const level = phase
+    ? (levelChoice?.phase === phaseIndex ? levelChoice.level : preferredLevel(map, phase.board, user?.user_id))
+    : 'main';
+  const lineups = phase ? lineupMarkers(phase.board) : [];
 
   return (
     <div className="stack">
@@ -50,15 +60,27 @@ export function TacticViewPage() {
             ))}
           </div>
           <div className="board-layout">
-            <MapBoard board={phase.board} players={roster} highlightUserId={null} label={`Board for ${phase.name}`} />
+            <div className="stack">
+              <LevelSwitch map={map} level={level} board={phase.board} onChange={(l) => setLevelChoice({ phase: phaseIndex, level: l })} />
+              <MapBoard board={phase.board} map={map} level={level} players={roster} highlightUserId={null}
+                onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} />
+            </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}
               <PhaseInstructions assignments={phase.assignments} players={players} highlight={user?.user_id} />
               {phase.assignments.some((a) => a.user_id === user?.user_id) ? <Badge tone="gold">Your instruction is highlighted</Badge> : null}
+              {lineups.length ? (
+                <>
+                  <h3>Lineups</h3>
+                  <LineupGallery markers={lineups} onOpen={(m, i) => setOpen({ marker: m, index: i })} />
+                </>
+              ) : null}
             </Panel>
           </div>
         </>
       )}
+      <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}
+        onIndex={(i) => setOpen((o) => (o ? { ...o, index: i } : o))} onClose={() => setOpen(null)} />
     </div>
   );
 }

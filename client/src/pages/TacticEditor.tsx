@@ -1,25 +1,102 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
-import { api, ApiError, errorMessage } from '../lib/api';
+import { api, ApiError, errorMessage, imageUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { ECONOMIES, ECONOMY_LABEL, LIMITS, MAPS, MARKER_KINDS, MARKER_LABEL } from '../lib/constants';
+import {
+  DEFAULT_MAP, ECONOMIES, ECONOMY_LABEL, LEVEL_LABEL, LIMITS, LINEUP_KINDS, MAPS, MARKER_KINDS, MARKER_LABEL, mapLevels, type Level,
+} from '../lib/constants';
 import { useDocumentTitle } from '../lib/hooks';
-import type { Assignment, Board, Marker, Phase, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
+import type { Assignment, Board, LineupImage, Marker, Phase, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBoard, newId, playerColor, type Tool } from '../components/MapBoard';
+import { LevelSwitch } from '../components/Lineups';
 import type { DocumentResponse } from './TacticView';
 
 const emptyBoard = (): Board => ({ markers: [], routes: [] });
 const newPhase = (n: number): Phase => ({ name: `Phase ${n}`, notes: '', board: emptyBoard(), assignments: [] });
 const DEFAULT_FIELDS: TacticFields = {
-  tactic_name: '', map: 'practice_yard', side: 'T', economy: 'Fullbuy', grenade: 0, molly: 0, flash: 0, smoke: 0,
+  tactic_name: '', map: DEFAULT_MAP, side: 'T', economy: 'Fullbuy', grenade: 0, molly: 0, flash: 0, smoke: 0,
 };
 const UTILITY: [keyof TacticFields, string, number][] = [['smoke', 'Smokes', 5], ['flash', 'Flashes', 10], ['molly', 'Molotovs', 5], ['grenade', 'HE', 5]];
 
-function Inspector({ phase, selectedId, roster, onBoard, onClear }: {
+// Upload, paste, caption and remove lineup screenshots for one marker.
+function LineupEditor({ teamId, images, onChange }: { teamId: number; images: LineupImage[]; onChange: (images: LineupImage[]) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const full = images.length >= LIMITS.imagesPerMarker;
+
+  const add = async (files: File[]) => {
+    setError(null);
+    const pngs = files.filter((f) => f.type === 'image/png');
+    if (files.length && !pngs.length) { setError('Lineup screenshots must be PNG files.'); return; }
+    const room = LIMITS.imagesPerMarker - images.length;
+    const tooBig = pngs.find((f) => f.size > LIMITS.imageBytes);
+    if (tooBig) { setError(`${tooBig.name || 'That image'} is larger than 8 MB.`); return; }
+    setBusy(true);
+    try {
+      const added: LineupImage[] = [];
+      for (const file of pngs.slice(0, room)) {
+        const res = await api.uploadPng<{ image: { image_id: string } }>(`/teams/${teamId}/lineup-images`, file);
+        added.push({ image_id: res.image.image_id, caption: '' });
+      }
+      onChange([...images, ...added]);
+      if (pngs.length > room) setError(`Only ${LIMITS.imagesPerMarker} screenshots per marker; extra files were skipped.`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  return (
+    <div className="lineup-editor" onPaste={(e) => {
+      const files = [...e.clipboardData.files];
+      if (files.length) { e.preventDefault(); add(files); }
+    }}>
+      <span className="field-label">Lineup screenshots</span>
+      {images.map((img, i) => (
+        <div key={img.image_id} className="lineup-edit-row">
+          <a href={imageUrl(img.image_id)} target="_blank" rel="noreferrer"><img src={imageUrl(img.image_id)} alt={`Lineup ${i + 1}`} /></a>
+          <div className="stack tight">
+            <input aria-label={`Caption for screenshot ${i + 1}`} maxLength={120} placeholder="Caption, e.g. stand in the corner"
+              value={img.caption} onChange={(e) => onChange(images.map((x, j) => (j === i ? { ...x, caption: e.target.value } : x)))} />
+            <div className="row">
+              <button type="button" className="btn ghost small" disabled={i === 0}
+                onClick={() => { const n = [...images]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; onChange(n); }}>Move up</button>
+              <button type="button" className="btn ghost small danger" onClick={() => onChange(images.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          </div>
+        </div>
+      ))}
+      {!full ? (
+        <div className="row wrap">
+          <input ref={inputRef} type="file" accept="image/png" multiple hidden onChange={(e) => add([...(e.target.files ?? [])])} />
+          <button type="button" className="btn small" disabled={busy} onClick={() => inputRef.current?.click()}>
+            <Icon name="plus" /> {busy ? 'Uploading…' : 'Add PNG'}
+          </button>
+          <span className="muted small">or paste a screenshot here (Ctrl+V). PNG, up to 8 MB.</span>
+        </div>
+      ) : <p className="muted small">Maximum of {LIMITS.imagesPerMarker} screenshots.</p>}
+      {error ? <div className="error-text">{error}</div> : null}
+    </div>
+  );
+}
+
+function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }: {
   phase: Phase; selectedId: string | null; roster: RosterEntry[]; onBoard: (b: Board) => void; onClear: () => void;
+  teamId: number; map: string;
 }) {
+  const levels = mapLevels(map);
+  const levelSelect = (value: Level | undefined, onChange: (l: Level) => void) => (levels.length > 1 ? (
+    <label>Level
+      <select value={value ?? 'main'} onChange={(e) => onChange(e.target.value as Level)}>
+        {levels.map((l) => <option key={l} value={l}>{LEVEL_LABEL[l]}</option>)}
+      </select>
+    </label>
+  ) : null);
   const marker = phase.board.markers.find((m) => m.id === selectedId);
   const route = phase.board.routes.find((r) => r.id === selectedId);
   if (!marker && !route) {
@@ -40,16 +117,25 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear }: {
     return (
       <div className="form compact">
         <label>Type
-          <select value={marker.kind} onChange={(e) => set({ kind: e.target.value as Marker['kind'] })}>
+          <select value={marker.kind} onChange={(e) => {
+            const kind = e.target.value as Marker['kind'];
+            const keep = (LINEUP_KINDS as readonly string[]).includes(kind);
+            if (!keep && marker.images?.length && !window.confirm('Player markers cannot have lineup screenshots. Remove them?')) return;
+            set({ kind, images: keep ? marker.images ?? [] : [] });
+          }}>
             {MARKER_KINDS.map((k) => <option key={k} value={k}>{MARKER_LABEL[k]}</option>)}
           </select>
         </label>
         {playerSelect(marker.user_id, (v) => set({ user_id: v }))}
         <label>Label<input maxLength={40} value={marker.label} onChange={(e) => set({ label: e.target.value })} /></label>
+        {levelSelect(marker.level, (l) => set({ level: l }))}
         <div className="grid2">
           <label>X (%)<input type="number" min={0} max={100} step={0.5} value={pct(marker.x)} onChange={(e) => set({ x: fromPct(e.target.value) })} /></label>
           <label>Y (%)<input type="number" min={0} max={100} step={0.5} value={pct(marker.y)} onChange={(e) => set({ y: fromPct(e.target.value) })} /></label>
         </div>
+        {(LINEUP_KINDS as readonly string[]).includes(marker.kind)
+          ? <LineupEditor teamId={teamId} images={marker.images ?? []} onChange={(images) => set({ images })} />
+          : <p className="muted small">Change the type to a grenade or note to attach lineup screenshots.</p>}
         <button type="button" className="btn ghost small danger" onClick={() => { onBoard({ ...phase.board, markers: phase.board.markers.filter((m) => m.id !== marker.id) }); onClear(); }}>
           <Icon name="trash" /> Delete marker
         </button>
@@ -62,6 +148,7 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear }: {
     <div className="form compact">
       <p className="small muted">Route with {r.points.length} points. Drag the handles on the board to reshape it.</p>
       {playerSelect(r.user_id, (v) => set({ user_id: v }))}
+      {levelSelect(r.level, (l) => set({ level: l }))}
       {r.user_id == null ? (
         <label>Colour<input type="color" value={r.color} onChange={(e) => set({ color: e.target.value })} /></label>
       ) : null}
@@ -118,6 +205,8 @@ export function TacticEditorPage() {
   const [fields, setFields] = useState<TacticFields>(DEFAULT_FIELDS);
   const [phases, setPhases] = useState<Phase[]>([newPhase(1)]);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
+  const [teamId, setTeamId] = useState<number | null>(null);
+  const [level, setLevel] = useState<Level>('main');
   const [revision, setRevision] = useState(0);
   const [canEdit, setCanEdit] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -143,6 +232,7 @@ export function TacticEditorPage() {
           const r = await api.get<RosterResponse>(`/teams/${team.team_id}/roster`);
           if (cancelled) return;
           setRoster(r.members.map((m) => ({ user_id: m.user_id, user_name: m.user_name, player_role: m.player_role })));
+          setTeamId(team.team_id);
           setCanEdit(r.viewer.can_lead);
         } else {
           const d = await api.get<DocumentResponse>(`/tactics/${tacticId}/document`);
@@ -156,6 +246,7 @@ export function TacticEditorPage() {
           setPhases(t.phases.length ? t.phases : [newPhase(1)]);
           setRevision(t.revision);
           setRoster(d.roster);
+          setTeamId(t.team_id);
           setCanEdit(d.can_edit);
           if (!t.map || !t.side || !(ECONOMIES as readonly string[]).includes(t.economy)) {
             setNotice('Some details from the original tactic were missing or not recognised (map, side or economy). Check them before saving.');
@@ -193,12 +284,12 @@ export function TacticEditorPage() {
 
   const commitDraft = useCallback(() => {
     if (draft.length >= 2 && phase.board.routes.length < LIMITS.routes) {
-      const route: Route = { id: newId('r'), user_id: activePlayer, color: '#ffffff', points: draft };
+      const route: Route = { id: newId('r'), level, user_id: activePlayer, color: '#ffffff', points: draft };
       setPhase({ board: { ...phase.board, routes: [...phase.board.routes, route] } });
       setSelectedId(route.id);
     }
     setDraft([]);
-  }, [draft, phase, activePlayer, setPhase]);
+  }, [draft, phase, activePlayer, setPhase, level]);
 
   const chooseTool = (t: Tool) => {
     if (tool === 'route' && t !== 'route') commitDraft();
@@ -230,7 +321,7 @@ export function TacticEditorPage() {
     // Include a route that is still being drawn.
     let toSave = phases;
     if (draft.length >= 2) {
-      const route: Route = { id: newId('r'), user_id: activePlayer, color: '#ffffff', points: draft };
+      const route: Route = { id: newId('r'), level, user_id: activePlayer, color: '#ffffff', points: draft };
       toSave = phases.map((p, i) => (i === index ? { ...p, board: { ...p.board, routes: [...p.board.routes, route] } } : p));
       setPhases(toSave);
     }
@@ -244,8 +335,8 @@ export function TacticEditorPage() {
         name: p.name.trim() || 'Phase',
         notes: p.notes,
         board: {
-          markers: p.board.markers.map((m) => ({ ...m, user_id: clean(m.user_id) })),
-          routes: p.board.routes.map((r) => ({ ...r, user_id: clean(r.user_id) })),
+          markers: p.board.markers.map((m) => ({ ...m, level: m.level ?? 'main', images: m.images ?? [], user_id: clean(m.user_id) })),
+          routes: p.board.routes.map((r) => ({ ...r, level: r.level ?? 'main', user_id: clean(r.user_id) })),
         },
         assignments: p.assignments
           .filter((a) => memberIds.has(a.user_id) && (a.instruction.trim() || a.utility.trim() || a.reference_url))
@@ -269,6 +360,26 @@ export function TacticEditorPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Switching to a map without a lower level moves lower-level items to main.
+  const changeMap = (map: string) => {
+    const hasLower = mapLevels(map).includes('lower');
+    const lowerItems = phases.some((p) => [...p.board.markers, ...p.board.routes].some((i) => i.level === 'lower'));
+    if (!hasLower && lowerItems
+      && !window.confirm('This map has no lower level. Items on the lower level will be moved to the main level. Continue?')) return;
+    if (!hasLower) {
+      setPhases((ps) => ps.map((p) => ({
+        ...p,
+        board: {
+          markers: p.board.markers.map((m) => ({ ...m, level: 'main' as Level })),
+          routes: p.board.routes.map((r) => ({ ...r, level: 'main' as Level })),
+        },
+      })));
+      setLevel('main');
+    }
+    setFields({ ...fields, map });
+    touch();
   };
 
   const movePhase = (from: number, to: number) => {
@@ -308,8 +419,14 @@ export function TacticEditorPage() {
         <div className="meta-grid">
           <label>Name<input required maxLength={60} value={fields.tactic_name} onChange={(e) => { setFields({ ...fields, tactic_name: e.target.value }); touch(); }} /></label>
           <label>Map
-            <select value={fields.map} onChange={(e) => { setFields({ ...fields, map: e.target.value }); touch(); }}>
-              {MAPS.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            <select value={fields.map} onChange={(e) => changeMap(e.target.value)}>
+              {(['Active Duty', 'Reserve', 'Other'] as const).map((pool) => (
+                <optgroup key={pool} label={pool}>
+                  {MAPS.filter((m) => m.pool === pool).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}{m.levels.length > 1 ? ' (upper + lower)' : ''}</option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </label>
           <div className="field">
@@ -372,7 +489,8 @@ export function TacticEditorPage() {
           ) : <p className="muted small hint">{tool === 'select'
             ? 'Drag markers or route handles to move them.'
             : `Click the map to place a ${MARKER_LABEL[tool].toLowerCase()}.`}</p>}
-          <MapBoard board={phase.board} players={roster} onChange={(b) => setPhase({ board: b })} tool={tool}
+          <LevelSwitch map={fields.map} level={level} board={phase.board} onChange={(l) => { commitDraft(); setLevel(l); setSelectedId(null); }} />
+          <MapBoard board={phase.board} map={fields.map} level={level} players={roster} onChange={(b) => setPhase({ board: b })} tool={tool}
             selectedId={selectedId} onSelect={setSelectedId} activePlayer={activePlayer} draftRoute={draft} onDraftRoute={setDraft}
             label={`Editable board for ${phase.name}`} />
           <div className="legend">
@@ -395,7 +513,8 @@ export function TacticEditorPage() {
             </div>
           </Panel>
           <Panel title="Selected item">
-            <Inspector phase={phase} selectedId={selectedId} roster={roster} onBoard={(b) => setPhase({ board: b })} onClear={() => setSelectedId(null)} />
+            <Inspector phase={phase} selectedId={selectedId} roster={roster} onBoard={(b) => setPhase({ board: b })}
+              onClear={() => setSelectedId(null)} teamId={teamId ?? 0} map={fields.map} />
           </Panel>
           <Panel title="Player instructions">
             <InstructionsForm phase={phase} roster={roster} onChange={(a) => setPhase({ assignments: a })} />

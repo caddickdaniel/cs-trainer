@@ -62,17 +62,32 @@ const point = z.object({ x: coord, y: coord });
 const clientId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 
+const level = z.enum(C.LEVELS).optional().default('main');
+const imageId = z.uuid();
+
+const lineupImage = z.object({
+  image_id: imageId,
+  caption: trimmed(120).optional().default(''),
+});
+
 const marker = z.object({
   id: clientId,
   kind: z.enum(C.MARKER_KINDS),
   x: coord,
   y: coord,
+  level,
   user_id: id.nullable().optional().default(null),
   label: trimmed(40).optional().default(''),
+  // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
+  images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
+}).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
+  message: 'Only utility and note markers can have lineup screenshots',
+  path: ['images'],
 });
 
 const route = z.object({
   id: clientId,
+  level,
   user_id: id.nullable().optional().default(null),
   color: color.optional().default('#f5a524'),
   points: z.array(point).min(2).max(C.LIMITS.routePoints),
@@ -107,7 +122,7 @@ const phase = z.object({
 
 const utilityCount = (max) => z.coerce.number().int().min(0).max(max);
 
-exports.tacticDocument = z.object({
+const tacticDocumentBase = z.object({
   tactic_name: trimmed(60).min(1, 'Name is required'),
   map: z.enum(C.MAPS),
   side: z.enum(C.SIDES),
@@ -119,9 +134,26 @@ exports.tacticDocument = z.object({
   phases: z.array(phase).min(1, 'Add at least one phase').max(C.LIMITS.phases),
 });
 
-exports.tacticDocumentUpdate = exports.tacticDocument.extend({
-  revision: z.number().int().positive(),
-});
+// Board items may only use levels the chosen map has (e.g. lower on Nuke).
+const checkLevels = (doc, ctx) => {
+  const allowed = C.mapLevels(doc.map);
+  doc.phases.forEach((p, pi) => {
+    [...p.board.markers, ...p.board.routes].forEach((item) => {
+      if (!allowed.includes(item.level)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['phases', pi, 'board', item.id, 'level'],
+          message: `${doc.map} has no ${item.level} level`,
+        });
+      }
+    });
+  });
+};
+
+exports.tacticDocument = tacticDocumentBase.superRefine(checkLevels);
+exports.tacticDocumentUpdate = tacticDocumentBase
+  .extend({ revision: z.number().int().positive() })
+  .superRefine(checkLevels);
 
 // Legacy tactic payloads (POST/PATCH /api/tactics).
 exports.legacyTactic = z.object({
@@ -156,6 +188,7 @@ exports.legacyUserPatch = z.object({
   bio: optionalText(2000),
 });
 
+exports.imageId = imageId;
 exports.startSession = z.object({ tactic_id: id });
 exports.phaseChange = z.object({
   action: z.enum(['next', 'prev', 'goto']),

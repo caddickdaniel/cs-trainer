@@ -48,6 +48,9 @@ exports.endpoints = {
       'GET /api/teams/:team_id/tactics': { description: 'Members only. Tactic library summaries' },
       'POST /api/teams/:team_id/tactics': { description: 'Owner/IGL. Creates a tactic document (see PUT /api/tactics/:tactic_id/document)' },
       'GET /api/teams/:team_id/game-session': { description: 'Members only. Active Game Mode session (or null with last_ended). Poll this' },
+      'POST /api/teams/:team_id/lineup-images': {
+        description: 'Owner/IGL. Uploads a lineup screenshot. Body: raw PNG with Content-Type: image/png (max 8 MB, 8192px per side). Returns { image: { image_id, width, height } }',
+      },
       'POST /api/teams/:team_id/game-session': { description: 'Owner/IGL. Body: { tactic_id }. Starts a session from a snapshot. 409 session_active if one is running' },
     },
     '/invites': {
@@ -69,8 +72,11 @@ exports.endpoints = {
       'GET /api/tactics/:tactic_id/user/:user_id/steps': { description: 'Members only. Legacy steps for one player' },
       'GET /api/tactics/:tactic_id/document': { description: 'Members only. Full tactic with ordered phases, assignments, board and roster' },
       'PUT /api/tactics/:tactic_id/document': {
-        description: 'Owner/IGL. Replaces the tactic. Body: { revision, tactic_name, map, side (T|CT), economy (Pistol|Eco|Force|Halfbuy|Fullbuy), grenade, molly, flash, smoke, phases: [{ name, notes, board: { markers, routes }, assignments: [{ user_id, instruction, utility, reference_url }] }] }. 409 stale_revision',
+        description: 'Owner/IGL. Replaces the tactic. Body: { revision, tactic_name, map, map (de_ancient|de_anubis|de_cache|de_dust2|de_inferno|de_mirage|de_nuke|de_overpass|de_train|de_vertigo|practice_yard), side (T|CT), economy (Pistol|Eco|Force|Halfbuy|Fullbuy), grenade, molly, flash, smoke, phases: [{ name, notes, board: { markers: [{ id, kind, x, y, level (main|lower), user_id, label, images: [{ image_id, caption }] }], routes: [{ id, level, user_id, color, points }] }, assignments: [{ user_id, instruction, utility, reference_url }] }] }. lower is only valid on de_nuke, de_train, de_vertigo. 409 stale_revision',
       },
+    },
+    '/lineup-images': {
+      'GET /api/lineup-images/:image_id': { description: 'Members of the owning team only. Returns the PNG' },
     },
     '/game-sessions': {
       'GET /api/game-sessions/:session_id': { description: 'Members only. A session (active or ended)' },

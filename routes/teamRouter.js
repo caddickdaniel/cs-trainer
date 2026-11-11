@@ -1,4 +1,7 @@
-const teamRouter = require('express').Router();
+const express = require('express');
+const { LIMITS } = require('../domain/constants');
+
+const teamRouter = express.Router();
 const c = require('../controllers/teams');
 const { handle405 } = require('../errors');
 
@@ -27,5 +30,10 @@ teamRouter.route('/:team_id/invites').get(c.sendInvites).post(c.sendNewInvite).a
 teamRouter.route('/:team_id/invites/:invite_id').delete(c.revokeInvite).all(handle405);
 teamRouter.route('/:team_id/tactics').get(c.sendTeamTactics).post(c.sendNewTacticDocument).all(handle405);
 teamRouter.route('/:team_id/game-session').get(c.sendGameSession).post(c.startGameSession).all(handle405);
+
+teamRouter
+  .route('/:team_id/lineup-images')
+  .post(express.raw({ type: 'image/png', limit: LIMITS.imageBytes }), c.uploadLineupImage)
+  .all(handle405);
 
 module.exports = teamRouter;

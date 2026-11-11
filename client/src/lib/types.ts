@@ -1,4 +1,6 @@
-import type { ECONOMIES, MARKER_KINDS, PLAYER_ROLES, SIDES } from './constants';
+import type { ECONOMIES, Level, MARKER_KINDS, PLAYER_ROLES, SIDES } from './constants';
+
+export type { Level };
 
 export type Side = (typeof SIDES)[number];
 export type Economy = (typeof ECONOMIES)[number];
@@ -6,8 +8,18 @@ export type MarkerKind = (typeof MARKER_KINDS)[number];
 export type PlayerRole = (typeof PLAYER_ROLES)[number];
 
 export interface Point { x: number; y: number }
-export interface Marker { id: string; kind: MarkerKind; x: number; y: number; user_id: number | null; label: string }
-export interface Route { id: string; user_id: number | null; color: string; points: Point[] }
+export interface LineupImage { image_id: string; caption: string }
+export interface Marker {
+  id: string;
+  kind: MarkerKind;
+  x: number;
+  y: number;
+  level?: Level;
+  user_id: number | null;
+  label: string;
+  images?: LineupImage[];
+}
+export interface Route { id: string; level?: Level; user_id: number | null; color: string; points: Point[] }
 export interface Board { markers: Marker[]; routes: Route[] }
 
 export interface Assignment {

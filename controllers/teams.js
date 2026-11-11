@@ -2,9 +2,10 @@ const { getTeams, getTeamsByID, getTeamsByColumn, getTeamOwner, SORTABLE } = req
 const teams = require('../services/teams');
 const tactics = require('../services/tactics');
 const game = require('../services/game');
+const images = require('../services/images');
 const { requireMember } = require('../services/access');
 const v = require('../validation');
-const { asyncHandler, notFound } = require('../errors');
+const { asyncHandler, notFound, httpError } = require('../errors');
 
 const teamId = (req) => v.parseId(req.params.team_id, 'team_id');
 const me = (req) => req.user.user_id;
@@ -113,4 +114,11 @@ exports.sendGameSession = asyncHandler(async (req, res) => {
 exports.startGameSession = asyncHandler(async (req, res) => {
   const { tactic_id } = v.startSession.parse(req.body);
   res.status(201).send(await game.start(teamId(req), me(req), tactic_id));
+});
+
+// Body is the raw PNG (Content-Type: image/png).
+exports.uploadLineupImage = asyncHandler(async (req, res) => {
+  if (!req.is('image/png')) throw httpError(415, 'Upload the screenshot as a PNG (Content-Type: image/png)', 'not_png');
+  const image = await images.upload(teamId(req), me(req), Buffer.isBuffer(req.body) ? req.body : null);
+  res.status(201).send({ image });
 });

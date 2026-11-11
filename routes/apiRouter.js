@@ -4,6 +4,7 @@ const tacticRouter = require('./tacticRouter');
 const userRouter = require('./userRouter');
 const inviteRouter = require('./inviteRouter');
 const gameRouter = require('./gameRouter');
+const imageRouter = require('./imageRouter');
 const createAuthRouter = require('./authRouter');
 const { endpoints } = require('../endpoints');
 const { loadUser, requireAuth } = require('../middleware/auth');
@@ -29,6 +30,7 @@ module.exports = ({ authLimiter }) => {
   apiRouter.use('/users', userRouter);
   apiRouter.use('/invites', inviteRouter);
   apiRouter.use('/game-sessions', gameRouter);
+  apiRouter.use('/lineup-images', imageRouter);
 
   apiRouter.use((req, res) => {
     res.status(404).send({ message: 'Sorry, this endpoint was not found! Go to /api to see a list of endpoints' });
