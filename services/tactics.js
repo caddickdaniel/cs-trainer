@@ -53,7 +53,7 @@ async function teamRoster(teamId, trx = db) {
   return trx('team_memberships as m')
     .join('users as u', 'u.user_id', 'm.user_id')
     .where('m.team_id', teamId)
-    .orderBy('u.user_name')
+    .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
     .select('u.user_id', 'u.user_name', 'm.player_role');
 }
 
