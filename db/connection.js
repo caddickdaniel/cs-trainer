@@ -1,5 +1,7 @@
-const ENV = process.env.NODE_ENV || 'development';
-const config = ENV === 'production'
-  ? { client: 'pg', connection: process.env.DATABASE_URL }
-  : require('../knexfile');
-module.exports = require('knex')(config);
+const knex = require('knex');
+const { NODE_ENV } = require('../config/env');
+const config = require('../knexfile')[NODE_ENV];
+
+if (!config) throw new Error(`No database configuration for NODE_ENV=${NODE_ENV}`);
+
+module.exports = knex(config);

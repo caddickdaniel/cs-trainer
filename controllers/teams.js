@@ -1,203 +1,116 @@
-const {
-  getTeams,
-  getTeamsByID,
-  getTeamsByName,
-  getTeamsByLanguage,
-  getTeamsByRegion,
-  getTeamsByPlatform,
-  getTeamsBySkillLevel,
-  addTeam,
-  deleteTeamByID,
-  updateTeamByID,
-  getTeamOwner,
-  updateUserTeam
-} = require('../models/teams');
+const { getTeams, getTeamsByID, getTeamsByColumn, getTeamOwner, SORTABLE } = require('../models/teams');
+const teams = require('../services/teams');
+const tactics = require('../services/tactics');
+const game = require('../services/game');
+const { requireMember } = require('../services/access');
+const v = require('../validation');
+const { asyncHandler, notFound } = require('../errors');
 
-  exports.sendTeams = (req, res, next) => {
-    const { sort_by, order } = req.query;
-    Promise.all([getTeams(sort_by, order)])
-      .then(([teams]) => {
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
+const teamId = (req) => v.parseId(req.params.team_id, 'team_id');
+const me = (req) => req.user.user_id;
 
-  exports.sendTeamsByID = (req, res, next) => {
-    const teamID = req.params.team_id;
-    getTeamsByID(teamID)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That team doesn't exist`
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
-  
-  exports.sendTeamsByName = (req, res, next) => {
-    const teamName = req.params.team_name;
-    getTeamsByName(teamName)
-      .then(([teams]) => {
-        if (!teams) {
-          return Promise.reject({
-            status: 404,
-            message: `That team doesn't exist`
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch(err => next(err));
-  };
+exports.sendTeams = asyncHandler(async (req, res) => {
+  const { sort_by, order } = v.sortQuery(SORTABLE, 'team_name').parse(req.query);
+  res.status(200).send({ teams: await getTeams(me(req), sort_by, order) });
+});
 
-  exports.sendTeamsByLanguage = (req, res, next) => {
-    const languageName = req.params.language;
-    getTeamsByLanguage(languageName)
-      .then((teams) => {
-        if (teams.length === 0) {
-          return Promise.reject({
-            status: 404,
-            message: `No teams found for the specified language`,
-          });
-        }
-        res.status(200).send({ teams });
-      })
-      .catch((err) => next(err));
-  };
+exports.sendTeamsByID = asyncHandler(async (req, res) => {
+  const [team] = await getTeamsByID(me(req), teamId(req));
+  if (!team) throw notFound("That team doesn't exist");
+  res.status(200).send({ teams: team });
+});
 
-  exports.sendTeamsByRegion = (req, res, next) => {
-    const regionName = req.params.region;
-    getTeamsByRegion(regionName)
-    .then((teams) => {
-      if (teams.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No teams found for the specified region`,
-        });
-      }
-      res.status(200).send({ teams });
-    })
-    .catch((err) => next(err));
-};
-  
-  exports.sendTeamsByPlatform = (req, res, next) => {
-    const platformName = req.params.platform;
-    getTeamsByPlatform(platformName)
-    .then((teams) => {
-      if (teams.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No teams found for the specified platform`,
-        });
-      }
-      res.status(200).send({ teams });
-    })
-    .catch((err) => next(err));
-};
-  
-  exports.sendTeamsBySkillLevel = (req, res, next) => {
-    const skillLevelName = req.params.skill_level;
-    getTeamsBySkillLevel(skillLevelName)
-    .then((teams) => {
-      if (teams.length === 0) {
-        return Promise.reject({
-          status: 404,
-          message: `No teams found for the specified platform`,
-        });
-      }
-      res.status(200).send({ teams });
-    })
-    .catch((err) => next(err));
-};
+const byColumn = (column, param, single, emptyMessage) =>
+  asyncHandler(async (req, res) => {
+    const rows = await getTeamsByColumn(me(req), column, req.params[param]);
+    if (!rows.length) throw notFound(emptyMessage);
+    res.status(200).send({ teams: single ? rows[0] : rows });
+  });
 
-  exports.sendNewTeam = (req, res, next) => {
-    const teamToAdd = req.body;
-  
-    addTeam(teamToAdd)
-      .then(([teams]) => res.status(201).send({ teams }))
-      .catch(err => next(err));
-  };
-  
-  exports.sendDeletedTeam = (req, res, next) => {
-    const { team_id } = req.params;
-  
-    deleteTeamByID(team_id)
-      .then(() => {
-        if (!team_id) {
-          return Promise.reject({
-            status: 404,
-            message: `The team doesn't exist`
-          });
-        }
-        res.sendStatus(204);
-      })
-      .catch(err => next(err));
-  };
+exports.sendTeamsByName = byColumn('team_name', 'team_name', true, "That team doesn't exist");
+exports.sendTeamsByLanguage = byColumn('language', 'language', false, 'No teams found for the specified language');
+exports.sendTeamsByRegion = byColumn('region', 'region', false, 'No teams found for the specified region');
+exports.sendTeamsByPlatform = byColumn('platform', 'platform', false, 'No teams found for the specified platform');
+exports.sendTeamsBySkillLevel = byColumn('skill_level', 'skill_level', false, 'No teams found for the specified skill level');
 
-  exports.sendPatchedTeam = (req, res, next) => {
-    const {team_name, language, region, platform, skill_level} = req.body;
-    const {team_id} = req.params;
-  
-    getTeamsByID(team_id)
-      .then((team) => {
-        if (!team) {
-          return Promise.reject({
-            status: 404,
-            message: `Team not found with the ID ${team_id}`
-          });
-        }
-  
-        const updatedTeam = {
-          team_name: team_name || team.team_name,
-          language: language || team.language,
-          region: region || team.region,
-          platform: platform || team.platform,
-          skill_level: skill_level || team.skill_level,
-        };
-  
-        return updateTeamByID(team_id, updatedTeam)
-          .then(() => {
-            return getTeamsByID(team_id); 
-          });
-      })
-      .then((updatedTeam) => {
-        res.status(200).send(updatedTeam[0]);
-      })
-      .catch(err => next(err));
-  };
+// Creates a team owned by the signed-in user (body.owner is ignored).
+exports.sendNewTeam = asyncHandler(async (req, res) => {
+  const team = await teams.createTeam(me(req), v.createTeam.parse(req.body));
+  res.status(201).send({ teams: team });
+});
 
-exports.sendTeamOwner = (req, res, next) => {
-    const teamID = req.params.team_id;
-    getTeamOwner(teamID)
-      .then((team) => {
-        if (!team) {
-          return Promise.reject({
-            status: 404,
-            message: `That team doesn't exist`,
-          });
-        }
-        res.status(200).send({ team });
-      })
-      .catch((err) => next(err));
-  };
+exports.sendDeletedTeam = asyncHandler(async (req, res) => {
+  await teams.deleteTeam(teamId(req), me(req));
+  res.sendStatus(204);
+});
 
-exports.removeUserFromTeam = (req, res, next) => {
-  const ownerID = req.body.user_id;
-  const teamID = req.params.team_id;
-  const userID = req.params.user_id;
+exports.sendPatchedTeam = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await teams.updateTeam(id, me(req), v.patchTeam.parse(req.body));
+  const [team] = await getTeamsByID(me(req), id);
+  res.status(200).send(team);
+});
 
-  getTeamOwner(teamID)
-    .then(team => {
-      if (team.owner === ownerID) {
-        return updateUserTeam(userID);
-      } else {
-        throw new Error('Only the team owner can remove users from the team.');
-      }
-    })
-    .then(() => {
-      res.status(204).send();
-    })
-    .catch(err => next(err));
-};
+exports.sendTeamOwner = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await requireMember(id, me(req));
+  res.status(200).send({ team: await getTeamOwner(id) });
+});
+
+// Legacy: owner removes a player. The acting owner comes from the session.
+exports.removeUserFromTeam = asyncHandler(async (req, res) => {
+  await teams.removeMember(teamId(req), me(req), v.parseId(req.params.user_id, 'user_id'));
+  res.status(204).send();
+});
+
+exports.sendRoster = asyncHandler(async (req, res) => {
+  res.status(200).send(await teams.getRoster(teamId(req), me(req)));
+});
+
+exports.patchMember = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await teams.updateMember(id, me(req), v.parseId(req.params.user_id, 'user_id'), v.patchMember.parse(req.body));
+  res.status(200).send(await teams.getRoster(id, me(req)));
+});
+
+exports.deleteMember = asyncHandler(async (req, res) => {
+  await teams.removeMember(teamId(req), me(req), v.parseId(req.params.user_id, 'user_id'));
+  res.status(204).send();
+});
+
+exports.leaveTeam = asyncHandler(async (req, res) => {
+  await teams.removeMember(teamId(req), me(req), me(req));
+  res.status(204).send();
+});
+
+exports.sendInvites = asyncHandler(async (req, res) => {
+  res.status(200).send({ invites: await teams.listInvites(teamId(req), me(req)) });
+});
+
+exports.sendNewInvite = asyncHandler(async (req, res) => {
+  res.status(201).send(await teams.createInvite(teamId(req), me(req), v.createInvite.parse(req.body || {})));
+});
+
+exports.revokeInvite = asyncHandler(async (req, res) => {
+  const invite = await teams.revokeInvite(teamId(req), me(req), v.parseId(req.params.invite_id, 'invite_id'));
+  res.status(200).send({ invite });
+});
+
+exports.sendTeamTactics = asyncHandler(async (req, res) => {
+  res.status(200).send(await tactics.listTeamTactics(teamId(req), me(req)));
+});
+
+exports.sendNewTacticDocument = asyncHandler(async (req, res) => {
+  const doc = v.tacticDocument.parse(req.body);
+  res.status(201).send(await tactics.createDocument(teamId(req), me(req), doc));
+});
+
+exports.sendGameSession = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.status(200).send(await game.getCurrent(teamId(req), me(req)));
+});
+
+exports.startGameSession = asyncHandler(async (req, res) => {
+  const { tactic_id } = v.startSession.parse(req.body);
+  res.status(201).send(await game.start(teamId(req), me(req), tactic_id));
+});

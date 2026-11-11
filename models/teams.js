@@ -1,30 +1,17 @@
+// Legacy team queries, scoped to teams the acting user belongs to.
 const connection = require('../db/connection');
+const { memberTeamIds } = require('../services/access');
 
-exports.getTeams = (sort_by = 'team_name', order = 'asc') =>
-  connection
-    .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-    )
-    .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .groupBy('teams.team_id')
-    .orderBy(sort_by, order)
-    .returning('*');
+const SORTABLE = ['team_id', 'team_name', 'language', 'region', 'platform', 'skill_level'];
+exports.SORTABLE = SORTABLE;
 
-exports.getTeamsByID = teamID =>
+// Members are aggregated from team_memberships (the source of truth).
+const baseQuery = (userId) =>
   connection
     .select(
       'teams.team_id',
       'teams.team_name',
+      'teams.owner',
       'teams.language',
       'teams.region',
       'teams.platform',
@@ -34,138 +21,19 @@ exports.getTeamsByID = teamID =>
       connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
     )
     .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
+    .leftJoin('team_memberships', 'teams.team_id', '=', 'team_memberships.team_id')
+    .leftJoin('users', 'team_memberships.user_id', '=', 'users.user_id')
     .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .groupBy('teams.team_id')
-    .where('teams.team_id', '=', teamID)
-    .returning('*');
+    .whereIn('teams.team_id', memberTeamIds(userId))
+    .groupBy('teams.team_id');
 
-exports.getTeamsByName = teamName =>
-    connection
-      .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-      )
-      .from('teams')
-      .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-      .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-      .where('teams.team_name', '=', teamName)
-      .groupBy('teams.team_id')
-      .returning('*');
+exports.getTeams = (userId, sort_by = 'team_name', order = 'asc') =>
+  baseQuery(userId).orderBy(`teams.${sort_by}`, order);
 
-exports.getTeamsByLanguage = languageName =>
-  connection
-    .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-    )
-    .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .where('teams.language', '=', languageName)
-    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
-    .returning('*');
+exports.getTeamsByID = (userId, teamID) => baseQuery(userId).where('teams.team_id', '=', teamID);
 
-exports.getTeamsByRegion = regionName =>
-  connection
-    .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-    )
-    .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .where('teams.region', '=', regionName)
-    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
-    .returning('*');
+exports.getTeamsByColumn = (userId, column, value) =>
+  baseQuery(userId).where(`teams.${column}`, '=', value).orderBy('teams.team_id');
 
-exports.getTeamsByPlatform = platformName =>
-  connection
-    .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-    )
-    .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .where('teams.platform', '=', platformName)
-    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
-    .returning('*');
-
-exports.getTeamsBySkillLevel = skillLevelName =>
-  connection
-    .select(
-        'teams.team_id',
-        'teams.team_name',
-        'teams.language',
-        'teams.region',
-        'teams.platform',
-        'teams.skill_level',
-        'teams.description',
-        connection.raw('ARRAY_AGG(DISTINCT users.user_name) AS users'),
-        connection.raw('ARRAY_AGG(DISTINCT tactics.tactic_name) AS tactics')
-    )
-    .from('teams')
-    .leftJoin('users', 'teams.team_id', '=', 'users.team_id')
-    .leftJoin('tactics', 'teams.team_id', '=', 'tactics.team_id')
-    .where('teams.skill_level', '=', skillLevelName)
-    .groupBy('teams.team_id', 'teams.team_name', 'teams.language', 'teams.region', 'teams.platform', 'teams.skill_level')
-    .returning('*');
-
-exports.addTeam = newTeam =>
-  connection
-    .insert(newTeam)
-    .into('teams')
-    .returning('*');
-
-exports.deleteTeamByID = teamID =>
-  connection('teams')
-    .where('teams.team_id', '=', teamID)
-    .del();
-
-exports.updateTeamByID = (teamID, updatedTeam) => {
-  return connection('teams')
-    .where('team_id', teamID)
-    .update(updatedTeam);
-};    
-
-exports.getTeamOwner = (teamID) => {
-  return connection('teams')
-    .select('owner')
-    .where('team_id', teamID )
-    .first();
-};
-
-exports.updateUserTeam = (userID) => {
-  return connection('users')
-    .where({ user_id: userID })
-    .update({ team_id: null });
-};
+exports.getTeamOwner = (teamID) =>
+  connection('teams').select('owner').where('team_id', teamID).first();
