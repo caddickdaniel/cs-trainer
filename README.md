@@ -287,7 +287,7 @@ Each follow-on milestone stays out of primary navigation until it has a usable w
 
 1. **Training drills.** The team calendar shipped in Phase 2. What remains is a drill and lineup-reference library linked to tactic phases and board markers.
 2. **Calendar extras.** Recurring practices, RSVPs and ICS export, building on the Phase 2 calendar.
-3. **Steam sign-in.** An additional identity linked to an existing account. Scope: an OpenID 2.0 "link Steam" action for signed-in users, stored in a `user_identities` table that is unique per provider ID. Sign-in through a linked Steam identity comes after that. It never creates accounts implicitly or merges accounts automatically.
+3. **Automatic Valve matchmaking import.** Blocked on replay retrieval (see Phase 4, "Provider limitations").
 4. **Demo Review extras.** The demo library, 2D replay and live team review shipped in Phase 3. Next: grenade trajectories and smoke/molotov areas on the replay, linking rounds to tactics, and push updates (SSE) for live review instead of 1 s polling.
 5. **Native overlay.** Evaluate separately after the browser Game Mode has been playtested. Consider anti-cheat and VAC policy, OS support, and whether a second-monitor page or a minimal always-on-top window is enough.
 
@@ -494,6 +494,123 @@ Fixed during these checks: hard-to-grab hold handles, faint connectors, a live-r
 - Lower-floor placement with a real Nuke, Vertigo or Train demo.
 - Network-drop reconnect (only refresh and late join were exercised; reconnect uses the same polling path with backoff).
 - Touch drawing on the replay and dragging hold handles on touch devices.
+
+## Phase 4
+
+Built on `main` after Phase 3 (`4c220de`). One additive migration, `20261114000100_phase_4.js`. The stats importer reuses the Demo Review parser and background worker.
+
+### What was added
+
+- **Profile options and ranks**
+  - One catalogue (`domain/catalogue.js`, served at `GET /api/catalogue`) drives the profile editor, player search, validation and badges.
+  - **Language** and **Region** are searchable dropdowns: typing filters immediately (prefix matches first); ↑/↓, Home/End, Enter and Escape work. Player search on the Team page uses the same component and options.
+  - **Platform** (Premier, FACEIT, ESEA) and a dependent **Skill** list that shows only that platform's ranks. Changing platform clears an incompatible rank. The server rejects a rank from another platform.
+  - Bands are inclusive and each value maps to exactly one band (tested exhaustively from 0 to 35,000). FACEIT 3,000 is in 2,751–3,000; 3,001 is in 3,001+. Premier colours change at 5,000, 10,000, 15,000, 20,000, 25,000 and 30,000.
+  - FACEIT Challenger can be selected as a self-reported rank. It is never derived from Elo, and nothing shows a verified Challenger badge (no leaderboard data).
+  - All profile ranks are labelled **self-reported**. Provider ratings (FACEIT Elo) appear separately in Player Stats, labelled with their source.
+  - **Badges are original SVGs** in each platform's colours, always with a text label. No official artwork is used, because its reuse terms weren't confirmed.
+  - **Legacy values:** existing free text is kept. The migration fills in a rank only where the text maps confidently (e.g. "FACEIT 7", "Premier 18,250", "ESEA B+"). "FACEIT 10" stays legacy because it could be any of five Level 10 bands. Unmapped text shows in italics with a note in the editor and is replaced the next time the player picks a platform and rank.
+- **Steam sign-up, sign-in and linking**
+  - **Continue with Steam** on sign-in and sign-up, and **Link Steam** in Settings, using Steam's OpenID 2.0 website sign-in.
+  - Every callback is checked: session state, return URL, endpoint, claimed ID format, signed fields and nonce age. It is then verified server-side with Steam (`check_authentication`), and each nonce is accepted only once.
+  - The verified SteamID64 is stored as a string in `user_identities`, unique per provider and per user, with a format check.
+  - A linked Steam ID signs in to its account. An unlinked one can create a Steam-backed account (no email or password needed), or the player can sign in with their password and then explicitly link it. Accounts are never merged automatically.
+  - A Steam ID linked elsewhere gets a clear message and recovery path, and linking it never moves it between accounts.
+  - Unlinking is refused while Steam is the only sign-in method. Steam-only players can add an email and password in Settings.
+  - **Prefill:** the editable Steam profile URL (separate from the verified ID) can be filled in from Steam. The name and avatar can be too when `STEAM_WEB_API_KEY` is set. Only empty fields are filled.
+  - Match tracking is a separate, explicit opt-in.
+- **Player Stats** on Home (below the four cards) and on player profiles
+  - Shows matches tracked, win rate, K/D, ADR, headshot %, and the 10 most recent results with source, sample size and last-updated time.
+  - Private by default. Players can opt in to show aggregate stats on their profile. Profile stats never include demo IDs, replay links, team data or annotations, and private demos still return 404 to non-members.
+  - Players without data see the ways to start: link Steam, turn on tracking, upload a demo, or connect FACEIT.
+  - Sources are shown **separately** and never summed, so a match imported from both a demo and FACEIT can't be counted twice. Demos from FACEIT keep the FACEIT match ID from their file name for reconciliation.
+
+### Metric definitions
+
+| Metric | Definition | Edge cases |
+| --- | --- | --- |
+| Matches tracked | Matches containing the player's verified SteamID64 (per source) | — |
+| Win rate | wins ÷ (wins + losses); draws excluded | "—" with no decided matches |
+| K/D | kills ÷ deaths | 0 deaths: shown as the kill count, flagged "no deaths" |
+| ADR | damage ÷ rounds played, over matches that report damage | "—" if none; shows "from N of M matches" when partial |
+| HS% | headshot kills ÷ kills, over matches that report headshots | "—" with 0 kills |
+
+From demos (only events inside detected rounds count, so warmup is excluded):
+- **Kills:** enemy kills only; team kills and suicides are excluded.
+- **Deaths:** every death, including suicides.
+- **Assists:** kill assists; flash-only assists are excluded.
+- **Damage:** health removed from enemies, capped at the victim's remaining health; team and self damage are excluded.
+- **Result:** from the final team score, with teams tracked across the side swap.
+
+Each match is keyed by a fingerprint of the map, the players' SteamIDs and each round's result, so uploading it again, or another team uploading its own recording, updates the same match instead of adding one. Demos processed before Phase 4 are re-parsed once in the background.
+
+### Sources and provider limitations
+
+- **Uploaded demos: working.**
+  - Checked against awpy-fixtures' ground truth (from csstats.gg) for `valve-de_mirage-472514809.dem`.
+  - **organner.pl free trial** matches exactly: 27 kills, 1 death, 2 assists, ADR 183.2, 41% headshots, win.
+  - **bargota22** matches on kills, deaths, assists and headshot % (4/13/0, 25%), but ADR is **37.7 against 34.7**. That is 39 health points over 13 rounds; every hit is capped at the victim's remaining health and none falls after a round ended. This is an open discrepancy.
+- **FACEIT: implemented, not verified live.**
+  - Uses the official Data API v4 with a server-side `FACEIT_API_KEY`. The FACEIT account is found from the verified SteamID64 (`game_player_id`), so nobody can attach someone else's FACEIT stats.
+  - Sync imports the last 30 matches keyed by FACEIT match ID (re-syncs don't duplicate) plus Elo and level. It is limited to once every 10 minutes. On HTTP 429 it waits for the provider's Retry-After time and shows when to retry. A missing key, unknown player and API errors each have a clear message. Disconnecting removes the FACEIT matches.
+  - **No API key was available, so this was tested only against a local mock of the API.** The per-match field names (`Kills`, `ADR`, `Result`, …) follow FACEIT's stats labels but are unconfirmed. Missing fields stay empty rather than guessed.
+- **Valve automatic import: not shipped (blocker).**
+  - Finding new matches (`ICSGOPlayers_730/GetNextMatchSharingCode` with a Steam Web API key, the player's Game Authentication Code and a known share code) is a Web API call.
+  - **Getting the replay is not.** A share code decodes to match ID, outcome ID and token. The demo URL comes only from the CS2 Game Coordinator (`MatchListRequestFullGameInfo`), which needs a logged-in Steam game client (a bot account), not the Web API. Valve replays also expire after a few weeks.
+  - No Web API key, bot account, auth code or recent share code was available, so neither step could be verified. No authentication codes are collected or stored. Settings says this path isn't available yet and points players to uploading Premier demos.
+- **Steam sign-in: not completed against real Steam.**
+  - The dev redirect to `https://steamcommunity.com/openid/login` was checked: correct `return_to` and `realm` for the browser's host.
+  - The full round trip (verification, replay, forged, expired and cross-session callbacks, linking, takeover attempts) is tested against a local server that mimics Steam's `check_authentication` endpoint.
+  - Completing it against real Steam needs a person to sign in on Steam.
+
+### Migration and configuration
+
+```bash
+npm install
+npm run db:migrate
+```
+
+- Migration `20261114000100_phase_4.js` adds:
+  - `users.rank_platform` and `users.rank_id`, with checks;
+  - the tables `user_identities`, `openid_nonces`, `matches`, `match_players`, `demo_matches` and `provider_accounts`;
+  - `demos.stats_version`.
+
+  Legacy columns are kept, and it has a full `down`.
+- On the maintainer's database: 14 profiles now have a catalogue rank and 12 keep legacy text (mostly "FACEIT 10"). Languages and regions were normalised only on exact matches, so values such as "EU" and "NA" remain as legacy text.
+- Configuration (see `.env.example`):
+
+  | Variable | Purpose |
+  | --- | --- |
+  | `APP_ORIGIN` | Public URL. **Required in production** for Steam sign-in; development uses localhost hosts. |
+  | `STEAM_WEB_API_KEY` | Optional. Steam name and avatar prefill. |
+  | `FACEIT_API_KEY` | Optional. FACEIT source. |
+  | `STEAM_OPENID_ENDPOINT`, `STEAM_API_BASE`, `FACEIT_API_BASE` | Override for testing only. |
+
+### Verification (2026-11-12)
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 0 problems |
+| `npm run typecheck` | 0 errors |
+| `npm test` | **135 passing, 2 pending.** The pending tests need the real demo; with `CS_DEMO_FIXTURE` both pass (137). |
+| `npm run build` | built |
+
+`spec/phase4.spec.js` covers:
+- every rank band boundary, plus an exhaustive check that no value falls into two bands;
+- legacy mapping;
+- profile validation and keeping legacy values;
+- search filters;
+- Steam account creation, signing in again, linking, a takeover attempt, the database uniqueness constraint, linking a pending identity after password sign-in, and unverified, replayed, forged, expired and cross-session callbacks;
+- unlink protection;
+- demo stats: opt-in, idempotent re-import, profile visibility, no demo leakage, empty history and backfill;
+- FACEIT against a mock: connect from the Steam ID, idempotent sync, partial ADR, rate limit, disconnect, missing key and unknown player;
+- real-demo stats against the published figures.
+
+Manual checks in signed-in browser sessions (test accounts Juno, Vex and Kestrel):
+1. In Edit profile, typing "nor" filtered the regions and ↓ then Enter picked "North America Central". Switching FACEIT → Premier cleared the rank and listed only the Premier bands. Premier 30,000+ was saved and reloaded with its gold badge.
+2. In the Team page's player search, Premier listed Hana and Noah, and 20,000–22,499 narrowed it to Hana. Typing "ger" in Language and pressing Enter left only Noah.
+3. The Mirage demo uploaded by two teams resolved to **one** match. With Juno temporarily linked to the demo's top player (local test data, removed afterwards), Home showed 1 match, 100% win rate, K/D 27.00, ADR 183.2 and 41% headshots. Vex saw the same aggregates on Juno's profile, with no demo links, and got 404 for the other team's demo.
+4. Settings showed sign-in methods, the tracking opt-in, "FACEIT isn't available on this server yet" and the Valve status. The sign-in page's Steam link redirected to Steam's OpenID endpoint with the right return URL.
 
 ## Contact
 

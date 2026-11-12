@@ -3,7 +3,18 @@
 const { teamlessPlayers, testTeamOwner, testTeammates } = require('../data/demo');
 
 const PROFILE = ['user_name', 'language', 'region', 'platform', 'skill_level', 'bio', 'steam_url', 'faceit_url', 'esea_url', 'hltv_url'];
-const profileOf = (p) => Object.fromEntries(PROFILE.map((k) => [k, p[k] ?? null]));
+const { mapLegacyRank } = require('../../domain/catalogue');
+
+// Demo data lists platform and skill as players would type them; store the
+// catalogue rank when it maps, and keep unmappable text (e.g. "Perfect World") as legacy.
+function profileOf(p) {
+  const profile = Object.fromEntries(PROFILE.map((k) => [k, p[k] ?? null]));
+  const mapped = p.platform ? mapLegacyRank(p.platform, p.skill_level) : null;
+  profile.rank_platform = mapped ? mapped.platform : null;
+  profile.rank_id = mapped ? mapped.rank : null;
+  if (mapped && mapped.rank) { profile.platform = null; profile.skill_level = null; }
+  return profile;
+}
 
 async function upsertUser(knex, person, passwordHash) {
   const existing = await knex('users').whereRaw('lower(email) = ?', [person.email.toLowerCase()]).first('user_id');

@@ -4,6 +4,7 @@ import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, SHORTCUT_LABEL, type ShortcutActio
 import { useDocumentTitle } from '../lib/hooks';
 import { bindingFromEvent, findConflicts, formatBinding, type Shortcuts } from '../lib/shortcuts';
 import { Alert, Loading, Panel } from '../components/ui';
+import { AccountSettings } from './AccountSettings';
 
 export function SettingsPage() {
   useDocumentTitle('Settings');
@@ -49,6 +50,7 @@ export function SettingsPage() {
   return (
     <div className="stack narrow-page">
       <h1>Settings</h1>
+      <AccountSettings />
       <Panel title="Game Mode keyboard shortcuts">
         <Alert kind="info">
           Shortcuts only work while the Game Mode page is open and focused in your browser (click it on your second monitor first).

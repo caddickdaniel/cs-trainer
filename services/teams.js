@@ -226,7 +226,9 @@ async function createInvite(teamId, userId, { expires_in_hours, max_uses }) {
 // A player can be invited when they can sign in and have no team at all.
 async function assertAvailablePlayer(trx, userId) {
   const user = await trx('users').where('user_id', userId).first('user_id', 'user_name', 'password_hash');
-  if (!user || !user.password_hash) throw notFound('Player not found');
+  const identity = user && !user.password_hash
+    ? await trx('user_identities').where('user_id', userId).first('identity_id') : null;
+  if (!user || (!user.password_hash && !identity)) throw notFound('Player not found');
   const member = await trx('team_memberships').where('user_id', userId).first('team_id');
   if (member) throw conflict('That player is already on a team', 'player_not_available');
   return user;
@@ -424,8 +426,12 @@ async function listJoinRequests(teamId, userId) {
     .orderByRaw("(r.status = 'pending') desc, r.created_at desc")
     .limit(50)
     .select('r.*', 'u.user_name', 'u.avatar_image_id', 'u.language', 'u.region', 'u.platform', 'u.skill_level',
+      'u.rank_platform', 'u.rank_id',
       db.raw('exists (select 1 from team_memberships m where m.user_id = r.user_id) as has_team'));
-  return rows.map(({ avatar_image_id, ...r }) => ({ ...r, avatar_url: pictureUrl(avatar_image_id) }));
+  const { rankFields } = require('./profiles');
+  return rows.map(({ avatar_image_id, platform, skill_level, rank_platform, rank_id, ...r }) => ({
+    ...r, ...rankFields({ platform, skill_level, rank_platform, rank_id }), avatar_url: pictureUrl(avatar_image_id),
+  }));
 }
 
 // The owner answers a request. Approving sends an invite; it never adds the

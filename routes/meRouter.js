@@ -45,4 +45,49 @@ meRouter.route('/requests')
   .get(asyncHandler(async (req, res) => res.send({ requests: await teams.myJoinRequests(me(req)) })))
   .all(handle405);
 
+// Sign-in methods (Steam identity, password) and match tracking.
+const steam = require('../services/steam');
+const users = require('../services/users');
+const authController = require('../controllers/auth');
+
+meRouter.route('/identities')
+  .get(asyncHandler(async (req, res) => res.send(await steam.identities(me(req)))))
+  .all(handle405);
+meRouter.route('/identities/steam')
+  .delete(asyncHandler(async (req, res) => res.send(await steam.unlink(me(req)))))
+  .all(handle405);
+meRouter.route('/steam/link-pending').post(authController.steamLinkPending).all(handle405);
+meRouter.route('/steam/prefill')
+  .post(asyncHandler(async (req, res) => res.send(await steam.prefillFromSteam(me(req), v.steamPrefill.parse(req.body)))))
+  .all(handle405);
+meRouter.route('/password')
+  .post(asyncHandler(async (req, res) => {
+    await users.addPassword(me(req), v.addPassword.parse(req.body));
+    res.send(await steam.identities(me(req)));
+  }))
+  .all(handle405);
+
+// Player Stats (private view), stats settings and the FACEIT source.
+const stats = require('../services/stats');
+const faceit = require('../services/faceit');
+
+meRouter.route('/stats')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.send(await stats.myStats(me(req)));
+  }))
+  .all(handle405);
+meRouter.route('/stats/settings')
+  .get(asyncHandler(async (req, res) => res.send(await stats.statsSettings(me(req)))))
+  .patch(asyncHandler(async (req, res) => res.send(await stats.updateStatsSettings(me(req), v.statsSettings.parse(req.body)))))
+  .all(handle405);
+meRouter.route('/faceit')
+  .get(asyncHandler(async (req, res) => res.send(await faceit.status(me(req)))))
+  .post(asyncHandler(async (req, res) => res.send(await faceit.connect(me(req)))))
+  .delete(asyncHandler(async (req, res) => res.send(await faceit.disconnect(me(req)))))
+  .all(handle405);
+meRouter.route('/faceit/sync')
+  .post(asyncHandler(async (req, res) => res.send(await faceit.sync(me(req)))))
+  .all(handle405);
+
 module.exports = meRouter;

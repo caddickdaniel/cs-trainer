@@ -4,6 +4,13 @@ import { useAuth } from '../lib/auth';
 import { errorMessage } from '../lib/api';
 import { safeNext, useDocumentTitle } from '../lib/hooks';
 import { Alert, Panel } from '../components/ui';
+import { STEAM_ERRORS, SteamButton } from './Steam';
+
+function SteamError() {
+  const [params] = useSearchParams();
+  const code = params.get('steam_error');
+  return code ? <Alert>{STEAM_ERRORS[code] ?? 'Steam sign-in did not complete. Please try again.'}</Alert> : null;
+}
 
 function useNext() {
   const [params] = useSearchParams();
@@ -39,6 +46,9 @@ export function SignInPage() {
   return (
     <div className="auth-wrap">
       <Panel title="Sign in">
+        <SteamError />
+        <SteamButton next={next} />
+        <p className="or-divider"><span>or with email</span></p>
         <form onSubmit={submit} className="form">
           <label>Email<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
           <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
@@ -84,6 +94,8 @@ export function SignUpPage() {
   return (
     <div className="auth-wrap">
       <Panel title="Create your account">
+        <SteamButton next={next}>Sign up with Steam</SteamButton>
+        <p className="or-divider"><span>or with email</span></p>
         <form onSubmit={submit} className="form">
           <label>Email<input type="email" autoComplete="email" required {...field('email')} /></label>
           <label>Username<input autoComplete="nickname" required minLength={2} maxLength={32} {...field('user_name')} /></label>

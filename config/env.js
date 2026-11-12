@@ -54,5 +54,15 @@ module.exports = {
   demoDemosPerTeam: Number(process.env.DEMO_LIMIT_PER_TEAM) || 50,
   // The background demo worker runs in the web process unless disabled.
   demoWorker: process.env.DEMO_WORKER ? process.env.DEMO_WORKER !== 'off' : NODE_ENV !== 'test',
+  // Public origin of the app (scheme://host[:port]) used for Steam sign-in
+  // return URLs. Required in production; development derives it from localhost hosts.
+  appOrigin: process.env.APP_ORIGIN ? process.env.APP_ORIGIN.replace(/\/$/, '') : null,
+  steamOpenIdEndpoint: process.env.STEAM_OPENID_ENDPOINT || 'https://steamcommunity.com/openid/login',
+  // Optional: prefill display name and avatar from Steam (GetPlayerSummaries).
+  steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
+  steamApiBase: process.env.STEAM_API_BASE || 'https://api.steampowered.com',
+  // Optional: FACEIT Data API (server-side key).
+  faceitApiKey: process.env.FACEIT_API_KEY || null,
+  faceitApiBase: process.env.FACEIT_API_BASE || 'https://open.faceit.com/data/v4',
   bcryptRounds: Number(process.env.BCRYPT_ROUNDS) || (NODE_ENV === 'test' ? 4 : 12),
 };

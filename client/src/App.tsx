@@ -17,6 +17,7 @@ import { InvitesPage } from './pages/Invites';
 import { RecruitingPage, RecruitingTeamPage } from './pages/Recruiting';
 import { TrainingPage } from './pages/Training';
 import { SettingsPage } from './pages/Settings';
+import { SteamFinishPage } from './pages/Steam';
 import { SharedTacticPage } from './pages/SharedTactics';
 import { DemoLibraryPage, DemoPage } from './pages/DemoReview';
 
@@ -38,6 +39,7 @@ const router = createBrowserRouter([
       { path: '/', element: <HomePage /> },
       { path: '/signin', element: <SignInPage /> },
       { path: '/signup', element: <SignUpPage /> },
+      { path: '/steam/finish', element: <SteamFinishPage /> },
       {
         element: <RequireAuth />,
         children: [

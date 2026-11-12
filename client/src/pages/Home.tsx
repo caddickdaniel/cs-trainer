@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useDocumentTitle, useLoad } from '../lib/hooks';
+import { PlayerStats } from '../components/PlayerStats';
+import type { PlayerStatsResponse } from '../lib/types';
 import type { GameState, TacticSummary, TeamEvent } from '../lib/types';
 import { EVENT_LABEL } from '../lib/constants';
 import { countdown, formatEventTime, zoneLabel } from '../lib/time';
@@ -74,6 +76,7 @@ function Dashboard() {
   useDocumentTitle('Home');
   const { user, active_team: team } = useAuth();
   const teamId = team?.team_id;
+  const stats = useLoad(() => api.get<PlayerStatsResponse>('/me/stats'), []);
   const tactics = useLoad(
     () => (teamId ? api.get<{ tactics: TacticSummary[] }>(`/teams/${teamId}/tactics`) : Promise.resolve(null)),
     [teamId]
@@ -144,6 +147,7 @@ function Dashboard() {
           )}
         </Panel>
       </div>
+      <PlayerStats data={stats.data} own />
     </div>
   );
 }

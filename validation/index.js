@@ -25,6 +25,19 @@ exports.signup = z.object({
   password: z.string().min(10, 'Password must be at least 10 characters').max(200),
 });
 
+exports.steamComplete = z.object({
+  user_name: trimmed(32).min(2, 'Username must be at least 2 characters')
+    .regex(/^[\p{L}\p{N} _.-]+$/u, 'Username may contain letters, numbers, spaces, _ . and -'),
+  use_avatar: z.boolean().optional().default(false),
+  use_profile_url: z.boolean().optional().default(true),
+});
+exports.steamPrefill = z.object({ profile_url: z.boolean().optional().default(false), avatar: z.boolean().optional().default(false) });
+
+exports.addPassword = z.object({
+  email: z.string().trim().toLowerCase().max(254).pipe(z.email('Enter a valid email address')),
+  password: z.string().min(10, 'Password must be at least 10 characters').max(200),
+});
+
 exports.signin = z.object({
   email: z.string().trim().toLowerCase().max(254),
   password: z.string().min(1).max(200),
@@ -79,16 +92,37 @@ const profileLink = (field) => z.string().trim().max(300).nullable().optional()
     }
   }, { message: `Must be an https link to ${C.PROFILE_LINK_HOSTS[field][0]}` });
 
+const CAT = require('../domain/catalogue');
+
 exports.profile = z.object({
   language: optionalText(40),
   region: optionalText(40),
-  platform: optionalText(40),
-  skill_level: optionalText(40),
+  // Recruitment rank: a platform and a rank from that platform's catalogue.
+  rank_platform: z.enum(CAT.PLATFORM_IDS).nullable().optional(),
+  rank_id: z.string().max(30).nullable().optional(),
   bio: optionalText(1000),
   steam_url: profileLink('steam_url'),
   faceit_url: profileLink('faceit_url'),
   esea_url: profileLink('esea_url'),
   hltv_url: profileLink('hltv_url'),
+}).superRefine((p, ctx) => {
+  if (p.rank_id && !p.rank_platform) {
+    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'Choose a platform for this rank' });
+  } else if (p.rank_id && !CAT.isValidRank(p.rank_platform, p.rank_id)) {
+    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'That rank does not belong to the chosen platform' });
+  }
+});
+
+exports.statsSettings = z.object({
+  track: z.boolean().optional(),
+  visibility: z.enum(['private', 'profile']).optional(),
+});
+
+exports.playerFilters = z.object({
+  language: z.string().max(40).optional(),
+  region: z.string().max(40).optional(),
+  platform: z.enum(CAT.PLATFORM_IDS).optional(),
+  rank: z.string().max(30).optional(),
 });
 
 // Key bindings such as "ArrowRight", "N", "Shift+N", "Ctrl+]".
