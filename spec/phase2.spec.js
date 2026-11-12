@@ -147,7 +147,7 @@ describe('phase 2', () => {
     it('players edit their profile with validated links and pictures', async () => {
       const p = await signUp('Profile');
       const { body } = await p.patch('/api/me/profile').send({
-        language: 'English', region: 'EU', bio: 'Support main',
+        language: 'English', region: 'EU West', bio: 'Support main',
         steam_url: 'https://steamcommunity.com/id/me', faceit_url: '', hltv_url: 'https://www.hltv.org/player/1/me',
       }).expect(200);
       expect(body.profile).to.include({ language: 'English', faceit_url: null, steam_url: 'https://steamcommunity.com/id/me' });

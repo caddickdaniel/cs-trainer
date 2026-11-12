@@ -7,13 +7,10 @@ import { useDocumentTitle } from '../lib/hooks';
 import type { Profile } from '../lib/types';
 import { Alert, Loading, Panel } from '../components/ui';
 import { Avatar } from '../components/People';
+import { Combobox } from '../components/Combobox';
+import { RankBadge } from '../components/RankBadge';
+import { useCatalogue } from '../lib/catalogue';
 
-const FIELDS = [
-  ['language', 'Language'],
-  ['region', 'Region'],
-  ['platform', 'Platform'],
-  ['skill_level', 'Skill level'],
-] as const;
 const PICTURE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 export function ProfilePage() {
@@ -24,11 +21,12 @@ export function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  const cat = useCatalogue();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const apply = (p: Profile) => {
     setProfile(p);
-    setForm(Object.fromEntries(['language', 'region', 'platform', 'skill_level', 'bio', ...PROFILE_LINKS.map((l) => l.key)]
+    setForm(Object.fromEntries(['language', 'region', 'rank_platform', 'rank_id', 'bio', ...PROFILE_LINKS.map((l) => l.key)]
       .map((k) => [k, (p as unknown as Record<string, string | null>)[k] ?? ''])));
   };
 
@@ -42,7 +40,10 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      apply((await api.patch<{ profile: Profile }>('/me/profile', form)).profile);
+      const body: Record<string, string | null> = { ...form };
+      // Only send a rank choice when one was made (keeps legacy text otherwise).
+      if (!form.rank_platform) { delete body.rank_platform; delete body.rank_id; } else body.rank_id = form.rank_id || null;
+      apply((await api.patch<{ profile: Profile }>('/me/profile', body)).profile);
       setSaved(true);
     } catch (err) {
       setError(errorMessage(err));
@@ -93,10 +94,35 @@ export function ProfilePage() {
       <Panel title={profile.user_name}>
         <form className="form" onSubmit={submit}>
           <div className="grid2">
-            {FIELDS.map(([key, label]) => (
-              <label key={key}>{label}<input maxLength={40} value={form[key] ?? ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
-            ))}
+            <Combobox label="Language" options={cat?.languages ?? []} value={form.language ?? ''} emptyLabel="Not set"
+              onChange={(v) => setForm({ ...form, language: v })} />
+            <Combobox label="Region" options={cat?.regions ?? []} value={form.region ?? ''} emptyLabel="Not set"
+              onChange={(v) => setForm({ ...form, region: v })} />
+            <label>Platform
+              <select value={form.rank_platform ?? ''} onChange={(e) => {
+                const platform = e.target.value;
+                // A rank from another platform no longer applies.
+                const keep = cat?.ranks.find((r) => r.id === form.rank_id)?.platform === platform;
+                setForm({ ...form, rank_platform: platform, rank_id: keep ? form.rank_id : '' });
+              }}>
+                <option value="">Not set</option>
+                {(cat?.platforms ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </label>
+            <label>Skill
+              <select value={form.rank_id ?? ''} disabled={!form.rank_platform} onChange={(e) => setForm({ ...form, rank_id: e.target.value })}>
+                <option value="">{form.rank_platform ? 'Choose a rank' : 'Choose a platform first'}</option>
+                {(cat?.ranks ?? []).filter((r) => r.platform === form.rank_platform).map((r) => (
+                  <option key={r.id} value={r.id}>{r.label}{r.colorName ? ` (${r.colorName})` : ''}</option>
+                ))}
+              </select>
+            </label>
           </div>
+          {profile.legacy_platform || profile.legacy_skill_level ? (
+            <p className="muted small">You previously entered “{[profile.legacy_platform, profile.legacy_skill_level].filter(Boolean).join(' · ')}”.
+              It's kept until you choose a platform and rank above.</p>
+          ) : null}
+          {form.rank_id ? <p className="row small">Shown as <RankBadge cat={cat} rankId={form.rank_id} /> <span className="muted">(self-reported)</span></p> : null}
           <label>Bio<textarea rows={4} maxLength={1000} value={form.bio ?? ''} onChange={(e) => setForm({ ...form, bio: e.target.value })} /></label>
           <h3>Profile links (optional)</h3>
           <div className="grid2">

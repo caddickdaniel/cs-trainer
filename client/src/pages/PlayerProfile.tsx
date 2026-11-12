@@ -6,6 +6,10 @@ import { useDocumentTitle, useLoad } from '../lib/hooks';
 import type { Profile } from '../lib/types';
 import { Alert, Badge, Loading, Panel } from '../components/ui';
 import { Avatar, Facts } from '../components/People';
+import { RankBadge } from '../components/RankBadge';
+import { PlayerStats } from '../components/PlayerStats';
+import { useCatalogue } from '../lib/catalogue';
+import type { PlayerStatsResponse } from '../lib/types';
 
 interface Response {
   profile: Profile;
@@ -47,6 +51,8 @@ export function InviteButton({ teamId, userId, status, canInvite, onDone }: {
 export function PlayerProfilePage() {
   const { userId } = useParams();
   const data = useLoad(() => api.get<Response>(`/players/${userId}`), [userId]);
+  const stats = useLoad(() => api.get<PlayerStatsResponse>(`/players/${userId}/stats`), [userId]);
+  const cat = useCatalogue();
   useDocumentTitle(data.data?.profile.user_name ?? 'Player');
   if (data.loading && !data.data) return <Loading />;
   if (!data.data) return <Panel title="Player"><Alert>{data.error}</Alert></Panel>;
@@ -66,7 +72,9 @@ export function PlayerProfilePage() {
             </div>
           </div>
         </div>
-        <Facts items={[['Language', profile.language], ['Region', profile.region], ['Platform', profile.platform], ['Skill level', profile.skill_level]]} />
+        <Facts items={[['Language', profile.language], ['Region', profile.region]]} />
+        <div className="row wrap"><span className="muted small">Rank (self-reported)</span>
+          <RankBadge cat={cat} platform={profile.rank_platform} rankId={profile.rank_id} legacyPlatform={profile.legacy_platform} legacySkill={profile.legacy_skill_level} /></div>
         <h3>Bio</h3>
         {profile.bio ? <p className="bio">{profile.bio}</p> : <p className="muted">No bio yet.</p>}
         {links.length ? (
@@ -80,6 +88,7 @@ export function PlayerProfilePage() {
           </>
         ) : null}
       </Panel>
+      <PlayerStats data={stats.data} own={false} />
       <Link to="/team">Back to Team</Link>
     </div>
   );
