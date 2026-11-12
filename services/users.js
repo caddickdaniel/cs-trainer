@@ -70,4 +70,17 @@ async function syncActiveTeam(trx, userId) {
   return next;
 }
 
-module.exports = { createUser, verifyCredentials, findUser, getMemberships, syncActiveTeam };
+// Adds an email and password to an account that has neither (Steam-only).
+async function addPassword(userId, { email, password }) {
+  const user = await db('users').where('user_id', userId).first('password_hash');
+  if (user.password_hash) throw conflict('This account already has a password', 'password_exists');
+  const password_hash = await bcrypt.hash(password, config.bcryptRounds);
+  try {
+    await db('users').where('user_id', userId).update({ email, password_hash, updated_at: db.fn.now() });
+  } catch (err) {
+    if (err.code === '23505' && /email/.test(err.constraint || '')) throw conflict('An account with that email already exists', 'email_taken');
+    throw err;
+  }
+}
+
+module.exports = { addPassword, createUser, verifyCredentials, findUser, getMemberships, syncActiveTeam };

@@ -29,6 +29,12 @@ module.exports = ({ authLimiter }) => {
 
   apiRouter.use('/auth', createAuthRouter({ limiter: authLimiter }));
 
+  // Profile options and rank catalogue (static, no account data).
+  apiRouter.get('/catalogue', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.status(200).send(require('../domain/catalogue').catalogue());
+  });
+
   // Everything below requires a signed-in user.
   apiRouter.use(requireAuth);
   apiRouter.use('/teams', teamRouter);

@@ -226,6 +226,7 @@ function buildReplay({ header, events, ticks }) {
   return {
     map,
     tickrate: TICKRATE,
+    stats: summarise({ map, events, rounds, roundData, players, teamOf, score }),
     meta: {
       server_name: header.server_name || null,
       patch_version: header.patch_version || null,
@@ -236,7 +237,69 @@ function buildReplay({ header, events, ticks }) {
   };
 }
 
-const EVENT_NAMES = ['round_start', 'round_freeze_end', 'round_end', 'player_death', 'bomb_planted', 'bomb_defused', 'bomb_exploded'];
+// Per-player match totals keyed by SteamID64 (see README "Player Stats" for
+// the definitions). Only events inside detected rounds count, so warmup is
+// excluded.
+// - kills: enemy kills (team kills and suicides excluded); headshot_kills likewise
+// - deaths: every death, including suicides and world damage
+// - assists: kill assists (flash-only assists excluded)
+// - damage: health removed from enemies, capped at the victim's remaining
+//   health (overkill damage is not counted); team and self damage excluded
+// - rounds_played: rounds the player was on a team's roster
+// - result: W/L/D from the final team score
+const STATS_VERSION = 1;
+
+function summarise({ map, events, rounds, roundData, players, teamOf, score }) {
+  const idx = (steamid) => (steamid && players.has(steamid) ? players.get(steamid).index : null);
+  const steamOf = new Map([...players.entries()].map(([sid, p]) => [p.index, sid]));
+  const rows = new Map();
+  const row = (index) => {
+    if (!rows.has(index)) {
+      rows.set(index, { steamid64: steamOf.get(index), name: players.get(steamOf.get(index)).name, team: teamOf.get(index) || null,
+        kills: 0, deaths: 0, assists: 0, headshot_kills: 0, damage: 0, rounds_played: 0 });
+    }
+    return rows.get(index);
+  };
+  rounds.forEach((r, i) => {
+    for (const p of roundData[i].data.roster) row(p.player).rounds_played += 1;
+    const hp = new Map();
+    const inRound = events.filter((e) => e.tick >= r.start_tick && e.tick <= r.end_tick).sort((a, b) => a.tick - b.tick);
+    for (const e of inRound) {
+      if (e.event_name === 'player_hurt') {
+        const victim = idx(e.user_steamid);
+        const attacker = idx(e.attacker_steamid);
+        if (victim == null) continue;
+        const before = hp.has(victim) ? hp.get(victim) : 100;
+        const after = Math.max(0, Number(e.health) || 0);
+        const dealt = Math.max(0, Math.min(Number(e.dmg_health) || 0, before - after > 0 ? before - after : before));
+        hp.set(victim, after);
+        if (attacker != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) row(attacker).damage += dealt;
+      } else if (e.event_name === 'player_death') {
+        const victim = idx(e.user_steamid);
+        const attacker = idx(e.attacker_steamid);
+        if (victim != null) row(victim).deaths += 1;
+        if (attacker != null && victim != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) {
+          row(attacker).kills += 1;
+          if (e.headshot) row(attacker).headshot_kills += 1;
+        }
+        const assister = idx(e.assister_steamid);
+        if (assister != null && !e.assistedflash && victim != null && teamOf.get(assister) !== teamOf.get(victim)) row(assister).assists += 1;
+      }
+    }
+  });
+  const result = (team) => (team == null ? null : score.A === score.B ? 'D' : (score[team] > score[team === 'A' ? 'B' : 'A'] ? 'W' : 'L'));
+  const list = [...rows.values()].filter((r) => r.steamid64 && /^7656119\d{10}$/.test(r.steamid64)).map((r) => ({ ...r, result: result(r.team) }));
+  // Stable identity for the match regardless of who uploaded which recording.
+  const crypto = require('crypto');
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    map,
+    players: list.map((r) => r.steamid64).sort(),
+    rounds: roundData.map((r) => [r.winner, r.reason, r.data.events.filter((e) => e.type === 'kill').length]),
+  })).digest('hex');
+  return { version: STATS_VERSION, fingerprint, rounds: rounds.length, score_a: score.A, score_b: score.B, players: list };
+}
+
+const EVENT_NAMES = ['round_start', 'round_freeze_end', 'round_end', 'player_death', 'player_hurt', 'bomb_planted', 'bomb_defused', 'bomb_exploded'];
 
 // Native parse of one file (runs in the worker process).
 function parseDemoFile(file) {
@@ -264,4 +327,4 @@ function parseDemoFile(file) {
   return buildReplay({ header, events, ticks });
 }
 
-module.exports = { buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };
+module.exports = { STATS_VERSION, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };

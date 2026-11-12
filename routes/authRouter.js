@@ -10,5 +10,10 @@ module.exports = ({ limiter }) => {
   authRouter.route('/signup').post(limiter, c.signup).all(handle405);
   authRouter.route('/signin').post(limiter, c.signin).all(handle405);
   authRouter.route('/signout').post(c.signout).all(handle405);
+  // Steam OpenID: browser navigations (GET), then JSON steps for unlinked identities.
+  authRouter.route('/steam/start').get(limiter, c.steamStart).all(handle405);
+  authRouter.route('/steam/callback').get(limiter, c.steamCallback).all(handle405);
+  authRouter.route('/steam/pending').get(c.steamPending).delete(c.steamCancelPending).all(handle405);
+  authRouter.route('/steam/complete').post(limiter, c.steamComplete).all(handle405);
   return authRouter;
 };

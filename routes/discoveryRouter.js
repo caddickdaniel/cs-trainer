@@ -12,7 +12,13 @@ const me = (req) => req.user.user_id;
 
 const players = express.Router();
 players.route('/available')
-  .get(asyncHandler(async (req, res) => res.send(await profiles.availablePlayers(me(req)))))
+  .get(asyncHandler(async (req, res) => res.send(await profiles.availablePlayers(me(req), v.playerFilters.parse(req.query)))))
+  .all(handle405);
+players.route('/:user_id/stats')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.send(await require('../services/stats').profileStats(me(req), v.parseId(req.params.user_id, 'user_id')));
+  }))
   .all(handle405);
 players.route('/:user_id')
   .get(asyncHandler(async (req, res) => res.send(await profiles.getPublicProfile(me(req), v.parseId(req.params.user_id, 'user_id')))))

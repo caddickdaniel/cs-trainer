@@ -11,6 +11,35 @@ const CHILD = path.join(__dirname, '..', 'workers', 'demo-parse-child.js');
 const MAX_ATTEMPTS = 2;
 
 const storagePath = (key) => path.join(config.demoStorageDir, key);
+const { STATS_VERSION } = require('./demoParse');
+const FACEIT_MATCH_ID = /1-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// Saves a demo's match and per-player totals. Idempotent: the match is keyed
+// by a fingerprint of its content, so importing the same match again (or a
+// second recording of it) replaces rather than adds.
+async function importDemoStats(trx, demo, stats) {
+  if (!stats || !stats.players || !stats.players.length) {
+    await trx('demos').where('demo_id', demo.demo_id).update({ stats_version: STATS_VERSION });
+    return null;
+  }
+  const faceit = (demo.original_name.match(FACEIT_MATCH_ID) || [null])[0];
+  const [match] = await trx('matches')
+    .insert({
+      source: 'demo', source_key: stats.fingerprint, map: demo.map || null, played_at: demo.created_at,
+      rounds: stats.rounds, score_a: stats.score_a, score_b: stats.score_b, faceit_match_id: faceit,
+    })
+    .onConflict(['source', 'source_key'])
+    .merge({ rounds: stats.rounds, score_a: stats.score_a, score_b: stats.score_b, updated_at: trx.fn.now() })
+    .returning('match_id');
+  await trx('match_players').where('match_id', match.match_id).del();
+  await trx('match_players').insert(stats.players.map((p) => ({
+    match_id: match.match_id, steamid64: p.steamid64, name: (p.name || '').slice(0, 64), team: p.team, result: p.result,
+    kills: p.kills, deaths: p.deaths, assists: p.assists, headshot_kills: p.headshot_kills, damage: p.damage, rounds_played: p.rounds_played,
+  })));
+  await trx('demo_matches').insert({ demo_id: demo.demo_id, match_id: match.match_id }).onConflict('demo_id').merge();
+  await trx('demos').where('demo_id', demo.demo_id).update({ stats_version: STATS_VERSION });
+  return match.match_id;
+}
 
 // Runs the parser in a child process. Resolves with the replay result or
 // rejects with { code, message }.
@@ -55,6 +84,8 @@ async function claimNext() {
 // Stores parsed rounds and marks the demo ready (or failed).
 async function saveResult(demoId, result) {
   await db.transaction(async (trx) => {
+    const demo = await trx('demos').where('demo_id', demoId).first();
+    await importDemoStats(trx, { ...demo, map: result.map }, result.stats);
     await trx('demo_rounds').where('demo_id', demoId).del();
     for (const r of result.rounds) {
       await trx('demo_rounds').insert({
@@ -103,6 +134,23 @@ async function processNext({ parse = parseInChild } = {}) {
   }
 }
 
+// Demos processed before stats extraction existed (or by an older version)
+// are re-parsed once in the background to fill in Player Stats.
+async function backfillNextStats({ parse = parseInChild } = {}) {
+  const demo = await db('demos').where('status', 'ready').where('stats_version', '<', STATS_VERSION)
+    .orderBy('created_at').first();
+  if (!demo) return null;
+  try {
+    const result = await parse(storagePath(demo.storage_key));
+    await db.transaction((trx) => importDemoStats(trx, demo, result.stats));
+    return { demo_id: demo.demo_id, status: 'stats_ready' };
+  } catch (err) {
+    // Missing file or parse failure: don't retry forever.
+    await db('demos').where('demo_id', demo.demo_id).update({ stats_version: STATS_VERSION });
+    return { demo_id: demo.demo_id, status: 'stats_failed', code: err.code };
+  }
+}
+
 // Demos left "processing" by a stopped server are retried once, then failed.
 async function recoverStale() {
   await db('demos').where('status', 'processing').where('attempts', '<', MAX_ATTEMPTS).update({ status: 'queued' });
@@ -121,6 +169,7 @@ async function tick() {
   running = true;
   try {
     while (await processNext()) { /* drain the queue */ }
+    await backfillNextStats();
   } catch (err) {
     console.error('[demo worker]', err);
   } finally {
@@ -147,4 +196,4 @@ function notifyQueued() {
   if (wake) wake();
 }
 
-module.exports = { start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };
+module.exports = { importDemoStats, backfillNextStats, start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };
