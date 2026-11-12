@@ -3,7 +3,10 @@ const teams = require('../services/teams');
 const tactics = require('../services/tactics');
 const game = require('../services/game');
 const images = require('../services/images');
-const { requireMember } = require('../services/access');
+const events = require('../services/events');
+const pictures = require('../services/pictures');
+const { pictureUpload } = require('../routes/helpers');
+const { requireMember, requireOwner } = require('../services/access');
 const v = require('../validation');
 const { asyncHandler, notFound, httpError } = require('../errors');
 
@@ -88,8 +91,14 @@ exports.sendInvites = asyncHandler(async (req, res) => {
   res.status(200).send({ invites: await teams.listInvites(teamId(req), me(req)) });
 });
 
+// With { user_id } this sends a player-specific invite; otherwise it creates
+// an invite link (milestone 1 behaviour).
 exports.sendNewInvite = asyncHandler(async (req, res) => {
-  res.status(201).send(await teams.createInvite(teamId(req), me(req), v.createInvite.parse(req.body || {})));
+  if (req.body && req.body.user_id !== undefined) {
+    const { user_id } = v.invitePlayer.parse(req.body);
+    return res.status(201).send({ invite: await teams.invitePlayer(teamId(req), me(req), user_id) });
+  }
+  return res.status(201).send(await teams.createInvite(teamId(req), me(req), v.createInvite.parse(req.body || {})));
 });
 
 exports.revokeInvite = asyncHandler(async (req, res) => {
@@ -122,3 +131,56 @@ exports.uploadLineupImage = asyncHandler(async (req, res) => {
   const image = await images.upload(teamId(req), me(req), Buffer.isBuffer(req.body) ? req.body : null);
   res.status(201).send({ image });
 });
+
+exports.patchRecruiting = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await teams.updateRecruiting(id, me(req), v.recruiting.parse(req.body));
+  res.status(200).send(await teams.getRoster(id, me(req)));
+});
+
+exports.uploadLogo = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await requireOwner(id, me(req));
+  const { buf, contentType } = pictureUpload(req);
+  await pictures.replace({ table: 'teams', idColumn: 'team_id', id, column: 'logo_image_id', purpose: 'team_logo', userId: me(req), buf, contentType });
+  res.status(201).send(await teams.getRoster(id, me(req)));
+});
+
+exports.deleteLogo = asyncHandler(async (req, res) => {
+  const id = teamId(req);
+  await requireOwner(id, me(req));
+  await pictures.replace({ table: 'teams', idColumn: 'team_id', id, column: 'logo_image_id', purpose: 'team_logo', userId: me(req), buf: null });
+  res.status(200).send(await teams.getRoster(id, me(req)));
+});
+
+exports.sendJoinRequests = asyncHandler(async (req, res) => {
+  res.send({ requests: await teams.listJoinRequests(teamId(req), me(req)) });
+});
+
+const resolveRequest = (approve) => asyncHandler(async (req, res) => {
+  res.send(await teams.resolveJoinRequest(teamId(req), me(req), v.parseId(req.params.request_id, 'request_id'), approve));
+});
+exports.approveJoinRequest = resolveRequest(true);
+exports.declineJoinRequest = resolveRequest(false);
+
+const eventId = (req) => v.parseId(req.params.event_id, 'event_id');
+exports.sendEvents = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.send(await events.listEvents(teamId(req), me(req), v.eventRange.parse(req.query)));
+});
+exports.sendNextEvent = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.send(await events.nextEvent(teamId(req), me(req)));
+});
+exports.sendEvent = asyncHandler(async (req, res) => res.send(await events.getEvent(teamId(req), me(req), eventId(req))));
+exports.createEvent = asyncHandler(async (req, res) => {
+  res.status(201).send(await events.createEvent(teamId(req), me(req), v.event.parse(req.body)));
+});
+exports.patchEvent = asyncHandler(async (req, res) => {
+  res.send(await events.updateEvent(teamId(req), me(req), eventId(req), v.eventPatch.parse(req.body)));
+});
+exports.deleteEvent = asyncHandler(async (req, res) => {
+  await events.deleteEvent(teamId(req), me(req), eventId(req));
+  res.status(204).end();
+});
+

@@ -99,7 +99,22 @@ async function teamWithMember() {
   return { owner, member, teamId, inviteToken: invite.token };
 }
 
+// Adds another player to a team through a fresh invite link.
+async function addMember(owner, teamId, name = 'Extra') {
+  const { body: invite } = await owner.post(`/api/teams/${teamId}/invites`).send({ expires_in_hours: 24 }).expect(201);
+  const player = await signUp(name);
+  await player.post(`/api/invites/${invite.token}/accept`).send({}).expect(200);
+  return player;
+}
+
+// Minimal valid PNG (1x1) for picture uploads.
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'
+);
+
 module.exports = {
+  addMember,
+  TINY_PNG,
   app,
   request: supertest(app),
   supertest,

@@ -41,13 +41,14 @@ async function getMemberships(userId, trx = db) {
     .join('teams as t', 't.team_id', 'm.team_id')
     .where('m.user_id', userId)
     .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
-    .select('t.team_id', 't.team_name', 't.owner', 'm.is_igl', 'm.player_role', 'm.joined_at');
+    .select('t.team_id', 't.team_name', 't.owner', 'm.player_role', 'm.joined_at');
   const teams = rows.map((r) => ({
     team_id: r.team_id,
     team_name: r.team_name,
     is_owner: r.owner === userId,
-    is_igl: r.is_igl,
-    can_lead: r.owner === userId || r.is_igl,
+    is_igl: r.player_role === 'igl',
+    can_lead: r.owner === userId || r.player_role === 'igl',
+    can_control: r.player_role === 'igl',
     player_role: r.player_role,
     joined_at: r.joined_at,
   }));

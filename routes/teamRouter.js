@@ -1,5 +1,6 @@
 const express = require('express');
 const { LIMITS } = require('../domain/constants');
+const { pictureBody } = require('./helpers');
 
 const teamRouter = express.Router();
 const c = require('../controllers/teams');
@@ -30,6 +31,15 @@ teamRouter.route('/:team_id/invites').get(c.sendInvites).post(c.sendNewInvite).a
 teamRouter.route('/:team_id/invites/:invite_id').delete(c.revokeInvite).all(handle405);
 teamRouter.route('/:team_id/tactics').get(c.sendTeamTactics).post(c.sendNewTacticDocument).all(handle405);
 teamRouter.route('/:team_id/game-session').get(c.sendGameSession).post(c.startGameSession).all(handle405);
+
+teamRouter.route('/:team_id/recruiting').patch(c.patchRecruiting).all(handle405);
+teamRouter.route('/:team_id/logo').post(pictureBody, c.uploadLogo).delete(c.deleteLogo).all(handle405);
+teamRouter.route('/:team_id/requests').get(c.sendJoinRequests).all(handle405);
+teamRouter.route('/:team_id/requests/:request_id/invite').post(c.approveJoinRequest).all(handle405);
+teamRouter.route('/:team_id/requests/:request_id/decline').post(c.declineJoinRequest).all(handle405);
+teamRouter.route('/:team_id/events').get(c.sendEvents).post(c.createEvent).all(handle405);
+teamRouter.route('/:team_id/events/next').get(c.sendNextEvent).all(handle405);
+teamRouter.route('/:team_id/events/:event_id').get(c.sendEvent).patch(c.patchEvent).delete(c.deleteEvent).all(handle405);
 
 teamRouter
   .route('/:team_id/lineup-images')

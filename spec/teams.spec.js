@@ -110,20 +110,36 @@ describe('teams, invites and permissions', () => {
   });
 
   describe('permissions', () => {
-    it('the owner can grant IGL; player roles are stored separately', async () => {
+    it('only the owner assigns the IGL role, which moves from the previous IGL', async () => {
       const { owner, member, teamId } = await teamWithMember();
       const memberId = member.user.user_id;
+      const ownerId = owner.user.user_id;
+      // The creator starts as IGL.
+      expect((await connection('team_memberships').where({ team_id: teamId, user_id: ownerId }).first()).player_role).to.equal('igl');
+      await member.patch(`/api/teams/${teamId}/members/${memberId}`).send({ player_role: 'igl' }).expect(403);
       await member.patch(`/api/teams/${teamId}/members/${memberId}`).send({ is_igl: true }).expect(403);
-      const { body } = await owner.patch(`/api/teams/${teamId}/members/${memberId}`)
-        .send({ is_igl: true, player_role: 'support' }).expect(200);
-      const row = body.members.find((m) => m.user_id === memberId);
-      expect(row).to.include({ is_igl: true, can_lead: true, player_role: 'support' });
-      // Changing the player role does not change access.
+      const { body } = await owner.patch(`/api/teams/${teamId}/members/${memberId}`).send({ player_role: 'igl' }).expect(200);
+      expect(body.members.find((m) => m.user_id === memberId)).to.include({ is_igl: true, can_lead: true, player_role: 'igl' });
+      expect(body.members.find((m) => m.user_id === ownerId)).to.include({ is_igl: false, player_role: null, is_owner: true });
+      expect(body.viewer).to.include({ is_owner: true, can_control: false });
+      // The IGL cannot hand the role on or drop it; only the owner can.
+      await member.patch(`/api/teams/${teamId}/members/${memberId}`).send({ player_role: 'support' }).expect(403);
+      // Legacy is_igl input maps onto the role and stays consistent.
+      await owner.patch(`/api/teams/${teamId}/members/${ownerId}`).send({ is_igl: true }).expect(200);
+      const rows = await connection('team_memberships').where('team_id', teamId).orderBy('user_id');
+      expect(rows.map((r) => [r.player_role, r.is_igl])).to.deep.equal([['igl', true], [null, false]]);
+      // Other roles are unchanged: players may set their own.
       await member.patch(`/api/teams/${teamId}/members/${memberId}`).send({ player_role: 'entry' }).expect(200);
-      const after = await connection('team_memberships').where({ team_id: teamId, user_id: memberId }).first();
-      expect(after).to.include({ is_igl: true, player_role: 'entry' });
       await owner.patch(`/api/teams/${teamId}/members/${memberId}`).send({ player_role: 'captain' }).expect(400);
-      await owner.patch(`/api/teams/${teamId}/members/${owner.user.user_id}`).send({ is_igl: false }).expect(400);
+    });
+
+    it('the database never allows two IGLs or a mismatched is_igl', async () => {
+      const { member, teamId } = await teamWithMember();
+      const fails = async (fn) => { try { await fn(); return false; } catch { return true; } };
+      expect(await fails(() => connection('team_memberships').where({ team_id: teamId, user_id: member.user.user_id })
+        .update({ player_role: 'igl', is_igl: true }))).to.equal(true);
+      expect(await fails(() => connection('team_memberships').where({ team_id: teamId, user_id: member.user.user_id })
+        .update({ is_igl: true }))).to.equal(true);
     });
 
     it('ordinary members cannot change other players\' roles', async () => {

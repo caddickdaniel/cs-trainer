@@ -14,7 +14,7 @@ exports.HttpError = HttpError;
 exports.httpError = httpError;
 exports.badRequest = (message, code = 'bad_request') => httpError(400, message, code);
 exports.unauthorized = (message = 'Please sign in to continue') => httpError(401, message, 'unauthenticated');
-exports.forbidden = (message = 'You do not have permission to do that') => httpError(403, message, 'forbidden');
+exports.forbidden = (message = 'You do not have permission to do that', code = 'forbidden') => httpError(403, message, code);
 exports.notFound = (message = 'Not found', code = 'not_found') => httpError(404, message, code);
 exports.conflict = (message, code = 'conflict', extra) => httpError(409, message, code, extra);
 

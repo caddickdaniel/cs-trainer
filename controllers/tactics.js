@@ -89,7 +89,12 @@ exports.sendPatchedTactic = asyncHandler(async (req, res) => {
     changes.side = sideFromFlags(flags);
   }
   if (Object.keys(changes).length) {
-    await model.updateTacticByID(row.tactic_id, { ...changes, updated_by: me(req) });
+    await db.transaction(async (trx) => {
+      const [saved] = await trx('tactics').where('tactic_id', row.tactic_id)
+        .update({ ...changes, updated_by: me(req), revision: trx.raw('revision + 1'), updated_at: trx.fn.now() })
+        .returning(['tactic_id', 'team_id', 'tactic_name', 'revision']);
+      await tactics.notifyTacticUpdated(trx, saved, me(req));
+    });
   }
   const [tactic] = await model.getTacticsByColumn(me(req), 'tactic_id', row.tactic_id);
   res.status(200).send(tactic);
