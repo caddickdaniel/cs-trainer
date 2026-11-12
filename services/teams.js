@@ -70,14 +70,20 @@ async function updateRecruiting(teamId, userId, fields) {
 // to another membership (or cleared). Notifications keep their snapshot text.
 async function deleteTeam(teamId, userId) {
   await requireOwner(teamId, userId);
-  await db.transaction(async (trx) => {
+  const demoKeys = await db.transaction(async (trx) => {
     await trx('teams').where('team_id', teamId).forUpdate().first('team_id');
+    const keys = await trx('demos').where('team_id', teamId).pluck('storage_key');
     const memberIds = await trx('team_memberships').where('team_id', teamId).pluck('user_id');
     const logo = await trx('teams').where('team_id', teamId).first('logo_image_id');
     await trx('teams').where('team_id', teamId).del();
     if (logo && logo.logo_image_id) await trx('public_images').where('image_id', logo.logo_image_id).del();
     for (const id of memberIds) await syncActiveTeam(trx, id);
+    return keys;
   });
+  // Uploaded demo files live on disk; their rows were removed by the cascade.
+  const { demoStorageDir } = require('../config/env');
+  const path = require('path');
+  await Promise.all(demoKeys.map((k) => require('fs/promises').rm(path.join(demoStorageDir, k), { force: true })));
 }
 
 function presentTeam(team) {

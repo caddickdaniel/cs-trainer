@@ -1,11 +1,11 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { EVENT_LABEL } from '../lib/constants';
+import { EVENT_KINDS, EVENT_LABEL } from '../lib/constants';
 import { useDocumentTitle, useLoad } from '../lib/hooks';
 import { formatEventTime, toInstant, toLocalParts, viewerTimeZone, zoneLabel } from '../lib/time';
-import type { TeamEvent } from '../lib/types';
+import type { DemoSummary, TeamEvent } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 
@@ -19,15 +19,19 @@ function monthGrid(year: number, month: number) {
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
-type Draft = { kind: 'training' | 'game'; title: string; date: string; time: string; opponent: string; notes: string };
+type Draft = { kind: TeamEvent['kind']; title: string; date: string; time: string; opponent: string; notes: string; demo_id: number | null };
 
-function EventForm({ initial, onSubmit, onCancel, busy }: { initial: Draft; onSubmit: (d: Draft) => void; onCancel: () => void; busy: boolean }) {
+export const eventTone = (kind: string) => (kind === 'game' ? 'red' : kind === 'demo_review' ? 'green' : 'blue');
+
+function EventForm({ initial, onSubmit, onCancel, busy, demos }: {
+  initial: Draft; onSubmit: (d: Draft) => void; onCancel: () => void; busy: boolean; demos: DemoSummary[];
+}) {
   const [d, setD] = useState(initial);
   const submit = (e: FormEvent) => { e.preventDefault(); onSubmit(d); };
   return (
     <form className="form compact" onSubmit={submit}>
       <div className="segmented" role="group" aria-label="Event type">
-        {(['training', 'game'] as const).map((k) => (
+        {EVENT_KINDS.map((k) => (
           <button key={k} type="button" className={d.kind === k ? 'on' : ''} aria-pressed={d.kind === k} onClick={() => setD({ ...d, kind: k })}>{EVENT_LABEL[k]}</button>
         ))}
       </div>
@@ -37,8 +41,17 @@ function EventForm({ initial, onSubmit, onCancel, busy }: { initial: Draft; onSu
         <label>Start time<input type="time" required value={d.time} onChange={(e) => setD({ ...d, time: e.target.value })} /></label>
       </div>
       <p className="muted small">Times are in your time zone: {zoneLabel()}.</p>
+      {d.kind === 'demo_review' ? (
+        <label>Demo (optional)
+          <select value={d.demo_id ?? ''} onChange={(e) => setD({ ...d, demo_id: e.target.value ? Number(e.target.value) : null })}>
+            <option value="">No demo linked</option>
+            {demos.map((x) => <option key={x.demo_id} value={x.demo_id}>{x.title}{x.status !== 'ready' ? ` (${x.status})` : ''}</option>)}
+          </select>
+          <span className="muted small">Upload demos on the Demo Review page.</span>
+        </label>
+      ) : null}
       {d.kind === 'game' ? <label>Opponent (optional)<input maxLength={80} value={d.opponent} onChange={(e) => setD({ ...d, opponent: e.target.value })} /></label> : null}
-      <label>{d.kind === 'game' ? 'Details (optional)' : 'Practice notes (optional)'}
+      <label>{d.kind === 'game' ? 'Details (optional)' : d.kind === 'demo_review' ? 'What to look at (optional)' : 'Practice notes (optional)'}
         <textarea rows={3} maxLength={2000} value={d.notes} onChange={(e) => setD({ ...d, notes: e.target.value })} /></label>
       <div className="row">
         <button className="btn primary" disabled={busy}>Save event</button>
@@ -53,6 +66,7 @@ function Calendar({ teamId }: { teamId: number }) {
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
   const data = useLoad(() => api.get<{ events: TeamEvent[]; can_manage: boolean }>(`/teams/${teamId}/events`), [teamId]);
+  const demoList = useLoad(() => api.get<{ demos: DemoSummary[] }>(`/teams/${teamId}/demos`), [teamId]);
   const [editing, setEditing] = useState<{ event?: TeamEvent; date?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +87,10 @@ function Calendar({ teamId }: { teamId: number }) {
   const save = async (d: Draft) => {
     setBusy(true);
     setError(null);
-    const body = { kind: d.kind, title: d.title, starts_at: toInstant(d.date, d.time), time_zone: viewerTimeZone(), opponent: d.kind === 'game' ? d.opponent || null : null, notes: d.notes };
+    const body = {
+      kind: d.kind, title: d.title, starts_at: toInstant(d.date, d.time), time_zone: viewerTimeZone(),
+      opponent: d.kind === 'game' ? d.opponent || null : null, notes: d.notes, demo_id: d.kind === 'demo_review' ? d.demo_id : null,
+    };
     try {
       const res = editing?.event
         ? await api.patch<{ event: TeamEvent }>(`/teams/${teamId}/events/${editing.event.event_id}`, body)
@@ -105,9 +122,9 @@ function Calendar({ teamId }: { teamId: number }) {
   const draftFor = (ev?: TeamEvent, date?: string): Draft => {
     if (ev) {
       const p = toLocalParts(ev.starts_at);
-      return { kind: ev.kind, title: ev.title, date: p.date, time: p.time, opponent: ev.opponent ?? '', notes: ev.notes };
+      return { kind: ev.kind, title: ev.title, date: p.date, time: p.time, opponent: ev.opponent ?? '', notes: ev.notes, demo_id: ev.demo_id };
     }
-    return { kind: 'training', title: '', date: date ?? toLocalParts(new Date().toISOString()).date, time: '19:00', opponent: '', notes: '' };
+    return { kind: 'training', title: '', date: date ?? toLocalParts(new Date().toISOString()).date, time: '19:00', opponent: '', notes: '', demo_id: null };
   };
 
   return (
@@ -149,22 +166,29 @@ function Calendar({ teamId }: { teamId: number }) {
             })}
           </div>
           <p className="muted small">
-            <span className="legend-dot training" /> Training <span className="legend-dot game" /> Game
+            <span className="legend-dot training" /> Training <span className="legend-dot game" /> Game <span className="legend-dot demo_review" /> Demo Review
             {canManage ? ' · Double-click a day to add an event there.' : ''}
           </p>
         </Panel>
         <div className="stack">
           {editing ? (
             <Panel title={editing.event ? 'Edit event' : 'New event'}>
-              <EventForm initial={draftFor(editing.event, editing.date)} onSubmit={save} onCancel={() => setEditing(null)} busy={busy} />
+              <EventForm initial={draftFor(editing.event, editing.date)} onSubmit={save} onCancel={() => setEditing(null)} busy={busy}
+                demos={demoList.data?.demos ?? []} />
             </Panel>
           ) : selected ? (
             <Panel title={selected.title} actions={<button type="button" className="btn ghost small" onClick={() => setParams({})}>Close</button>}>
-              <p><Badge tone={selected.kind === 'game' ? 'red' : 'blue'}>{EVENT_LABEL[selected.kind]}</Badge></p>
+              <p><Badge tone={eventTone(selected.kind)}>{EVENT_LABEL[selected.kind]}</Badge></p>
               <p className="big">{formatEventTime(selected.starts_at)}</p>
               <p className="muted small">Your time ({zoneLabel(new Date(selected.starts_at))}). Entered in {selected.time_zone}.</p>
               {selected.opponent ? <p><strong>Opponent:</strong> {selected.opponent}</p> : null}
               {selected.notes ? <p className="bio">{selected.notes}</p> : null}
+              {selected.kind === 'demo_review' ? (
+                selected.demo ? (
+                  <p><Link className="btn" to={`/demos/${selected.demo.demo_id}`}><Icon name="demo" /> Open demo: {selected.demo.title}</Link>
+                    {selected.demo.status !== 'ready' ? <span className="muted small"> ({selected.demo.status})</span> : null}</p>
+                ) : <p className="muted small">No demo linked{selected.demo_id ? ' (the linked demo was deleted)' : ''}.</p>
+              ) : null}
               {canManage ? (
                 <div className="row">
                   <button type="button" className="btn" onClick={() => setEditing({ event: selected })}><Icon name="edit" /> Edit</button>

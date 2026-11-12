@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ECONOMIES, ECONOMY_LABEL, mapName } from '../lib/constants';
@@ -7,9 +7,25 @@ import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
 import type { TacticSummary } from '../lib/types';
 import { Alert, Loading, NeedsTeam, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
+import { BrowseShared } from './SharedTactics';
 
+// Team library and the community Browse tab.
 export function TacticsPage() {
   useDocumentTitle('Tactics');
+  const [params, setParams] = useSearchParams();
+  const browse = params.get('tab') === 'browse';
+  return (
+    <div className="stack">
+      <div className="tabs" role="tablist" aria-label="Tactics">
+        <button type="button" role="tab" aria-selected={!browse} className={!browse ? 'on' : ''} onClick={() => setParams({})}>Team library</button>
+        <button type="button" role="tab" aria-selected={browse} className={browse ? 'on' : ''} onClick={() => setParams({ tab: 'browse' })}>Browse shared</button>
+      </div>
+      {browse ? <Panel title="Shared by the community"><BrowseShared /></Panel> : <TeamLibrary />}
+    </div>
+  );
+}
+
+function TeamLibrary() {
   const { active_team: team } = useAuth();
   const teamId = team?.team_id;
   const list = useLoad(
@@ -51,7 +67,9 @@ export function TacticsPage() {
           <tbody>
             {filtered.map((t) => (
               <tr key={t.tactic_id}>
-                <td><Link to={`/tactics/${t.tactic_id}`}>{t.tactic_name}</Link></td>
+                <td><Link to={`/tactics/${t.tactic_id}`}>{t.tactic_name}</Link>
+                  {t.share_id ? <span className="muted small"> · shared</span> : null}
+                  {t.imported_from_share_id ? <span className="muted small"> · imported</span> : null}</td>
                 <td><SideBadge side={t.side} /></td>
                 <td>{ECONOMY_LABEL[t.economy] ?? t.economy}</td>
                 <td className="muted">{mapName(t.map)}</td>

@@ -17,6 +17,8 @@ import { InvitesPage } from './pages/Invites';
 import { RecruitingPage, RecruitingTeamPage } from './pages/Recruiting';
 import { TrainingPage } from './pages/Training';
 import { SettingsPage } from './pages/Settings';
+import { SharedTacticPage } from './pages/SharedTactics';
+import { DemoLibraryPage, DemoPage } from './pages/DemoReview';
 
 function RequireAuth() {
   const { user, loading } = useAuth();
@@ -43,6 +45,7 @@ const router = createBrowserRouter([
           { path: '/invite/:token', element: <InvitePage /> },
           { path: '/tactics', element: <TacticsPage /> },
           { path: '/tactics/new', element: <TacticEditorPage /> },
+          { path: '/tactics/shared/:shareId', element: <SharedTacticPage /> },
           { path: '/tactics/:tacticId', element: <TacticViewPage /> },
           { path: '/tactics/:tacticId/edit', element: <TacticEditorPage /> },
           { path: '/game', element: <GameModePage /> },
@@ -52,6 +55,8 @@ const router = createBrowserRouter([
           { path: '/recruiting', element: <RecruitingPage /> },
           { path: '/recruiting/:teamId', element: <RecruitingTeamPage /> },
           { path: '/training', element: <TrainingPage /> },
+          { path: '/demos', element: <DemoLibraryPage /> },
+          { path: '/demos/:demoId', element: <DemoPage /> },
           { path: '/settings', element: <SettingsPage /> },
         ],
       },

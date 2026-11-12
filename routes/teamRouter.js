@@ -46,4 +46,31 @@ teamRouter
   .post(express.raw({ type: 'image/png', limit: LIMITS.imageBytes }), c.uploadLineupImage)
   .all(handle405);
 
+// Demo Review: the team's demo library and its live review.
+const demos = require('../services/demos');
+const reviews = require('../services/reviews');
+const v = require('../validation');
+const { asyncHandler } = require('../errors');
+
+const tid = (req) => v.parseId(req.params.team_id, 'team_id');
+teamRouter.route('/:team_id/demos')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await demos.listDemos(tid(req), req.user.user_id));
+  }))
+  // Body: the raw .dem file (application/octet-stream), streamed to disk.
+  .post(asyncHandler(async (req, res) => {
+    res.status(201).send(await demos.upload(tid(req), req.user.user_id, req, v.demoUploadQuery.parse(req.query)));
+  }))
+  .all(handle405);
+teamRouter.route('/:team_id/review')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await reviews.getCurrent(tid(req), req.user.user_id));
+  }))
+  .post(asyncHandler(async (req, res) => {
+    res.status(201).send(await reviews.start(tid(req), req.user.user_id, v.reviewStart.parse(req.body)));
+  }))
+  .all(handle405);
+
 module.exports = teamRouter;

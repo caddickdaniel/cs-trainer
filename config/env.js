@@ -46,5 +46,13 @@ module.exports = {
   cookieSecure: process.env.COOKIE_SECURE
     ? process.env.COOKIE_SECURE === 'true'
     : NODE_ENV === 'production',
+  // Demo Review: where uploaded .dem files are kept, and processing limits.
+  demoStorageDir: path.resolve(process.env.DEMO_STORAGE_DIR
+    || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'demos-test' : 'demos')),
+  demoMaxBytes: (Number(process.env.DEMO_MAX_MB) || 600) * 1024 * 1024,
+  demoParseTimeoutMs: (Number(process.env.DEMO_PARSE_TIMEOUT_S) || 300) * 1000,
+  demoDemosPerTeam: Number(process.env.DEMO_LIMIT_PER_TEAM) || 50,
+  // The background demo worker runs in the web process unless disabled.
+  demoWorker: process.env.DEMO_WORKER ? process.env.DEMO_WORKER !== 'off' : NODE_ENV !== 'test',
   bcryptRounds: Number(process.env.BCRYPT_ROUNDS) || (NODE_ENV === 'test' ? 4 : 12),
 };

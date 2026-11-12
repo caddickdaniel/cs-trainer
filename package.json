@@ -24,7 +24,7 @@
     "seed:db": "npm run db:reset",
     "setup": "npm run db:create && npm run db:reset",
     "dev": "node scripts/dev.js",
-    "dev:server": "nodemon --watch . --ignore client --ignore spec listen.js",
+    "dev:server": "nodemon --watch . --ignore client --ignore spec --ignore storage listen.js",
     "dev:client": "npm run dev --workspace client",
     "build": "npm run build --workspace client",
     "start": "node listen.js",
@@ -37,6 +37,7 @@
   "author": "Daniel Caddick",
   "license": "ISC",
   "dependencies": {
+    "@laihoe/demoparser2": "0.42.0",
     "bcryptjs": "^3.0.2",
     "connect-pg-simple": "^10.0.0",
     "csrf-sync": "^4.2.1",
@@ -58,5 +59,13 @@
     "nodemon": "^3.1.4",
     "supertest": "^6.3.4",
     "typescript-eslint": "^8.46.0"
+  },
+  "overrides": {
+    "@laihoe/demoparser2": {
+      "@laihoe/demoparser2-darwin-universal": "npm:@laihoe/demoparser2-android-arm-eabi@0.42.0",
+      "@laihoe/demoparser2-darwin-x64": "npm:@laihoe/demoparser2-android-arm-eabi@0.42.0",
+      "@laihoe/demoparser2-freebsd-x64": "npm:@laihoe/demoparser2-android-arm-eabi@0.42.0",
+      "@laihoe/demoparser2-win32-ia32-msvc": "npm:@laihoe/demoparser2-android-arm-eabi@0.42.0"
+    }
   }
 }

@@ -23,7 +23,13 @@ describe('tactic documents', () => {
     expect(reopened.can_edit).to.equal(false);
     expect(reopened.tactic).to.include({ tactic_name: 'Test Split', map: 'practice_yard', side: 'T', economy: 'Fullbuy', smoke: 3 });
     expect(reopened.tactic.phases.map((p) => p.name)).to.deep.equal(['Setup', 'Execute']);
-    expect(reopened.tactic.phases[0].board).to.deep.equal(doc.phases[0].board);
+    // Boards come back with Phase 3 defaults (no player slot, no holds).
+    const withDefaults = (b) => ({
+      markers: b.markers.map((m) => ({ ...m, slot: null })),
+      routes: b.routes.map((r) => ({ ...r, slot: null })),
+      holds: [],
+    });
+    expect(reopened.tactic.phases[0].board).to.deep.equal(withDefaults(doc.phases[0].board));
     expect(reopened.tactic.phases[0].board.markers[1]).to.include({ x: 0.123456, y: 0.654321 });
     expect(strip(reopened)[0].assignments).to.deep.equal(
       [...doc.phases[0].assignments].sort((a, b) => a.user_id - b.user_id)
@@ -36,7 +42,7 @@ describe('tactic documents', () => {
     expect(saved.tactic.revision).to.equal(2);
     const again = (await owner.get(`/api/tactics/${tacticId}/document`).expect(200)).body;
     expect(again.tactic.phases.map((p) => p.name)).to.deep.equal(['Execute', 'Setup v2']);
-    expect(again.tactic.phases[1].board).to.deep.equal(doc.phases[0].board);
+    expect(again.tactic.phases[1].board).to.deep.equal(withDefaults(doc.phases[0].board));
 
     // Library and legacy endpoint see the same tactic.
     const library = (await member.get(`/api/teams/${teamId}/tactics`).expect(200)).body;

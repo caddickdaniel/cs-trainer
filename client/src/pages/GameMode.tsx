@@ -2,9 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { mapName } from '../lib/constants';
+import { ECONOMIES, ECONOMY_LABEL, mapName } from '../lib/constants';
 import { formatDateTime, useDocumentTitle } from '../lib/hooks';
-import type { GameSession, GameState, Marker, TacticSummary } from '../lib/types';
+import type { GameSession, GameState, Marker, SideTactic, TacticSummary } from '../lib/types';
 import type { Level } from '../lib/constants';
 import { Alert, Badge, Loading, NeedsTeam, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
@@ -117,6 +117,30 @@ function StartPanel({ teamId, onStarted }: { teamId: number; onStarted: (s: Game
 
 type Command = 'phase_prev' | 'phase_next' | 'tactic_prev' | 'tactic_next' | 'new_round' | 'switch_side';
 
+// IGL dropdown of this map and side's tactics, grouped by economy. Uses the
+// same list (and order) as the previous/next tactic shortcuts.
+function TacticPicker({ tactics, value, liveId, disabled, onChange }: {
+  tactics: SideTactic[]; value: number | null; liveId: number; disabled: boolean; onChange: (id: number) => void;
+}) {
+  const groups = [...ECONOMIES, 'Other'].map((eco) => ({
+    eco,
+    items: tactics.filter((t) => (eco === 'Other' ? !(ECONOMIES as readonly string[]).includes(t.economy) : t.economy === eco)),
+  })).filter((g) => g.items.length);
+  return (
+    <select className="tactic-picker" aria-label="Tactic queued for the next round" value={value ?? ''} disabled={disabled}
+      onChange={(e) => { if (e.target.value) onChange(Number(e.target.value)); }}>
+      {value == null ? <option value="">Choose a tactic…</option> : null}
+      {groups.map((g) => (
+        <optgroup key={g.eco} label={ECONOMY_LABEL[g.eco] ?? g.eco}>
+          {g.items.map((t) => (
+            <option key={t.tactic_id} value={t.tactic_id}>{t.tactic_name}{t.tactic_id === liveId ? ' (live now)' : ''}</option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
 function Key({ binding }: { binding: string }) {
   return <kbd className="key-hint">{formatBinding(binding)}</kbd>;
 }
@@ -135,9 +159,10 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
   const level = levelChoice?.key === phaseKey ? levelChoice.level : preferredLevel(map, session.phase.board, user?.user_id);
   const myLineups = lineupMarkers(session.phase.board, user?.user_id ?? null);
   const otherLineups = lineupMarkers(session.phase.board).filter((m) => m.user_id !== user?.user_id);
-  const players = (session.assignments ?? []).map((a) => a.user_id);
+  const players = (session.assignments ?? []).flatMap((a) => (a.user_id != null ? [a.user_id] : []));
   if (user && !players.includes(user.user_id)) players.push(user.user_id);
-  const boardPlayers = (session.assignments ?? (mine ? [mine] : [])).map((a) => ({ user_id: a.user_id, user_name: a.user_name ?? '' }));
+  const boardPlayers = (session.assignments ?? (mine ? [mine] : []))
+    .flatMap((a) => (a.user_id != null ? [{ user_id: a.user_id, user_name: a.user_name ?? '' }] : []));
   const control = session.can_control;
   const lastPhase = session.current_phase >= session.phase_count - 1;
 
@@ -197,6 +222,8 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
         <div>
           <p className="eyebrow">
             <Badge tone="red">LIVE</Badge> Round {session.round_number} · {mapName(session.map)} <SideBadge side={session.side} />
+            {session.selected_tactic && session.selected_tactic.tactic_id !== session.tactic.tactic_id
+              ? <span className="queued-chip" title="Starts when the IGL begins the next round">Next: {session.selected_tactic.tactic_name}</span> : null}
             {session.tactic.side !== session.side ? <span className="muted small">(playing a {session.tactic.side} tactic from before the side switch)</span> : null}
           </p>
           <h1 className="phase-title">{session.tactic.tactic_name}</h1>
@@ -222,12 +249,13 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
             <button type="button" className="btn primary" disabled={busy || lastPhase} onClick={() => run('phase_next')}>Next <Icon name="right" /> <Key binding={shortcuts.phase_next} /></button>
           </div>
           <div className="control-group">
-            <span className="control-label">Next round's tactic ({session.side} on {mapName(session.map)})</span>
+            <span className="control-label">Queued for round {session.round_number + 1} ({session.side} on {mapName(session.map)})</span>
             {session.side_tactic_count ? (
               <>
                 <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_prev')} aria-label="Previous tactic"><Icon name="left" /> <Key binding={shortcuts.tactic_prev} /></button>
-                <span className="selected-tactic" aria-live="polite">{session.selected_tactic?.tactic_name ?? '—'}
-                  <span className="muted small"> ({(session.side_tactics ?? []).findIndex((t) => t.tactic_id === session.selected_tactic?.tactic_id) + 1}/{session.side_tactic_count})</span></span>
+                <TacticPicker tactics={session.side_tactics ?? []} value={session.selected_tactic?.tactic_id ?? null} disabled={busy}
+                  liveId={session.tactic.tactic_id}
+                  onChange={(id) => send('command', { action: 'tactic_select', tactic_id: id, expected_version: session.version })} />
                 <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_next')} aria-label="Next tactic"><Key binding={shortcuts.tactic_next} /> <Icon name="right" /></button>
               </>
             ) : <span className="empty-side">No {session.side} tactics on {mapName(session.map)} yet. <Link to="/tactics/new">Create one</Link> or switch side.</span>}

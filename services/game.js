@@ -10,19 +10,22 @@ const db = require('../db/connection');
 const { notFound, conflict, badRequest } = require('../errors');
 const { requireMember, requireIgl, getAccess } = require('./access');
 const { loadTactic, loadPhases } = require('./tactics');
+const { ECONOMIES } = require('../domain/constants');
 
 const userName = (trx, userId) =>
   userId == null ? null : trx('users').where('user_id', userId).first('user_id', 'user_name');
 
-// Saved tactics for one map and side that can be played (at least one phase).
+// Saved tactics for one map and side that can be played (at least one phase),
+// ordered by economy category (Pistol ... Full buy) and then name. The IGL's
+// dropdown groups this list and the next/previous shortcuts walk it in order.
 function sideTactics(trx, teamId, map, side) {
   return trx('tactics as t')
     .where('t.team_id', teamId)
     .whereRaw('t.map IS NOT DISTINCT FROM ?', [map])
     .whereRaw('t.side IS NOT DISTINCT FROM ?', [side])
     .whereExists(trx('tactic_phases as p').whereRaw('p.tactic_id = t.tactic_id'))
-    .orderBy([{ column: 't.tactic_name' }, { column: 't.tactic_id' }])
-    .select('t.tactic_id', 't.tactic_name');
+    .orderByRaw('coalesce(array_position(?::text[], t.economy), 99), t.tactic_name, t.tactic_id', [ECONOMIES])
+    .select('t.tactic_id', 't.tactic_name', 't.economy');
 }
 
 async function currentIgl(trx, teamId) {
@@ -182,7 +185,7 @@ async function loadForControl(sessionId, userId) {
 const LEGACY_ACTIONS = { next: 'phase_next', prev: 'phase_prev', goto: 'phase_goto' };
 
 // Works out the column changes for one command against the current state.
-async function plan(session, { action, index }) {
+async function plan(session, { action, index, tacticId }) {
   switch (action) {
     case 'phase_next':
     case 'phase_prev':
@@ -202,6 +205,13 @@ async function plan(session, { action, index }) {
       const step = action === 'tactic_next' ? 1 : -1;
       const next = at < 0 ? 0 : (at + step + list.length) % list.length;
       return { selected_tactic_id: list[next].tactic_id };
+    }
+    case 'tactic_select': {
+      const list = await sideTactics(db, session.team_id, session.map, session.side);
+      if (!list.some((t) => t.tactic_id === tacticId)) {
+        throw badRequest(`That tactic isn't a playable ${session.side ?? ''} tactic for this map`, 'tactic_not_eligible');
+      }
+      return { selected_tactic_id: tacticId };
     }
     case 'switch_side': {
       const side = session.side === 'CT' ? 'T' : 'CT';
@@ -240,7 +250,7 @@ async function command(sessionId, userId, body) {
   if (session.version !== body.expected_version) {
     throw await versionConflict('The live state was changed by someone else', 'version_conflict');
   }
-  const changes = await plan(session, { action, index: body.index });
+  const changes = await plan(session, { action, index: body.index, tacticId: body.tactic_id });
   const [updated] = await db('game_sessions')
     .where({ session_id: sessionId, status: 'active', version: body.expected_version })
     .update({ ...changes, version: db.raw('version + 1'), updated_at: db.fn.now() })
