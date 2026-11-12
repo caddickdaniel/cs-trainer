@@ -9,6 +9,9 @@ import { Alert, Badge, Loading, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { Avatar, Facts, RoleBadge } from '../components/People';
 import { InviteButton } from './PlayerProfile';
+import { Combobox } from '../components/Combobox';
+import { RankBadge } from '../components/RankBadge';
+import { useCatalogue } from '../lib/catalogue';
 
 const TEAM_FIELDS = [
   ['language', 'Language'],
@@ -341,7 +344,8 @@ function JoinRequests({ teamId }: { teamId: number }) {
               <Avatar name={r.user_name} url={r.avatar_url} size={36} />
               <div className="grow">
                 <Link to={`/players/${r.user_id}`}><strong>{r.user_name}</strong></Link>
-                <div className="muted small">{[r.language, r.region, r.platform, r.skill_level].filter(Boolean).join(' · ')}</div>
+                <div className="muted small row wrap">{[r.language, r.region].filter(Boolean).join(' · ')}
+                  <RequestRank r={r} /></div>
                 {r.message ? <div className="small">“{r.message}”</div> : null}
               </div>
               {r.status === 'pending' ? (
@@ -360,9 +364,43 @@ function JoinRequests({ teamId }: { teamId: number }) {
   );
 }
 
+function RequestRank({ r }: { r: JoinRequest }) {
+  const cat = useCatalogue();
+  if (!r.rank_platform && !r.legacy_platform && !r.legacy_skill_level) return null;
+  return <RankBadge cat={cat} platform={r.rank_platform} rankId={r.rank_id} legacyPlatform={r.legacy_platform} legacySkill={r.legacy_skill_level} />;
+}
+
+// Player search filters, using the same options as the profile editor.
+function PlayerFilters({ value, onChange }: { value: Record<string, string>; onChange: (v: Record<string, string>) => void }) {
+  const cat = useCatalogue();
+  const set = (k: string, v: string) => onChange({ ...value, [k]: v });
+  return (
+    <div className="filter-grid">
+      <Combobox label="Language" options={cat?.languages ?? []} value={value.language ?? ''} onChange={(v) => set('language', v)} emptyLabel="Any language" />
+      <Combobox label="Region" options={cat?.regions ?? []} value={value.region ?? ''} onChange={(v) => set('region', v)} emptyLabel="Any region" />
+      <label>Platform
+        <select value={value.platform ?? ''} onChange={(e) => onChange({ ...value, platform: e.target.value, rank: '' })}>
+          <option value="">Any platform</option>
+          {(cat?.platforms ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
+      </label>
+      <label>Skill
+        <select value={value.rank ?? ''} disabled={!value.platform} onChange={(e) => set('rank', e.target.value)}>
+          <option value="">{value.platform ? 'Any rank' : 'Choose a platform first'}</option>
+          {(cat?.ranks ?? []).filter((r) => r.platform === value.platform).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function Invites({ teamId }: { teamId: number }) {
+  const cat = useCatalogue();
   const invites = useLoad(() => api.get<{ invites: Invite[] }>(`/teams/${teamId}/invites`), [teamId]);
-  const players = useLoad(() => api.get<{ players: PlayerSummary[]; can_invite: boolean; inviting_team: { team_id: number } | null }>('/players/available'), []);
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const query = new URLSearchParams(Object.entries(filters).filter(([, v]) => v)).toString();
+  const players = useLoad(() => api.get<{ players: PlayerSummary[]; can_invite: boolean; inviting_team: { team_id: number } | null }>(
+    `/players/available${query ? `?${query}` : ''}`), [query]);
   const [hours, setHours] = useState(72);
   const [singleUse, setSingleUse] = useState(false);
   const [link, setLink] = useState<string | null>(null);
@@ -406,17 +444,17 @@ function Invites({ teamId }: { teamId: number }) {
   return (
     <Panel title="Invite players">
       <h3>Players looking for a team</h3>
+      <PlayerFilters value={filters} onChange={setFilters} />
       {players.data?.players.length ? (
         <table className="table compact">
-          <thead><tr><th>Player</th><th>Language</th><th>Region</th><th>Platform</th><th>Skill</th><th /></tr></thead>
+          <thead><tr><th>Player</th><th>Language</th><th>Region</th><th>Rank</th><th /></tr></thead>
           <tbody>
             {players.data.players.map((p) => (
               <tr key={p.user_id}>
                 <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><Link to={`/players/${p.user_id}`}>{p.user_name}</Link></div></td>
                 <td>{p.language ?? <span className="muted">—</span>}</td>
                 <td>{p.region ?? <span className="muted">—</span>}</td>
-                <td>{p.platform ?? <span className="muted">—</span>}</td>
-                <td>{p.skill_level ?? <span className="muted">—</span>}</td>
+                <td><RankBadge cat={cat} platform={p.rank_platform} rankId={p.rank_id} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></td>
                 <td className="right">
                   <InviteButton teamId={players.data!.inviting_team?.team_id} userId={p.user_id} status={p.invite_status}
                     canInvite={players.data!.can_invite} onDone={refreshAll} />
@@ -425,7 +463,7 @@ function Invites({ teamId }: { teamId: number }) {
             ))}
           </tbody>
         </table>
-      ) : <p className="muted">No players without a team right now.</p>}
+      ) : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
 
       <h3>Invite link</h3>
       <div className="row wrap">

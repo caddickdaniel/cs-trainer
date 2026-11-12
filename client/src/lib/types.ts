@@ -192,8 +192,10 @@ export interface Profile {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  platform: string | null;
-  skill_level: string | null;
+  rank_platform: string | null;
+  rank_id: string | null;
+  legacy_platform: string | null;
+  legacy_skill_level: string | null;
   bio: string | null;
   steam_url: string | null;
   faceit_url: string | null;
@@ -209,8 +211,10 @@ export interface PlayerSummary {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  platform: string | null;
-  skill_level: string | null;
+  rank_platform: string | null;
+  rank_id: string | null;
+  legacy_platform: string | null;
+  legacy_skill_level: string | null;
   invite_status: 'pending' | null;
 }
 
@@ -245,8 +249,10 @@ export interface JoinRequest {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  platform: string | null;
-  skill_level: string | null;
+  rank_platform: string | null;
+  rank_id: string | null;
+  legacy_platform: string | null;
+  legacy_skill_level: string | null;
   message: string;
   status: 'pending' | 'invited' | 'declined';
   created_at: string;
@@ -402,4 +408,39 @@ export interface LiveReview {
   igl: UserRef | null;
   can_control: boolean;
   annotations: Annotation[];
+}
+
+// ---- Player Stats -----------------------------------------------------------------
+export interface StatsSource {
+  source: 'demo' | 'faceit';
+  label: string;
+  matches: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  win_rate: number | null;
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  kd: number | null;
+  kd_no_deaths: boolean;
+  adr: number | null;
+  adr_matches: number;
+  hs_pct: number | null;
+  last_updated: string | null;
+  recent: { map: string | null; played_at: string | null; result: 'W' | 'L' | 'D' | null; kills: number | null; deaths: number | null; assists: number | null; score: string | null }[];
+}
+export interface ProviderRating { provider: string; nickname: string | null; rating: number | null; level: number | null; status?: string; error?: string | null; last_synced_at: string | null }
+export interface PlayerStatsResponse {
+  shared?: boolean;
+  steam_linked?: boolean;
+  tracking?: boolean;
+  visibility?: 'private' | 'profile';
+  sources?: StatsSource[];
+  providers?: ProviderRating[];
+}
+export interface Identities { steam: { steamid64: string; linked_at: string } | null; has_password: boolean; email: string | null; match_tracking: boolean; steam_web_api: boolean }
+export interface FaceitStatus {
+  configured: boolean;
+  connection: { nickname: string | null; rating: number | null; level: number | null; status: string; error: string | null; last_synced_at: string | null; next_sync_at: string | null } | null;
 }
