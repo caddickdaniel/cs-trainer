@@ -8,6 +8,8 @@ import type { Marker, RosterEntry, TacticDocument } from '../lib/types';
 import type { Level } from '../lib/constants';
 import { Alert, Badge, Loading, Panel, SideBadge } from '../components/ui';
 import { MapBoard } from '../components/MapBoard';
+import { Icon } from '../components/Icons';
+import { ShareDialog } from './SharedTactics';
 import { PhaseInstructions } from '../components/PhaseInstructions';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
@@ -20,6 +22,7 @@ export function TacticViewPage() {
   const [index, setIndex] = useState(0);
   const [levelChoice, setLevelChoice] = useState<{ phase: number; level: Level } | null>(null);
   const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
+  const [sharing, setSharing] = useState(false);
   useDocumentTitle(doc.data?.tactic.tactic_name ?? 'Tactic');
 
   if (doc.loading && !doc.data) return <Loading />;
@@ -47,9 +50,12 @@ export function TacticViewPage() {
         <div className="row">
           <Link className="btn ghost" to="/tactics">Library</Link>
           {canEdit ? <Link className="btn" to={`/tactics/${tactic.tactic_id}/edit`}>Edit</Link> : null}
+          {canEdit && tactic.map && tactic.phases.length ? <button type="button" className="btn" onClick={() => setSharing(true)}><Icon name="share" /> Share</button> : null}
           {canEdit && tactic.phases.length ? <Link className="btn primary" to={`/game?tactic=${tactic.tactic_id}`}>Use in Game Mode</Link> : null}
         </div>
       </div>
+      {tactic.phases.some((p) => [...p.board.markers, ...p.assignments].some((i) => i.user_id == null && i.slot))
+        ? <Alert kind="info">This tactic still has unmapped Player slots. {canEdit ? <Link to={`/tactics/${tactic.tactic_id}/edit`}>Map them to your roster</Link> : 'Your owner or IGL can map them to the roster.'}</Alert> : null}
       {!tactic.phases.length ? <Alert kind="info">This tactic has no phases yet.</Alert> : (
         <>
           <div className="phase-tabs" role="tablist" aria-label="Phases">
@@ -81,6 +87,7 @@ export function TacticViewPage() {
       )}
       <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}
         onIndex={(i) => setOpen((o) => (o ? { ...o, index: i } : o))} onClose={() => setOpen(null)} />
+      {sharing ? <ShareDialog tacticId={tactic.tactic_id} onClose={() => setSharing(false)} /> : null}
     </div>
   );
 }

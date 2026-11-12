@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, errorMessage } from '../lib/api';
 import type { AppNotification } from '../lib/types';
@@ -16,11 +16,35 @@ function timeAgo(iso: string) {
 
 export function NotificationBell() {
   const navigate = useNavigate();
-  const ref = useRef<HTMLDialogElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [place, setPlace] = useState<{ panel: CSSProperties; caret: CSSProperties }>({ panel: {}, caret: {} });
+
+  // Anchors the panel directly below the bell, kept inside the viewport
+  // (the top bar wraps on narrow screens, so the bell can be anywhere).
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const position = () => {
+      const r = buttonRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const margin = 12;
+      const width = Math.min(420, window.innerWidth - margin * 2);
+      const left = Math.min(Math.max(margin, r.right - width), window.innerWidth - width - margin);
+      const top = r.bottom + 10;
+      setPlace({
+        panel: { top, left, width, maxHeight: Math.max(160, window.innerHeight - top - margin) },
+        caret: { top: top - 6, left: Math.round(r.left + r.width / 2 - 6) },
+      });
+    };
+    position();
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
+  }, [open]);
 
   const load = useCallback(async () => {
     try {
@@ -40,10 +64,20 @@ export function NotificationBell() {
     return () => { window.clearTimeout(first); window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
   }, [load]);
 
+  // Closes on outside click and Escape (focus returns to the bell).
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e: PointerEvent) => { if (!wrapRef.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); buttonRef.current?.focus(); } };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
   const show = async () => {
+    if (open) { setOpen(false); return; }
     setNotice(null);
     setOpen(true);
-    ref.current?.showModal();
     await load();
     if (unread) {
       try {
@@ -52,7 +86,7 @@ export function NotificationBell() {
       } catch { /* ignore */ }
     }
   };
-  const close = () => { ref.current?.close(); setOpen(false); };
+  const close = () => setOpen(false);
 
   const follow = async (n: AppNotification) => {
     try {
@@ -74,15 +108,16 @@ export function NotificationBell() {
   };
 
   return (
-    <>
-      <button type="button" className="bell" onClick={show} aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
-        aria-haspopup="dialog" aria-expanded={open}>
+    <div className="bell-wrap" ref={wrapRef}>
+      <button ref={buttonRef} type="button" className="bell" onClick={show} aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
+        aria-haspopup="true" aria-expanded={open} aria-controls="notifications-panel">
         <Icon name="bell" size={20} />
         {unread ? <span className="bell-dot" aria-hidden="true">{unread > 9 ? '9+' : unread}</span> : null}
       </button>
-      <dialog ref={ref} className="modal notifications-modal" aria-labelledby="notifications-title"
-        onClose={() => setOpen(false)} onClick={(e) => { if (e.target === ref.current) close(); }}>
-        <div className="modal-body">
+      {open ? <span className="notifications-caret" aria-hidden="true" style={place.caret} /> : null}
+      {open ? (
+        // Anchored under the bell; on narrow screens it spans the viewport width.
+        <div id="notifications-panel" className="notifications-panel" role="region" aria-labelledby="notifications-title" style={place.panel}>
           <div className="row space">
             <h2 id="notifications-title">Notifications</h2>
             <button type="button" className="btn ghost small" onClick={close}>Close</button>
@@ -104,7 +139,7 @@ export function NotificationBell() {
             </ul>
           ) : <p className="muted">You're all caught up.</p>}
         </div>
-      </dialog>
-    </>
+      ) : null}
+    </div>
   );
 }

@@ -1,0 +1,50 @@
+// Replay helpers for Demo Review: playback clock and frame interpolation.
+import type { Level } from './constants';
+import type { ReplayRound } from './types';
+
+// A playback clock: position = anchorTick (+ elapsed since anchorAt while playing).
+// anchorAt is in this browser's Date.now() time.
+export interface Clock { playing: boolean; anchorTick: number; anchorAt: number; speed: number }
+
+export function clockTick(clock: Clock, tickrate: number, now = Date.now(), min = -Infinity, max = Infinity) {
+  let t = clock.anchorTick;
+  if (clock.playing) t += ((now - clock.anchorAt) / 1000) * tickrate * clock.speed;
+  return Math.min(max, Math.max(min, t));
+}
+
+export interface PlayerFrame { x: number; y: number; level: Level; yaw: number; hp: number; alive: boolean }
+
+// Player state at a (fractional) tick, interpolated between samples. Angles
+// take the short way round; death is never interpolated.
+export function frameAt(round: ReplayRound, trackIndex: number, tick: number): PlayerFrame | null {
+  const track = round.tracks[trackIndex];
+  if (!track || !track.x.length) return null;
+  const pos = (tick - round.first_tick) / round.step;
+  const last = track.x.length - 1;
+  const i0 = Math.max(0, Math.min(last, Math.floor(pos)));
+  const i1 = Math.min(last, i0 + 1);
+  const f = Math.max(0, Math.min(1, pos - i0));
+  const hp = track.hp[i0];
+  const alive = hp > 0;
+  const lerp = (a: number, b: number) => a + (b - a) * (alive && track.hp[i1] > 0 ? f : 0);
+  let dyaw = track.yaw[i1] - track.yaw[i0];
+  if (dyaw > 180) dyaw -= 360;
+  if (dyaw < -180) dyaw += 360;
+  return {
+    x: lerp(track.x[i0], track.x[i1]),
+    y: lerp(track.y[i0], track.y[i1]),
+    level: track.l[i0] ? 'lower' : 'main',
+    yaw: track.yaw[i0] + dyaw * (alive ? f : 0),
+    hp,
+    alive,
+  };
+}
+
+// Round clock text: time since the freeze time ended (or round start).
+export function roundTime(round: { freeze_end_tick: number | null; start_tick: number }, tick: number, tickrate: number) {
+  const zero = round.freeze_end_tick ?? round.start_tick;
+  const s = Math.round((tick - zero) / tickrate);
+  const sign = s < 0 ? '-' : '';
+  const a = Math.abs(s);
+  return `${sign}${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}`;
+}

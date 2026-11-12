@@ -31,8 +31,12 @@ export const ROLE_LABEL: Record<string, string> = {
   igl: 'IGL', entry: 'Entry', support: 'Support', lurker: 'Lurker', awper: 'AWPer', anchor: 'Anchor', rifler: 'Rifler',
 };
 export const roleLabel = (role: string | null | undefined) => (role ? ROLE_LABEL[role] ?? role : '');
-export const EVENT_KINDS = ['training', 'game'] as const;
-export const EVENT_LABEL: Record<string, string> = { training: 'Training', game: 'Game' };
+// One colour per roster role, used wherever a role badge appears.
+export const ROLE_COLOR: Record<string, string> = {
+  igl: '#e5484d', entry: '#ff8a4c', support: '#4cc38a', lurker: '#b07cf7', awper: '#5b9cf5', anchor: '#3dd6d0', rifler: '#f5c542',
+};
+export const EVENT_KINDS = ['training', 'game', 'demo_review'] as const;
+export const EVENT_LABEL: Record<string, string> = { training: 'Training', game: 'Game', demo_review: 'Demo Review' };
 
 export const SHORTCUT_ACTIONS = ['phase_prev', 'phase_next', 'tactic_prev', 'tactic_next', 'new_round', 'switch_side'] as const;
 export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
@@ -55,7 +59,18 @@ export const PROFILE_LINKS = [
 ] as const;
 export const MARKER_KINDS = ['player', 'smoke', 'flash', 'molly', 'he', 'note'] as const;
 export const INVITE_TTL_HOURS = [1, 24, 72, 168] as const;
-export const LIMITS = { phases: 20, markers: 60, routes: 30, routePoints: 100, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024, pictureBytes: 2 * 1024 * 1024 };
+export const LIMITS = {
+  phases: 20, markers: 60, routes: 30, routePoints: 100, holds: 20, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024,
+  pictureBytes: 2 * 1024 * 1024, noteChars: 200, slots: 5,
+};
+export const NOTE_SIZE = { min: 12, max: 64, default: 22, step: 2 };
+// Supplied utility icons (client/public/icons/utility).
+export const UTILITY_ICON: Record<string, string> = {
+  smoke: '/icons/utility/smoke.png', flash: '/icons/utility/flash.png', molly: '/icons/utility/molly.png', he: '/icons/utility/he.png',
+};
+// Player 1-5 colours for shared/imported tactics before slots are mapped.
+export const SLOT_COLORS = ['#f5a524', '#4cc38a', '#5b9cf5', '#e5484d', '#b07cf7'];
+export const SLOTS = [1, 2, 3, 4, 5] as const;
 
 export const PLAYER_COLORS = ['#f5a524', '#4cc38a', '#5b9cf5', '#e5484d', '#b07cf7', '#3dd6d0', '#f17ac6', '#c9d36a', '#ff8a4c', '#9aa4b2'];
 

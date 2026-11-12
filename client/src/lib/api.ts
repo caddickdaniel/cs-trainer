@@ -101,6 +101,35 @@ async function uploadPng<T>(path: string, file: Blob, retry = true, contentType 
   return data as T;
 }
 
+// Streams a large file (e.g. a .dem) as application/octet-stream, reporting
+// upload progress (0..1). Returns a function-free promise of the JSON reply.
+async function uploadFile<T>(path: string, file: Blob, onProgress?: (fraction: number) => void, retry = true): Promise<T> {
+  if (!csrfToken) await refreshCsrf();
+  const result = await new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-CSRF-Token', csrfToken as string);
+    xhr.setRequestHeader('Accept', 'application/json');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    xhr.onload = () => {
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch { /* non-JSON error page */ }
+      resolve({ status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'The upload failed. Check your connection and try again.', 'network', {}));
+    xhr.send(file);
+  });
+  if (result.status >= 200 && result.status < 300) return result.data as T;
+  if (result.status === 403 && result.data.code === 'csrf_invalid' && retry) {
+    await refreshCsrf();
+    return uploadFile<T>(path, file, onProgress, false);
+  }
+  const message = result.status === 413 && !result.data.message ? 'That file is too large.' : (result.data.message as string) || `Upload failed (${result.status})`;
+  throw new ApiError(result.status, message, result.data.code as string | undefined, result.data);
+}
+
 export const imageUrl = (imageId: string) => `/api/lineup-images/${imageId}`;
 
 // Profile pictures and team logos: PNG, JPEG or WebP.
@@ -108,6 +137,7 @@ const uploadPicture = <T>(path: string, file: File) => uploadPng<T>(path, file, 
 
 export const api = {
   uploadPng,
+  uploadFile,
   uploadPicture,
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),

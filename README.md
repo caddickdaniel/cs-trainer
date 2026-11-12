@@ -288,7 +288,7 @@ Each follow-on milestone stays out of primary navigation until it has a usable w
 1. **Training drills.** The team calendar shipped in Phase 2. What remains is a drill and lineup-reference library linked to tactic phases and board markers.
 2. **Calendar extras.** Recurring practices, RSVPs and ICS export, building on the Phase 2 calendar.
 3. **Steam sign-in.** An additional identity linked to an existing account. Scope: an OpenID 2.0 "link Steam" action for signed-in users, stored in a `user_identities` table that is unique per provider ID. Sign-in through a linked Steam identity comes after that. It never creates accounts implicitly or merges accounts automatically.
-4. **Demo Review.** Start with a feasibility check of the CS Demo Manager integration suggested in this README: licensing, a headless or CLI parser, and the CS2 demo format. Then import one small sample demo into a separate `demos` store, showing rounds and a basic timeline. Linking rounds to tactics comes after that.
+4. **Demo Review extras.** The demo library, 2D replay and live team review shipped in Phase 3. Next: grenade trajectories and smoke/molotov areas on the replay, linking rounds to tactics, and push updates (SSE) for live review instead of 1 s polling.
 5. **Native overlay.** Evaluate separately after the browser Game Mode has been playtested. Consider anti-cheat and VAC policy, OS support, and whether a second-monitor page or a minimal always-on-top window is enough.
 
 Other small follow-ups: cleanup of unused lineup images (uploads are kept even if a tactic edit is abandoned, so running sessions never lose an image), moving image storage to object storage if volume grows, deriving the utility counts from board markers, a password reset / legacy-account claim flow, ownership transfer, a resolve action for review items, more maps, a public team directory, and push updates (SSE) instead of polling.
@@ -411,6 +411,89 @@ Manual check with separate signed-in browser sessions (`owner.localhost`, `seeke
 - Touch devices.
 - Clock and time-zone edge cases around daylight-saving changes.
 - The browser automation tool could not send `]` by its key name, so I typed the literal key. That's a tool limitation, not the app.
+
+## Phase 3
+
+Built on `main` after Phase 2 (`f2a4599`). One additive migration, `20261113000100_phase_3.js`. Saved tactics, assignments, radar floors, lineup images and Game Mode snapshots load unchanged; boards without holds or slots get defaults when read.
+
+Implementation order: migration and validation → board (carry-forward, icons, notes, holds, connectors) → sharing → Game Mode picker, notification panel, role colours → calendar → Demo Review stage A (parser probe, library, replay, annotations) → stage B (live review).
+
+### What was added
+
+- **Tactics board**
+  - **Add phase** inserts a phase after the current one. Each player marker starts at the end of that player's last route in the previous phase (on that route's floor), otherwise where the marker was. Routes, utility, notes and holds start empty. Copies are independent, so editing an earlier phase never moves saved later phases.
+  - **Utility icons**: the supplied PNGs (`smoke(1).png`, `flash.png`, `fire(1).png`, `explosion(1).png`, resized to 128 px in `client/public/icons/utility/`) are drawn on a light disc with a player-coloured ring, so they read over light and dark radar areas. Same rendering in the editor, viewer, shared preview and Game Mode.
+  - **Notes** show their text on the board (no "i"). Text and size are edited in the inspector; the size box and its ▲/▼ buttons (or the up/down arrow keys) go from 12 to 64, default 22. Notes stay selectable and draggable.
+  - **Hold** tool: press a player marker and drag to aim a cone. Handles adjust direction/reach and width; sliders and *Remove hold* are in the inspector. The cone is stored as `{ marker_id, angle, spread, length }`, so it follows its marker and floor at any board size.
+  - **Utility connectors**: round dotted lines from a player's last route end (or marker) to each of their utility markers in the phase, drawn only when both ends are on the visible floor. Derived from coordinates, so they follow every move.
+- **Sharing** (owner or IGL)
+  - **Share** on a saved tactic opens a dialog listing what will and won't be published, with the exact JSON. Publishing stores a snapshot; later edits don't change it until *Update listing*. *Withdraw listing* removes it.
+  - Snapshots contain no user ids, names, team identity or reference URLs. Players become stable **Player 1–5** slots across phases (markers, routes, holds, utility, instructions). Lineup screenshots are optional and copied into the listing under new ids, served from `/api/shared-tactics/:id/images/:image` only while the listing is active.
+  - **Tactics → Browse shared**: filters, previews, net rating, and up/down votes. One vote per user per listing (primary key), changeable or removable; the score is always summed from votes; you can't vote on your own team's listing.
+  - **Save to team** creates an independent copy (screenshots copied into the importing team's private library). The editor's **Map player slots** panel assigns slots to roster players across all phases; unmapped slots stay editable as "Player N".
+- **Game Mode**: the IGL's dropdown lists the same tactics as the next/previous shortcuts, grouped by economy (Pistol, Eco, Force, Half buy, Full buy); shortcuts walk the same order. Choosing one queues it (`tactic_select`); *Start round* applies it at phase 1. The live tactic and a "Next: …" chip are shown separately. Teammates stay read-only.
+- **Notifications** open in a panel anchored below the bell (positioned from the bell, kept inside the viewport and scrollable on narrow screens).
+- **Role colours**: one colour per role (`ROLE_COLOR` in `client/src/lib/constants.ts`) used by every role badge, with labels kept.
+- **Calendar**: new **Demo Review** event type, optionally linked to a demo in the team library. Event details and the Home countdown show **Open demo**. Linking another team's demo is rejected.
+- **Demo Review** (sidebar, below Training)
+  - **Library**: members upload `.dem` files (streamed to disk, `application/octet-stream`); states are queued → processing → ready or failed with a clear reason. Checks: CS2 signature (`PBDEMS2`; CS:GO demos are named as such), size limit, per-team limit, duplicate detection. Uploader, owner or IGL can retry failed demos or delete.
+  - **Processing** runs outside the web request: a job runner in the server process claims queued demos (`FOR UPDATE SKIP LOCKED`) and parses each in a **child process** with a time limit, so the native, synchronous parser never blocks other users. Interrupted jobs are retried once on restart.
+  - **Replay**: radar from the existing images, round strip, play/pause, speed, seekable timeline with kill/plant/defuse/explosion marks, player positions with view direction, floors on multi-level maps, scoreboard and event feed.
+  - **Annotations**: drawings and text tied to a round and tick, shown from that moment on, listed with time and author, removable by their author (or owner/IGL), and kept after reload.
+  - **Live review**: the current IGL starts a review; teammates get a notification and a banner to join. The server owns the state (demo, round, play/pause, speed and an anchor tick/time); clients derive the position from it, estimating the server clock from the lowest-latency of their last 8 polls (1 s). Late joiners and refreshes land on the same frame. Followers are read-only (they can switch to *Watch on my own*). IGL drawings are synced and *Clear round* removes them. Control is re-checked on every command, so an IGL transfer revokes it immediately. Reviews never touch Game Mode sessions.
+
+### Demo parser
+
+- **Parser**: [`@laihoe/demoparser2`](https://github.com/LaihoE/demoparser) **0.42.0** (MIT, pinned). It ships prebuilt N-API binaries for Linux x64/arm64 (glibc and musl), macOS and Windows, so it needs no compiler and works on Node 22 and 24 (the CI matrix). On an unsupported platform demos fail with `parser_unavailable` instead of crashing.
+- **Coordinates**: `px = (x − pos_x) / scale`, `py = (pos_y − y) / scale` on the 1024 px radars, using CS Demo Manager's (MIT) values for the same radar images (`RADAR_TRANSFORMS` in `domain/constants.js`). Lower floor: Nuke below z −495, Vertigo below 11700 (CSDM values), Train below −50 (from the game's overview file).
+- **Fixture tested**: `valve-de_mirage-472514809.dem` (84 MB, sha256 `2e0a4f9a…0506`) from the [awpy-fixtures](https://github.com/pnxenopoulos/awpy-fixtures) releases. It parsed in ~0.3 s: map `de_mirage`, 10 players, 13 rounds (13–0 including the side swap), 78 kills, 2 plants; ~97 KB of gzip replay data. Positions were plotted over the radar and follow the corridors. Not committed (size); run the real-demo test with `CS_DEMO_FIXTURE=/path/to/file.dem npm test`.
+- **Limits**: no real Nuke/Vertigo/Train demo has been tested, so lower-floor placement is checked only with synthetic positions; grenades, smokes and fires aren't drawn; tick rate is assumed to be 64; maps outside the ten radars fail as `unsupported_map`.
+
+### Running the demo workflow locally
+
+```bash
+npm install
+npm run db:migrate
+npm run dev
+```
+
+Open **Demo Review**, upload a CS2 `.dem` (for example from CS2's *Watch* tab), wait for **Ready**, and open it. For a live review, sign in as the team's IGL in one browser and as a teammate in another; the IGL presses **Start live review**. Optional settings (see `.env.example`): `DEMO_STORAGE_DIR` (default `storage/demos`, git-ignored), `DEMO_MAX_MB` (600), `DEMO_PARSE_TIMEOUT_S` (300), `DEMO_LIMIT_PER_TEAM` (50), `DEMO_WORKER=off` to run parsing elsewhere.
+
+### Migration (`20261113000100_phase_3.js`, additive)
+
+- `phase_assignments`: `user_id` nullable plus `slot` (1–5), one of them required; one slot per phase.
+- New tables: `shared_tactics` (one active listing per tactic), `shared_tactic_images`, `shared_tactic_votes` (PK share+user, value ±1), `demos`, `demo_rounds` (gzip replay per round), `review_sessions` (one active per team), `demo_annotations`.
+- `tactics.imported_from_share_id`; `team_events.demo_id` and the `demo_review` kind.
+- Full `down`, which deletes slot-only instructions (they can't exist in the old schema).
+
+### Verification (2026-11-12)
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 0 problems |
+| `npm run typecheck` | 0 errors |
+| `npm test` | **124 passing, 1 pending** (the real-demo test, skipped without `CS_DEMO_FIXTURE`; it passes with the Mirage fixture) |
+| `npm run build` | built (482 kB JS, 150 kB gzip) |
+
+New tests (`spec/phase3.spec.js`) cover board validation and defaults; snapshot privacy (no ids, names, team name, reference URLs or private image ids, including in the preview), snapshot immutability, votes and the database constraint, import, slot mapping and withdrawal; the economy-ordered picker and IGL-only `tactic_select`; Demo Review events; upload validation and team scoping; background processing, round data and failures; the real parser in a child process; annotations; live review control, late join, stale versions, clamping, clear and IGL transfer; the radar transform and round detection with a restored round.
+
+Checked in the browser with separate signed-in sessions:
+1. A Nuke tactic: Add phase put each player at their route end on the right floor; moving a player in phase 1 after creating phase 2 left phase 2 unchanged after save and reload.
+2. Holds (drawn with the tool, widened by handle), sized multi-line notes, icons and connectors survived save and reload, and appeared in the viewer and Game Mode.
+3. Another team browsed, upvoted, previewed (Player 1–3, copied screenshot, no private names, links or images) and imported the tactic, mapped Player 1 and saved; withdrawal blocked new previews and imports while the copy and its screenshot still loaded.
+4. The IGL picked "Nuke eco rush" from the Eco group; the header kept the live tactic with a "Next:" chip; pressing N started it at phase 1 for the teammate, who had no controls.
+5. The notification panel opened below the bell at 1300 px and 375 px wide.
+6. A Demo Review event linked to the uploaded demo showed in the calendar and as the teammate's next event, and **Open demo** opened it.
+7. The 84 MB Mirage demo uploaded through the page, processed in seconds, and replayed aligned to the radar; drawing and text annotations persisted.
+8. Live review (Juno as IGL, Vex following): Vex joined late and after a refresh landed on the IGL's round and exact tick; paused and end-of-round positions matched the server; a live drawing appeared for Vex and *Clear round* removed it; Vex got 404 for another team's demo, rounds, annotations and review.
+
+Fixed during these checks: hard-to-grab hold handles, faint connectors, a live-review client showing the play-start position after the round ended, and a follower clock estimate stuck on a sample taken while its tab was hidden.
+
+**Not verified:**
+- Smooth playback drift while playing in the follower's view after the clock fix: the browser pane was hidden, which pauses animation, so only the per-poll sync check ("In sync") and paused/end positions were confirmed.
+- Lower-floor placement with a real Nuke, Vertigo or Train demo.
+- Network-drop reconnect (only refresh and late join were exercised; reconnect uses the same polling path with backoff).
+- Touch drawing on the replay and dragging hold handles on touch devices.
 
 ## Contact
 

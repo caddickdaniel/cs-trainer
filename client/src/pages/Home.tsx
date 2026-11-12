@@ -59,10 +59,13 @@ function NextEvent({ teamId }: { teamId: number }) {
   return (
     <>
       <p className="big">{event.title}</p>
-      <p><Badge tone={event.kind === 'game' ? 'red' : 'blue'}>{EVENT_LABEL[event.kind]}</Badge> {formatEventTime(event.starts_at)}</p>
+      <p><Badge tone={event.kind === 'game' ? 'red' : event.kind === 'demo_review' ? 'green' : 'blue'}>{EVENT_LABEL[event.kind]}</Badge> {formatEventTime(event.starts_at)}</p>
       <p className="countdown" aria-live="polite">Starts {countdown(new Date(event.starts_at).getTime() - now)}</p>
       <p className="muted small">Your time zone: {zoneLabel()}</p>
-      <Link className="btn" to={`/training?event=${event.event_id}`}>Details</Link>
+      <div className="row">
+        <Link className="btn" to={`/training?event=${event.event_id}`}>Details</Link>
+        {event.demo ? <Link className="btn ghost" to={`/demos/${event.demo.demo_id}`}>Open demo</Link> : null}
+      </div>
     </>
   );
 }

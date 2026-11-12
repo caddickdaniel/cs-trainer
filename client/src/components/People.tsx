@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { roleLabel } from '../lib/constants';
+import { ROLE_COLOR, roleLabel } from '../lib/constants';
 import { Icon } from './Icons';
 
 // Profile picture or a fallback with the player's initials.
@@ -18,7 +18,8 @@ export function Avatar({ name, url, size = 36 }: { name: string; url?: string | 
 export function RoleBadge({ role }: { role: string | null | undefined }) {
   if (!role) return <span className="muted">—</span>;
   return (
-    <span className={`role-badge role-${role}`} title={roleLabel(role)}>
+    <span className={`role-badge role-${role}`} title={roleLabel(role)}
+      style={ROLE_COLOR[role] ? { ['--role' as string]: ROLE_COLOR[role] } : undefined}>
       <Icon name={`role_${role}`} size={15} /> {roleLabel(role)}
     </span>
   );

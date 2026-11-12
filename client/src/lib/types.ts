@@ -16,14 +16,21 @@ export interface Marker {
   y: number;
   level?: Level;
   user_id: number | null;
+  // Player 1-5 in shared and imported tactics, until mapped to a roster player.
+  slot?: number | null;
+  // Note text uses `label`; size is its font size in board units.
   label: string;
-  images?: LineupImage[];
+  size?: number;
+  images?: (LineupImage & { url?: string })[];
 }
-export interface Route { id: string; level?: Level; user_id: number | null; color: string; points: Point[] }
-export interface Board { markers: Marker[]; routes: Route[] }
+export interface Route { id: string; level?: Level; user_id: number | null; slot?: number | null; color: string; points: Point[] }
+// Angle a player covers, anchored to their player marker.
+export interface Hold { id: string; marker_id: string; angle: number; spread: number; length: number }
+export interface Board { markers: Marker[]; routes: Route[]; holds?: Hold[] }
 
 export interface Assignment {
-  user_id: number;
+  user_id: number | null;
+  slot?: number | null;
   user_name?: string;
   instruction: string;
   utility: string;
@@ -52,6 +59,7 @@ export interface TacticDocument extends Omit<TacticFields, 'map' | 'side' | 'eco
   economy: string;
   revision: number;
   updated_at: string;
+  imported_from_share_id?: number | null;
   phases: Phase[];
 }
 
@@ -69,6 +77,8 @@ export interface TacticSummary {
   revision: number;
   updated_at: string;
   phase_count: number;
+  share_id?: number | null;
+  imported_from_share_id?: number | null;
 }
 
 export interface RosterEntry { user_id: number; user_name: string; player_role: PlayerRole | null }
@@ -162,10 +172,12 @@ export interface GameSession {
   map: string | null;
   side: Side | null;
   igl: UserRef | null;
-  selected_tactic: { tactic_id: number; tactic_name: string } | null;
+  selected_tactic: SideTactic | null;
   side_tactic_count: number;
-  side_tactics?: { tactic_id: number; tactic_name: string }[];
+  side_tactics?: SideTactic[];
 }
+
+export interface SideTactic { tactic_id: number; tactic_name: string; economy: string }
 
 export interface GameState {
   session: GameSession | null;
@@ -244,7 +256,9 @@ export interface JoinRequest {
 export interface TeamEvent {
   event_id: number;
   team_id: number;
-  kind: 'training' | 'game';
+  kind: 'training' | 'game' | 'demo_review';
+  demo_id: number | null;
+  demo: { demo_id: number; title: string; status: DemoStatus } | null;
   title: string;
   starts_at: string;
   time_zone: string;
@@ -259,4 +273,133 @@ export interface AppNotification {
   message: string;
   created_at: string;
   read: boolean;
+}
+
+// ---- Shared tactics -----------------------------------------------------------
+export interface SharedListing {
+  share_id: number;
+  tactic_name: string;
+  map: string;
+  side: Side;
+  economy: string;
+  phase_count: number;
+  import_count: number;
+  published_at: string;
+  updated_at: string;
+  score: number;
+  upvotes: number;
+  downvotes: number;
+  my_vote: -1 | 0 | 1;
+  is_mine: boolean;
+}
+export interface SharedPhase {
+  name: string;
+  notes: string;
+  board: Board;
+  assignments: { slot: number; instruction: string; utility: string }[];
+}
+export interface SharedTactic extends SharedListing {
+  grenade: number;
+  molly: number;
+  flash: number;
+  smoke: number;
+  slot_count: number;
+  phases: SharedPhase[];
+}
+export interface SharePreview {
+  listing: SharedListing | null;
+  preview: { tactic: TacticFields; slot_count: number; phases: SharedPhase[] };
+  image_count: number;
+  dropped_players: number;
+  out_of_date: boolean;
+}
+
+// ---- Demo Review ----------------------------------------------------------------
+export type DemoStatus = 'queued' | 'processing' | 'ready' | 'failed';
+export interface DemoSummary {
+  demo_id: number;
+  team_id: number;
+  title: string;
+  original_name: string;
+  byte_size: number;
+  status: DemoStatus;
+  error_code: string | null;
+  error_message: string | null;
+  map: string | null;
+  tickrate: number | null;
+  round_count: number | null;
+  uploaded_by: UserRef | null;
+  created_at: string;
+  processed_at: string | null;
+}
+export interface DemoRoundInfo {
+  round_number: number;
+  start_tick: number;
+  freeze_end_tick: number | null;
+  end_tick: number;
+  winner: 'T' | 'CT' | null;
+  reason: string | null;
+  ct_score: number | null;
+  t_score: number | null;
+}
+export interface DemoDetail extends DemoSummary {
+  players: { index: number; name: string }[];
+  rounds: DemoRoundInfo[];
+}
+export interface ReplayEvent {
+  tick: number;
+  type: 'kill' | 'plant' | 'defuse' | 'explode' | 'round_end';
+  attacker?: number | null;
+  victim?: number | null;
+  player?: number | null;
+  weapon?: string | null;
+  headshot?: boolean;
+  winner?: string | null;
+  reason?: string | null;
+  x?: number;
+  y?: number;
+  level?: Level;
+}
+export interface ReplayRound {
+  round_number: number;
+  tickrate: number;
+  step: number;
+  first_tick: number;
+  start_tick: number;
+  freeze_end_tick: number | null;
+  end_tick: number;
+  ct_score?: number;
+  t_score?: number;
+  roster: { player: number; side: 'T' | 'CT' }[];
+  tracks: { x: number[]; y: number[]; l: number[]; yaw: number[]; hp: number[] }[];
+  events: ReplayEvent[];
+}
+export interface Annotation {
+  annotation_id: number;
+  round_number: number;
+  tick: number;
+  level: Level;
+  kind: 'drawing' | 'text';
+  data: { points?: Point[]; x?: number; y?: number; text?: string; color?: string };
+  review_id: number | null;
+  author: UserRef | null;
+  created_at: string;
+}
+export interface LiveReview {
+  review_id: number;
+  team_id: number;
+  status: 'active' | 'ended';
+  version: number;
+  demo: { demo_id: number; title: string; map: string; tickrate: number; round_count: number };
+  round_number: number;
+  playing: boolean;
+  speed: number;
+  anchor_tick: number;
+  anchor_at: string;
+  position_tick: number;
+  server_time: string;
+  started_by: UserRef | null;
+  igl: UserRef | null;
+  can_control: boolean;
+  annotations: Annotation[];
 }

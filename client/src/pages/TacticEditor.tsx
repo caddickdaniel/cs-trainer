@@ -3,18 +3,74 @@ import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, errorMessage, imageUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import {
-  DEFAULT_MAP, ECONOMIES, ECONOMY_LABEL, LEVEL_LABEL, LIMITS, LINEUP_KINDS, MAPS, MARKER_KINDS, MARKER_LABEL, mapLevels, type Level,
+  DEFAULT_MAP, ECONOMIES, ECONOMY_LABEL, LEVEL_LABEL, LIMITS, LINEUP_KINDS, MAPS, MARKER_KINDS, MARKER_LABEL, NOTE_SIZE, mapLevels, roleLabel,
+  type Level,
 } from '../lib/constants';
 import { useDocumentTitle } from '../lib/hooks';
-import type { Assignment, Board, LineupImage, Marker, Phase, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
+import type { Assignment, Board, Hold, LineupImage, Marker, Phase, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
-import { MapBoard, newId, playerColor, type Tool } from '../components/MapBoard';
+import { MapBoard, boardHolds, newId, ownerColor, ownerKey, playerColor, sameOwner, type Tool } from '../components/MapBoard';
 import { LevelSwitch } from '../components/Lineups';
 import type { DocumentResponse } from './TacticView';
 
-const emptyBoard = (): Board => ({ markers: [], routes: [] });
+const emptyBoard = (): Board => ({ markers: [], routes: [], holds: [] });
 const newPhase = (n: number): Phase => ({ name: `Phase ${n}`, notes: '', board: emptyBoard(), assignments: [] });
+
+// A phase created after another starts with that phase's players where they
+// ended up: the end of their last route if they had one (on that route's
+// floor), otherwise where their marker was. Routes, utility, notes and holds
+// start fresh. The copies are independent, so editing either phase later
+// never changes the other.
+export function carryForward(prev: Phase, name: string): Phase {
+  const markers = prev.board.markers.filter((m) => m.kind === 'player').map((m) => {
+    const routes = ownerKey(m) ? prev.board.routes.filter((r) => sameOwner(r, m) && r.points.length) : [];
+    const route = routes[routes.length - 1];
+    const end = route ? route.points[route.points.length - 1] : null;
+    return {
+      ...m,
+      id: newId('m'),
+      x: end ? end.x : m.x,
+      y: end ? end.y : m.y,
+      level: route ? route.level ?? 'main' : m.level ?? 'main',
+      images: [],
+    };
+  });
+  return { name, notes: '', board: { markers, routes: [], holds: [] }, assignments: [] };
+}
+
+// "u12" (roster player) or "s3" (Player 3 slot) for the player pickers.
+type Who = { user_id: number | null; slot: number | null };
+const whoValue = (w: { user_id: number | null; slot?: number | null }) => (w.user_id != null ? `u${w.user_id}` : w.slot ? `s${w.slot}` : '');
+const parseWho = (v: string): Who => (v.startsWith('u') ? { user_id: Number(v.slice(1)), slot: null }
+  : v.startsWith('s') ? { user_id: null, slot: Number(v.slice(1)) } : { user_id: null, slot: null });
+
+// Player slots still used by items or instructions that no roster player owns yet.
+function unmappedSlots(phases: Phase[]) {
+  const set = new Set<number>();
+  for (const p of phases) {
+    [...p.board.markers, ...p.board.routes, ...p.assignments].forEach((i) => { if (i.user_id == null && i.slot) set.add(i.slot); });
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+function PlayerPicker({ label = 'Player', value, roster, slots, onChange }: {
+  label?: string; value: { user_id: number | null; slot?: number | null }; roster: RosterEntry[]; slots: number[]; onChange: (w: Who) => void;
+}) {
+  return (
+    <label>{label}
+      <select value={whoValue(value)} onChange={(e) => onChange(parseWho(e.target.value))}>
+        <option value="">Unassigned</option>
+        {roster.map((r) => <option key={r.user_id} value={`u${r.user_id}`}>{r.user_name}</option>)}
+        {slots.length ? (
+          <optgroup label="Unmapped player slots">
+            {slots.map((s) => <option key={s} value={`s${s}`}>Player {s}</option>)}
+          </optgroup>
+        ) : null}
+      </select>
+    </label>
+  );
+}
 const DEFAULT_FIELDS: TacticFields = {
   tactic_name: '', map: DEFAULT_MAP, side: 'T', economy: 'Fullbuy', grenade: 0, molly: 0, flash: 0, smoke: 0,
 };
@@ -85,10 +141,57 @@ function LineupEditor({ teamId, images, onChange }: { teamId: number; images: Li
   );
 }
 
-function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }: {
-  phase: Phase; selectedId: string | null; roster: RosterEntry[]; onBoard: (b: Board) => void; onClear: () => void;
+function NoteControls({ marker, set }: { marker: Marker; set: (patch: Partial<Marker>) => void }) {
+  const size = marker.size ?? NOTE_SIZE.default;
+  const change = (n: number) => set({ size: Math.min(NOTE_SIZE.max, Math.max(NOTE_SIZE.min, n)) });
+  return (
+    <>
+      <label>Note text
+        <textarea rows={3} maxLength={LIMITS.noteChars} value={marker.label} autoFocus={!marker.label}
+          placeholder="Type the note shown on the map" onChange={(e) => set({ label: e.target.value })} />
+      </label>
+      <div className="field">
+        <span>Text size</span>
+        <div className="row tight">
+          <button type="button" className="btn small" aria-label="Smaller text" disabled={size <= NOTE_SIZE.min}
+            onClick={() => change(size - NOTE_SIZE.step)}><Icon name="down" /></button>
+          <input type="number" className="narrow-input" aria-label="Note text size" min={NOTE_SIZE.min} max={NOTE_SIZE.max} step={NOTE_SIZE.step}
+            value={size} onChange={(e) => change(Number(e.target.value) || NOTE_SIZE.default)} />
+          <button type="button" className="btn small" aria-label="Larger text" disabled={size >= NOTE_SIZE.max}
+            onClick={() => change(size + NOTE_SIZE.step)}><Icon name="up" /></button>
+          <span className="muted small">Up/down arrow keys in the box also change it.</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HoldControls({ hold, anchorName, set, onDelete }: {
+  hold: Hold; anchorName: string; set: (patch: Partial<Hold>) => void; onDelete: () => void;
+}) {
+  const norm = (a: number) => Math.round(((a % 360) + 360) % 360);
+  return (
+    <div className="form compact">
+      <p className="small muted">Hold for <strong>{anchorName}</strong>. Drag the white handle to aim it and set its reach, and the coloured handle to widen or narrow it.</p>
+      <label>Direction ({norm(hold.angle)}°)
+        <input type="range" min={0} max={359} value={norm(hold.angle)} onChange={(e) => set({ angle: Number(e.target.value) })} />
+      </label>
+      <label>Coverage ({Math.round(hold.spread)}°)
+        <input type="range" min={5} max={180} value={hold.spread} onChange={(e) => set({ spread: Number(e.target.value) })} />
+      </label>
+      <label>Reach
+        <input type="range" min={2} max={60} value={Math.round(hold.length * 100)} onChange={(e) => set({ length: Number(e.target.value) / 100 })} />
+      </label>
+      <button type="button" className="btn ghost small danger" onClick={onDelete}><Icon name="trash" /> Remove hold</button>
+    </div>
+  );
+}
+
+function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId, map }: {
+  phase: Phase; selectedId: string | null; roster: RosterEntry[]; slots: number[]; onBoard: (b: Board) => void; onClear: () => void;
   teamId: number; map: string;
 }) {
+  const holds = boardHolds(phase.board);
   const levels = mapLevels(map);
   const levelSelect = (value: Level | undefined, onChange: (l: Level) => void) => (levels.length > 1 ? (
     <label>Level
@@ -99,16 +202,22 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }:
   ) : null);
   const marker = phase.board.markers.find((m) => m.id === selectedId);
   const route = phase.board.routes.find((r) => r.id === selectedId);
-  if (!marker && !route) {
-    return <p className="muted small">Select a marker or route to edit it. Arrow keys nudge the selected marker; Delete removes it.</p>;
+  const hold = holds.find((h) => h.id === selectedId);
+  if (hold) {
+    const anchor = phase.board.markers.find((m) => m.id === hold.marker_id);
+    const name = anchor?.user_id != null ? roster.find((r) => r.user_id === anchor.user_id)?.user_name ?? 'player'
+      : anchor?.slot ? `Player ${anchor.slot}` : 'this player';
+    return (
+      <HoldControls hold={hold} anchorName={name}
+        set={(patch) => onBoard({ ...phase.board, holds: holds.map((h) => (h.id === hold.id ? { ...h, ...patch } : h)) })}
+        onDelete={() => { onBoard({ ...phase.board, holds: holds.filter((h) => h.id !== hold.id) }); onClear(); }} />
+    );
   }
-  const playerSelect = (value: number | null, onChange: (v: number | null) => void) => (
-    <label>Player
-      <select value={value ?? ''} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
-        <option value="">Unassigned</option>
-        {roster.map((r) => <option key={r.user_id} value={r.user_id}>{r.user_name}</option>)}
-      </select>
-    </label>
+  if (!marker && !route) {
+    return <p className="muted small">Select a marker, route or hold to edit it. Arrow keys nudge the selected marker; Delete removes it.</p>;
+  }
+  const playerSelect = (value: { user_id: number | null; slot?: number | null }, onChange: (v: Who) => void) => (
+    <PlayerPicker value={value} roster={roster} slots={slots} onChange={onChange} />
   );
   if (marker) {
     const set = (patch: Partial<Marker>) => onBoard({ ...phase.board, markers: phase.board.markers.map((m) => (m.id === marker.id ? { ...m, ...patch } : m)) });
@@ -121,13 +230,27 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }:
             const kind = e.target.value as Marker['kind'];
             const keep = (LINEUP_KINDS as readonly string[]).includes(kind);
             if (!keep && marker.images?.length && !window.confirm('Player markers cannot have lineup screenshots. Remove them?')) return;
-            set({ kind, images: keep ? marker.images ?? [] : [] });
+            const patch: Partial<Marker> = { kind, images: keep ? marker.images ?? [] : [] };
+            if (kind === 'note' && marker.size == null) patch.size = NOTE_SIZE.default;
+            if (marker.kind === 'note' && kind !== 'note') patch.label = marker.label.slice(0, 40);
+            // Holds belong to player markers only.
+            if (marker.kind === 'player' && kind !== 'player') {
+              onBoard({
+                ...phase.board,
+                markers: phase.board.markers.map((m) => (m.id === marker.id ? { ...m, ...patch } : m)),
+                holds: holds.filter((h) => h.marker_id !== marker.id),
+              });
+              return;
+            }
+            set(patch);
           }}>
             {MARKER_KINDS.map((k) => <option key={k} value={k}>{MARKER_LABEL[k]}</option>)}
           </select>
         </label>
-        {playerSelect(marker.user_id, (v) => set({ user_id: v }))}
-        <label>Label<input maxLength={40} value={marker.label} onChange={(e) => set({ label: e.target.value })} /></label>
+        {playerSelect(marker, (v) => set(v))}
+        {marker.kind === 'note'
+          ? <NoteControls marker={marker} set={set} />
+          : <label>Label<input maxLength={40} value={marker.label} onChange={(e) => set({ label: e.target.value })} /></label>}
         {levelSelect(marker.level, (l) => set({ level: l }))}
         <div className="grid2">
           <label>X (%)<input type="number" min={0} max={100} step={0.5} value={pct(marker.x)} onChange={(e) => set({ x: fromPct(e.target.value) })} /></label>
@@ -136,7 +259,10 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }:
         {(LINEUP_KINDS as readonly string[]).includes(marker.kind)
           ? <LineupEditor teamId={teamId} images={marker.images ?? []} onChange={(images) => set({ images })} />
           : <p className="muted small">Change the type to a grenade or note to attach lineup screenshots.</p>}
-        <button type="button" className="btn ghost small danger" onClick={() => { onBoard({ ...phase.board, markers: phase.board.markers.filter((m) => m.id !== marker.id) }); onClear(); }}>
+        <button type="button" className="btn ghost small danger" onClick={() => {
+          onBoard({ ...phase.board, markers: phase.board.markers.filter((m) => m.id !== marker.id), holds: holds.filter((h) => h.marker_id !== marker.id) });
+          onClear();
+        }}>
           <Icon name="trash" /> Delete marker
         </button>
       </div>
@@ -147,9 +273,9 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }:
   return (
     <div className="form compact">
       <p className="small muted">Route with {r.points.length} points. Drag the handles on the board to reshape it.</p>
-      {playerSelect(r.user_id, (v) => set({ user_id: v }))}
+      {playerSelect(r, (v) => set(v))}
       {levelSelect(r.level, (l) => set({ level: l }))}
-      {r.user_id == null ? (
+      {ownerKey(r) == null ? (
         <label>Colour<input type="color" value={r.color} onChange={(e) => set({ color: e.target.value })} /></label>
       ) : null}
       <div className="row">
@@ -162,16 +288,33 @@ function Inspector({ phase, selectedId, roster, onBoard, onClear, teamId, map }:
   );
 }
 
-function InstructionsForm({ phase, roster, onChange }: { phase: Phase; roster: RosterEntry[]; onChange: (a: Assignment[]) => void }) {
+function InstructionsForm({ phase, roster, slots, onChange }: {
+  phase: Phase; roster: RosterEntry[]; slots: number[]; onChange: (a: Assignment[]) => void;
+}) {
   const players = roster.map((r) => r.user_id);
-  const get = (userId: number) => phase.assignments.find((a) => a.user_id === userId);
-  const set = (userId: number, patch: Partial<Assignment>) => {
-    const existing = get(userId) ?? { user_id: userId, instruction: '', utility: '', reference_url: null };
+  const keyOf = (a: { user_id: number | null; slot?: number | null }) => whoValue(a);
+  const get = (who: Who) => phase.assignments.find((a) => keyOf(a) === whoValue(who));
+  const set = (who: Who, patch: Partial<Assignment>) => {
+    const existing = get(who) ?? { ...who, instruction: '', utility: '', reference_url: null };
     const next = { ...existing, ...patch };
-    const others = phase.assignments.filter((a) => a.user_id !== userId);
-    onChange([...others, next].sort((a, b) => a.user_id - b.user_id));
+    const others = phase.assignments.filter((a) => keyOf(a) !== whoValue(who));
+    onChange([...others, next].sort((a, b) => keyOf(a).localeCompare(keyOf(b))));
   };
-  const outsiders = phase.assignments.filter((a) => !players.includes(a.user_id));
+  const outsiders = phase.assignments.filter((a) => a.user_id != null && !players.includes(a.user_id));
+  const fieldset = (who: Who, title: React.ReactNode, color: string, sub?: string) => {
+    const a = get(who);
+    return (
+      <fieldset key={whoValue(who)} className="player-fieldset">
+        <legend><span className="dot" style={{ background: color }} /> {title}{sub ? <span className="muted"> · {sub}</span> : null}</legend>
+        <label>Instruction<textarea rows={2} maxLength={2000} value={a?.instruction ?? ''} onChange={(e) => set(who, { instruction: e.target.value })}
+          placeholder="What this player does in this phase" /></label>
+        <div className="grid2">
+          <label>Utility<input maxLength={1000} value={a?.utility ?? ''} onChange={(e) => set(who, { utility: e.target.value })} placeholder="e.g. Smoke CT, flash over" /></label>
+          <label>Reference URL<input type="url" maxLength={500} value={a?.reference_url ?? ''} onChange={(e) => set(who, { reference_url: e.target.value || null })} placeholder="https://…" /></label>
+        </div>
+      </fieldset>
+    );
+  };
   return (
     <div className="stack">
       {outsiders.length ? (
@@ -179,22 +322,59 @@ function InstructionsForm({ phase, roster, onChange }: { phase: Phase; roster: R
           {outsiders.map((a) => a.user_name ?? `Player ${a.user_id}`).join(', ')} {outsiders.length > 1 ? 'are' : 'is'} no longer on the team; their instructions will be removed when you save.
         </Alert>
       ) : null}
-      {roster.map((r) => {
-        const a = get(r.user_id);
-        return (
-          <fieldset key={r.user_id} className="player-fieldset">
-            <legend><span className="dot" style={{ background: playerColor(r.user_id, players) }} /> {r.user_name}{r.player_role ? <span className="muted"> · {r.player_role}</span> : null}</legend>
-            <label>Instruction<textarea rows={2} maxLength={2000} value={a?.instruction ?? ''} onChange={(e) => set(r.user_id, { instruction: e.target.value })}
-              placeholder="What this player does in this phase" /></label>
-            <div className="grid2">
-              <label>Utility<input maxLength={1000} value={a?.utility ?? ''} onChange={(e) => set(r.user_id, { utility: e.target.value })} placeholder="e.g. Smoke CT, flash over" /></label>
-              <label>Reference URL<input type="url" maxLength={500} value={a?.reference_url ?? ''} onChange={(e) => set(r.user_id, { reference_url: e.target.value || null })} placeholder="https://…" /></label>
-            </div>
-          </fieldset>
-        );
-      })}
+      {roster.map((r) => fieldset({ user_id: r.user_id, slot: null }, r.user_name, playerColor(r.user_id, players), roleLabel(r.player_role) || undefined))}
+      {slots.map((n) => fieldset({ user_id: null, slot: n }, `Player ${n}`, ownerColor({ user_id: null, slot: n }), 'unmapped slot'))}
     </div>
   );
+}
+
+// Maps imported Player 1-5 slots to roster players across every phase.
+function SlotMapper({ slots, roster, phases, onApply }: {
+  slots: number[]; roster: RosterEntry[]; phases: Phase[]; onApply: (map: Record<number, number>) => void;
+}) {
+  const [choice, setChoice] = useState<Record<number, number>>({});
+  const used = new Set(phases.flatMap((p) => [...p.board.markers, ...p.board.routes, ...p.assignments]
+    .filter((i) => i.user_id != null).map((i) => i.user_id as number)));
+  const picked = Object.values(choice);
+  const dupes = picked.filter((v, i) => picked.indexOf(v) !== i);
+  return (
+    <div className="stack">
+      <p className="small muted">This tactic was imported. Choose who plays each slot; until then the slot stays editable as “Player N”.
+        Mapping moves the slot's markers, routes, holds, utility and instructions to that player in every phase.</p>
+      {slots.map((n) => (
+        <label key={n} className="row">
+          <span className="dot" style={{ background: ownerColor({ user_id: null, slot: n }) }} /> Player {n}
+          <select value={choice[n] ?? ''} onChange={(e) => setChoice({ ...choice, [n]: Number(e.target.value) || 0 })}>
+            <option value="">Not mapped yet</option>
+            {roster.map((r) => <option key={r.user_id} value={r.user_id}>{r.user_name}{used.has(r.user_id) ? ' (already used)' : ''}</option>)}
+          </select>
+        </label>
+      ))}
+      {dupes.length ? <div className="error-text">Each roster player can take only one slot.</div> : null}
+      <button type="button" className="btn small" disabled={!picked.some(Boolean) || dupes.length > 0}
+        onClick={() => { onApply(Object.fromEntries(Object.entries(choice).filter(([, v]) => v)) as Record<number, number>); setChoice({}); }}>
+        Apply mapping
+      </button>
+    </div>
+  );
+}
+
+// Applies a slot -> user mapping to every item and instruction.
+export function mapSlots(phases: Phase[], mapping: Record<number, number>): Phase[] {
+  const fix = <T extends { user_id: number | null; slot?: number | null }>(i: T): T => (
+    i.user_id == null && i.slot && mapping[i.slot] ? { ...i, user_id: mapping[i.slot] } : i);
+  return phases.map((p) => {
+    const assignments: Assignment[] = [];
+    for (const a of p.assignments.map(fix)) {
+      const same = assignments.find((x) => x.user_id != null && x.user_id === a.user_id);
+      if (same) {
+        // Merge with an instruction the player already had in this phase.
+        same.instruction = [same.instruction, a.instruction].filter(Boolean).join('\n');
+        same.utility = [same.utility, a.utility].filter(Boolean).join(', ');
+      } else assignments.push({ ...a });
+    }
+    return { ...p, board: { ...p.board, markers: p.board.markers.map(fix), routes: p.board.routes.map(fix) }, assignments };
+  });
 }
 
 export function TacticEditorPage() {
@@ -214,7 +394,7 @@ export function TacticEditorPage() {
   const [index, setIndex] = useState(0);
   const [tool, setTool] = useState<Tool>('select');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activePlayer, setActivePlayer] = useState<number | null>(null);
+  const [active, setActive] = useState<Who>({ user_id: null, slot: null });
   const [draft, setDraft] = useState<Point[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -284,12 +464,12 @@ export function TacticEditorPage() {
 
   const commitDraft = useCallback(() => {
     if (draft.length >= 2 && phase.board.routes.length < LIMITS.routes) {
-      const route: Route = { id: newId('r'), level, user_id: activePlayer, color: '#ffffff', points: draft };
+      const route: Route = { id: newId('r'), level, ...active, color: '#ffffff', points: draft };
       setPhase({ board: { ...phase.board, routes: [...phase.board.routes, route] } });
       setSelectedId(route.id);
     }
     setDraft([]);
-  }, [draft, phase, activePlayer, setPhase, level]);
+  }, [draft, phase, active, setPhase, level]);
 
   const chooseTool = (t: Tool) => {
     if (tool === 'route' && t !== 'route') commitDraft();
@@ -307,6 +487,7 @@ export function TacticEditorPage() {
         setPhase({ board: {
           markers: phase.board.markers.filter((m) => m.id !== selectedId),
           routes: phase.board.routes.filter((r) => r.id !== selectedId),
+          holds: boardHolds(phase.board).filter((h) => h.id !== selectedId && h.marker_id !== selectedId),
         } });
         setSelectedId(null);
       }
@@ -316,12 +497,13 @@ export function TacticEditorPage() {
   }, [tool, commitDraft, selectedId, phase, setPhase]);
 
   const memberIds = useMemo(() => new Set(roster.map((r) => r.user_id)), [roster]);
+  const slots = useMemo(() => unmappedSlots(phases), [phases]);
 
   const save = async () => {
     // Include a route that is still being drawn.
     let toSave = phases;
     if (draft.length >= 2) {
-      const route: Route = { id: newId('r'), level, user_id: activePlayer, color: '#ffffff', points: draft };
+      const route: Route = { id: newId('r'), level, ...active, color: '#ffffff', points: draft };
       toSave = phases.map((p, i) => (i === index ? { ...p, board: { ...p.board, routes: [...p.board.routes, route] } } : p));
       setPhases(toSave);
     }
@@ -329,18 +511,26 @@ export function TacticEditorPage() {
     setSaving(true);
     setError(null);
     const clean = (id: number | null) => (id != null && memberIds.has(id) ? id : null);
+    const slotOf = (i: { slot?: number | null }) => i.slot ?? null;
     const payload = {
       ...fields,
       phases: toSave.map((p) => ({
         name: p.name.trim() || 'Phase',
         notes: p.notes,
         board: {
-          markers: p.board.markers.map((m) => ({ ...m, level: m.level ?? 'main', images: m.images ?? [], user_id: clean(m.user_id) })),
-          routes: p.board.routes.map((r) => ({ ...r, level: r.level ?? 'main', user_id: clean(r.user_id) })),
+          markers: p.board.markers.map((m) => ({
+            ...m, level: m.level ?? 'main', images: (m.images ?? []).map(({ image_id, caption }) => ({ image_id, caption })),
+            user_id: clean(m.user_id), slot: slotOf(m),
+          })),
+          routes: p.board.routes.map((r) => ({ ...r, level: r.level ?? 'main', user_id: clean(r.user_id), slot: slotOf(r) })),
+          holds: boardHolds(p.board).filter((h) => p.board.markers.some((m) => m.id === h.marker_id && m.kind === 'player')),
         },
         assignments: p.assignments
-          .filter((a) => memberIds.has(a.user_id) && (a.instruction.trim() || a.utility.trim() || a.reference_url))
-          .map(({ user_id, instruction, utility, reference_url }) => ({ user_id, instruction, utility, reference_url: reference_url || null })),
+          .filter((a) => (a.user_id != null ? memberIds.has(a.user_id) : Boolean(a.slot))
+            && (a.instruction.trim() || a.utility.trim() || a.reference_url))
+          .map(({ user_id, slot, instruction, utility, reference_url }) => ({
+            user_id: user_id ?? null, slot: slot ?? null, instruction, utility, reference_url: reference_url || null,
+          })),
       })),
     };
     try {
@@ -372,6 +562,7 @@ export function TacticEditorPage() {
       setPhases((ps) => ps.map((p) => ({
         ...p,
         board: {
+          ...p.board,
           markers: p.board.markers.map((m) => ({ ...m, level: 'main' as Level })),
           routes: p.board.routes.map((r) => ({ ...r, level: 'main' as Level })),
         },
@@ -400,6 +591,7 @@ export function TacticEditorPage() {
   const tools: { id: Tool; label: string; icon?: string }[] = [
     { id: 'select', label: 'Select / move', icon: 'select' },
     { id: 'route', label: 'Draw route', icon: 'route' },
+    { id: 'hold', label: 'Hold', icon: 'hold' },
     ...MARKER_KINDS.map((k) => ({ id: k as Tool, label: MARKER_LABEL[k] })),
   ];
 
@@ -458,7 +650,17 @@ export function TacticEditorPage() {
             onClick={() => { commitDraft(); setIndex(i); setSelectedId(null); }}>{i + 1}. {p.name || 'Untitled'}</button>
         ))}
         {phases.length < LIMITS.phases ? (
-          <button type="button" className="add" onClick={() => { setPhases([...phases, newPhase(phases.length + 1)]); setIndex(phases.length); touch(); }}>
+          <button type="button" className="add" title="Adds a phase after the current one, starting from where its players end up"
+            onClick={() => {
+              commitDraft();
+              const at = Math.min(index, phases.length - 1);
+              const next = [...phases];
+              next.splice(at + 1, 0, carryForward(phases[at], `Phase ${phases.length + 1}`));
+              setPhases(next);
+              setIndex(at + 1);
+              setSelectedId(null);
+              touch();
+            }}>
             <Icon name="plus" /> Add phase
           </button>
         ) : null}
@@ -473,9 +675,10 @@ export function TacticEditorPage() {
               </button>
             ))}
             <label className="inline">For
-              <select value={activePlayer ?? ''} onChange={(e) => setActivePlayer(e.target.value ? Number(e.target.value) : null)} aria-label="New items belong to">
+              <select value={whoValue(active)} onChange={(e) => setActive(parseWho(e.target.value))} aria-label="New items belong to">
                 <option value="">No player</option>
-                {roster.map((r) => <option key={r.user_id} value={r.user_id}>{r.user_name}</option>)}
+                {roster.map((r) => <option key={r.user_id} value={`u${r.user_id}`}>{r.user_name}</option>)}
+                {slots.map((n) => <option key={n} value={`s${n}`}>Player {n}</option>)}
               </select>
             </label>
           </div>
@@ -487,14 +690,17 @@ export function TacticEditorPage() {
               <button type="button" className="btn ghost small" disabled={!draft.length} onClick={() => setDraft([])}>Cancel</button>
             </div>
           ) : <p className="muted small hint">{tool === 'select'
-            ? 'Drag markers or route handles to move them.'
-            : `Click the map to place a ${MARKER_LABEL[tool].toLowerCase()}.`}</p>}
+            ? 'Drag markers or route handles to move them. Dotted lines join each player to their utility.'
+            : tool === 'hold'
+              ? 'Press a player marker and drag towards the angle they should hold. Select a cone to adjust or remove it.'
+              : `Click the map to place a ${MARKER_LABEL[tool].toLowerCase()}.`}</p>}
           <LevelSwitch map={fields.map} level={level} board={phase.board} onChange={(l) => { commitDraft(); setLevel(l); setSelectedId(null); }} />
           <MapBoard board={phase.board} map={fields.map} level={level} players={roster} onChange={(b) => setPhase({ board: b })} tool={tool}
-            selectedId={selectedId} onSelect={setSelectedId} activePlayer={activePlayer} draftRoute={draft} onDraftRoute={setDraft}
+            selectedId={selectedId} onSelect={setSelectedId} activePlayer={active.user_id} activeSlot={active.slot} draftRoute={draft} onDraftRoute={setDraft}
             label={`Editable board for ${phase.name}`} />
           <div className="legend">
             {roster.map((r) => <span key={r.user_id}><span className="dot" style={{ background: playerColor(r.user_id) }} /> {r.user_name}</span>)}
+            {slots.map((n) => <span key={`s${n}`}><span className="dot" style={{ background: ownerColor({ user_id: null, slot: n }) }} /> Player {n}</span>)}
           </div>
         </div>
         <div className="stack">
@@ -513,11 +719,16 @@ export function TacticEditorPage() {
             </div>
           </Panel>
           <Panel title="Selected item">
-            <Inspector phase={phase} selectedId={selectedId} roster={roster} onBoard={(b) => setPhase({ board: b })}
+            <Inspector phase={phase} selectedId={selectedId} roster={roster} slots={slots} onBoard={(b) => setPhase({ board: b })}
               onClear={() => setSelectedId(null)} teamId={teamId ?? 0} map={fields.map} />
           </Panel>
+          {slots.length ? (
+            <Panel title="Map player slots">
+              <SlotMapper slots={slots} roster={roster} phases={phases} onApply={(m) => { setPhases(mapSlots(phases, m)); touch(); }} />
+            </Panel>
+          ) : null}
           <Panel title="Player instructions">
-            <InstructionsForm phase={phase} roster={roster} onChange={(a) => setPhase({ assignments: a })} />
+            <InstructionsForm phase={phase} roster={roster} slots={slots} onChange={(a) => setPhase({ assignments: a })} />
           </Panel>
         </div>
       </div>

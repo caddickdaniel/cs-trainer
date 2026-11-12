@@ -52,7 +52,7 @@ export function LineupGallery({ markers, onOpen, large = false }: { markers: Mar
             {(m.images ?? []).map((img, i) => (
               <button key={img.image_id} type="button" className="lineup-thumb" onClick={() => onOpen(m, i)}
                 aria-label={`Open lineup screenshot ${i + 1} for ${markerTitle(m)}`}>
-                <img src={imageUrl(img.image_id)} alt={img.caption || `${markerTitle(m)} lineup ${i + 1}`} loading="lazy" />
+                <img src={img.url ?? imageUrl(img.image_id)} alt={img.caption || `${markerTitle(m)} lineup ${i + 1}`} loading="lazy" />
                 {img.caption ? <span>{img.caption}</span> : null}
               </button>
             ))}
@@ -93,7 +93,7 @@ export function LineupLightbox({ marker, index, onIndex, onClose }: {
             <strong>{markerTitle(marker)}{images.length > 1 ? ` (${index + 1}/${images.length})` : ''}</strong>
             <button type="button" className="btn small" onClick={onClose} autoFocus>Close</button>
           </div>
-          <img src={imageUrl(img.image_id)} alt={img.caption || markerTitle(marker)} />
+          <img src={img.url ?? imageUrl(img.image_id)} alt={img.caption || markerTitle(marker)} />
           {img.caption ? <p className="lightbox-caption">{img.caption}</p> : null}
           {images.length > 1 ? (
             <div className="row">
