@@ -21,6 +21,13 @@ gameRouter
   .all(handle405);
 
 gameRouter
+  .route('/:session_id/command')
+  .post(asyncHandler(async (req, res) => {
+    res.status(200).send(await game.command(sessionId(req), req.user.user_id, v.gameCommand.parse(req.body)));
+  }))
+  .all(handle405);
+
+gameRouter
   .route('/:session_id/end')
   .post(asyncHandler(async (req, res) => {
     res.status(200).send(await game.end(sessionId(req), req.user.user_id, v.endSession.parse(req.body || {})));

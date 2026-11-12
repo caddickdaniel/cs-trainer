@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { ECONOMY_LABEL, mapName } from '../lib/constants';
+import { mapName } from '../lib/constants';
 import { formatDateTime, useDocumentTitle } from '../lib/hooks';
 import type { GameSession, GameState, Marker, TacticSummary } from '../lib/types';
 import type { Level } from '../lib/constants';
 import { Alert, Badge, Loading, NeedsTeam, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
+import { bindingFromEvent, formatBinding, isTyping, useShortcutSettings, type Shortcuts } from '../lib/shortcuts';
 import { MapBoard } from '../components/MapBoard';
 import { PhaseInstructions } from '../components/PhaseInstructions';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
@@ -96,25 +97,33 @@ function StartPanel({ teamId, onStarted }: { teamId: number; onStarted: (s: Game
 
   if (!tactics) return <Loading />;
   return (
-    <Panel title="Start a session">
+    <Panel title="Start a match">
       {tactics.length ? (
         <div className="row wrap">
-          <select aria-label="Tactic to run" value={choice} onChange={(e) => setChoice(e.target.value)}>
-            <option value="">Choose a saved tactic…</option>
+          <select aria-label="Opening tactic" value={choice} onChange={(e) => setChoice(e.target.value)}>
+            <option value="">Choose the opening tactic…</option>
             {tactics.map((t) => (
-              <option key={t.tactic_id} value={t.tactic_id}>{t.tactic_name} · {t.side ?? '?'} · {ECONOMY_LABEL[t.economy] ?? t.economy} · {t.phase_count} phases</option>
+              <option key={t.tactic_id} value={t.tactic_id}>{mapName(t.map)} · {t.side ?? '?'} · {t.tactic_name} ({t.phase_count} phases)</option>
             ))}
           </select>
-          <button type="button" className="btn primary" disabled={!choice || busy} onClick={start}>Start session</button>
+          <button type="button" className="btn primary" disabled={!choice || busy} onClick={start}>Start round 1</button>
         </div>
       ) : <p className="muted">No saved tactics with phases yet. <Link to="/tactics/new">Create one</Link>.</p>}
-      <p className="muted small">Players see the version saved when you press Start. Later edits apply to the next session.</p>
+      <p className="muted small">The tactic's map and side become the match's. During the match you can switch tactics within that map and side, switch T/CT and start new rounds. Each round uses the tactic as it was saved when the round started.</p>
       <Alert>{error}</Alert>
     </Panel>
   );
 }
 
-function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpdate: (s: GameState) => void; focus: boolean }) {
+type Command = 'phase_prev' | 'phase_next' | 'tactic_prev' | 'tactic_next' | 'new_round' | 'switch_side';
+
+function Key({ binding }: { binding: string }) {
+  return <kbd className="key-hint">{formatBinding(binding)}</kbd>;
+}
+
+function LiveSession({ session, onUpdate, focus, shortcuts }: {
+  session: GameSession; onUpdate: (s: GameState) => void; focus: boolean; shortcuts: Shortcuts;
+}) {
   const { user } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,66 +131,126 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
   const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
   const mine = session.my_assignment;
   const map = session.tactic.map ?? 'practice_yard';
-  const phaseKey = `${session.session_id}:${session.current_phase}`;
+  const phaseKey = `${session.session_id}:${session.round_number}:${session.current_phase}`;
   const level = levelChoice?.key === phaseKey ? levelChoice.level : preferredLevel(map, session.phase.board, user?.user_id);
   const myLineups = lineupMarkers(session.phase.board, user?.user_id ?? null);
   const otherLineups = lineupMarkers(session.phase.board).filter((m) => m.user_id !== user?.user_id);
   const players = (session.assignments ?? []).map((a) => a.user_id);
   if (user && !players.includes(user.user_id)) players.push(user.user_id);
   const boardPlayers = (session.assignments ?? (mine ? [mine] : [])).map((a) => ({ user_id: a.user_id, user_name: a.user_name ?? '' }));
+  const control = session.can_control;
+  const lastPhase = session.current_phase >= session.phase_count - 1;
 
-  const control = useCallback(async (path: string, body: Record<string, unknown>) => {
+  const apply = useCallback((s: GameSession) => {
+    onUpdate({ session: s.status === 'active' ? s : null, last_ended: s.status === 'ended'
+      ? { session_id: s.session_id, ended_at: s.ended_at as string, ended_by: s.ended_by, tactic_name: s.tactic.tactic_name }
+      : null, can_control: s.can_control });
+  }, [onUpdate]);
+
+  const send = useCallback(async (path: string, body: Record<string, unknown>) => {
     setBusy(true);
     setError(null);
     try {
       const res = await api.post<{ session: GameSession }>(`/game-sessions/${session.session_id}/${path}`, body);
-      onUpdate({ session: res.session.status === 'active' ? res.session : null, last_ended: res.session.status === 'ended'
-        ? { session_id: res.session.session_id, ended_at: res.session.ended_at as string, ended_by: res.session.ended_by, tactic_name: res.session.tactic.tactic_name }
-        : null, can_control: true });
+      apply(res.session);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.body.session) {
-        const latest = err.body.session as GameSession;
-        onUpdate({ session: latest.status === 'active' ? latest : null, last_ended: null, can_control: true });
-        setError(err.code === 'version_conflict' ? 'Someone else changed the phase first. You are now on the latest phase.' : err.message);
+        apply(err.body.session as GameSession);
+        setError(err.code === 'version_conflict' ? 'The live state changed just before your command. You are now on the latest state.' : err.message);
+      } else if (err instanceof ApiError && err.code === 'not_igl') {
+        setError('You are no longer the IGL, so you cannot control live play.');
+        onUpdate({ session: { ...session, can_control: false }, last_ended: null, can_control: false });
       } else {
         setError(errorMessage(err));
       }
     } finally {
       setBusy(false);
     }
-  }, [session.session_id, onUpdate]);
+  }, [session, apply, onUpdate]);
 
-  const step = useCallback((action: 'next' | 'prev') => control('phase', { action, expected_version: session.version }), [control, session.version]);
+  const run = useCallback((action: Command) => {
+    if (action === 'phase_next' && lastPhase) return;
+    if (action === 'phase_prev' && session.current_phase === 0) return;
+    if ((action === 'tactic_next' || action === 'tactic_prev') && !session.side_tactic_count) return;
+    if (action === 'new_round' && !session.selected_tactic) { setError(`There is no ${session.side} tactic to start. Switch side or create one.`); return; }
+    send('command', { action, expected_version: session.version });
+  }, [send, session, lastPhase]);
 
+  // Shortcuts apply only to the IGL's focused Game Mode view, never while typing.
   useEffect(() => {
-    if (!session.can_control) return undefined;
+    if (!control) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName) || busy) return;
-      if (e.key === 'ArrowRight' && session.current_phase < session.phase_count - 1) step('next');
-      if (e.key === 'ArrowLeft' && session.current_phase > 0) step('prev');
+      if (busy || isTyping(e.target) || !document.hasFocus() || document.querySelector('dialog[open]')) return;
+      const binding = bindingFromEvent(e);
+      const action = (Object.keys(shortcuts) as Command[]).find((a) => shortcuts[a] === binding);
+      if (!action) return;
+      e.preventDefault();
+      run(action);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [session, step, busy]);
+  }, [control, busy, shortcuts, run]);
 
   return (
     <div className={`live ${focus ? 'focus' : ''}`}>
       <div className="live-head">
         <div>
-          <p className="eyebrow"><Badge tone="red">LIVE</Badge> {session.tactic.tactic_name} <SideBadge side={session.tactic.side} /> {ECONOMY_LABEL[session.tactic.economy] ?? session.tactic.economy} · {mapName(session.tactic.map)}</p>
-          <h1 className="phase-title">Phase {session.current_phase + 1}/{session.phase_count}: {session.phase.name}</h1>
+          <p className="eyebrow">
+            <Badge tone="red">LIVE</Badge> Round {session.round_number} · {mapName(session.map)} <SideBadge side={session.side} />
+            {session.tactic.side !== session.side ? <span className="muted small">(playing a {session.tactic.side} tactic from before the side switch)</span> : null}
+          </p>
+          <h1 className="phase-title">{session.tactic.tactic_name}</h1>
+          <p className="phase-sub">Phase {session.current_phase + 1}/{session.phase_count}: <strong>{session.phase.name}</strong></p>
         </div>
         <ol className="phase-dots" aria-label="Phases">
           {session.phases.map((p) => (
             <li key={p.index} className={p.index === session.current_phase ? 'on' : p.index < session.current_phase ? 'done' : ''} title={p.name}>
-              {session.can_control ? (
+              {control ? (
                 <button type="button" disabled={busy || p.index === session.current_phase}
-                  onClick={() => control('phase', { action: 'goto', index: p.index, expected_version: session.version })}>{p.index + 1}</button>
+                  onClick={() => send('command', { action: 'phase_goto', index: p.index, expected_version: session.version })}>{p.index + 1}</button>
               ) : <span>{p.index + 1}</span>}
             </li>
           ))}
         </ol>
       </div>
+
+      {control ? (
+        <section className="panel igl-controls" aria-label="IGL controls">
+          <div className="control-group">
+            <span className="control-label">Phase</span>
+            <button type="button" className="btn" disabled={busy || session.current_phase === 0} onClick={() => run('phase_prev')}><Icon name="left" /> Previous <Key binding={shortcuts.phase_prev} /></button>
+            <button type="button" className="btn primary" disabled={busy || lastPhase} onClick={() => run('phase_next')}>Next <Icon name="right" /> <Key binding={shortcuts.phase_next} /></button>
+          </div>
+          <div className="control-group">
+            <span className="control-label">Next round's tactic ({session.side} on {mapName(session.map)})</span>
+            {session.side_tactic_count ? (
+              <>
+                <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_prev')} aria-label="Previous tactic"><Icon name="left" /> <Key binding={shortcuts.tactic_prev} /></button>
+                <span className="selected-tactic" aria-live="polite">{session.selected_tactic?.tactic_name ?? '—'}
+                  <span className="muted small"> ({(session.side_tactics ?? []).findIndex((t) => t.tactic_id === session.selected_tactic?.tactic_id) + 1}/{session.side_tactic_count})</span></span>
+                <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_next')} aria-label="Next tactic"><Key binding={shortcuts.tactic_next} /> <Icon name="right" /></button>
+              </>
+            ) : <span className="empty-side">No {session.side} tactics on {mapName(session.map)} yet. <Link to="/tactics/new">Create one</Link> or switch side.</span>}
+          </div>
+          <div className="control-group">
+            <button type="button" className="btn" disabled={busy} onClick={() => run('switch_side')}>Switch to {session.side === 'CT' ? 'T' : 'CT'} <Key binding={shortcuts.switch_side} /></button>
+            <button type="button" className="btn primary big-ish" disabled={busy || !session.selected_tactic} onClick={() => run('new_round')}>
+              Start round {session.round_number + 1} <Key binding={shortcuts.new_round} /></button>
+            <button type="button" className="btn ghost danger" disabled={busy}
+              onClick={() => { if (window.confirm('End this Game Mode session for the whole team?')) send('end', { expected_version: session.version }); }}>
+              <Icon name="stop" /> End match
+            </button>
+          </div>
+          <p className="muted small">Shortcuts work while this page is focused. <Link to="/settings">Change shortcuts</Link></p>
+          <Alert>{error}</Alert>
+        </section>
+      ) : (
+        <p className="muted small read-only-note">
+          Read-only view. {session.igl ? `${session.igl.user_name} (IGL) controls the round.` : 'No IGL is assigned.'}
+          {session.selected_tactic && session.selected_tactic.tactic_id !== session.tactic.tactic_id ? ` Up next: ${session.selected_tactic.tactic_name}.` : ''}
+          {error ? ` ${error}` : ''}
+        </p>
+      )}
 
       <div className="live-grid">
         <div className="stack">
@@ -205,22 +274,11 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
             ) : null}
           </section>
           {session.phase.notes ? <Panel title="Team notes"><p>{session.phase.notes}</p></Panel> : null}
-          {session.can_control ? (
-            <Panel title="Controls">
-              <div className="row wrap">
-                <button type="button" className="btn big" disabled={busy || session.current_phase === 0} onClick={() => step('prev')}><Icon name="left" /> Previous</button>
-                <button type="button" className="btn primary big" disabled={busy || session.current_phase >= session.phase_count - 1} onClick={() => step('next')}>Next phase <Icon name="right" /></button>
-                <button type="button" className="btn ghost danger" disabled={busy}
-                  onClick={() => { if (window.confirm('End this Game Mode session for the whole team?')) control('end', { expected_version: session.version }); }}>
-                  <Icon name="stop" /> End session
-                </button>
-              </div>
-              <p className="muted small">Arrow keys ← → also change phase.</p>
-              <Alert>{error}</Alert>
-              <h3>All instructions this phase</h3>
+          {control ? (
+            <Panel title="All instructions this phase">
               <PhaseInstructions assignments={session.assignments ?? []} players={players} highlight={user?.user_id} />
             </Panel>
-          ) : <Alert kind="warn">{error}</Alert>}
+          ) : null}
         </div>
         <div className="stack">
           <LevelSwitch map={map} level={level} board={session.phase.board} onChange={(l) => setLevelChoice({ key: phaseKey, level: l })} />
@@ -236,7 +294,7 @@ function LiveSession({ session, onUpdate, focus }: { session: GameSession; onUpd
       </div>
       <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}
         onIndex={(i) => setOpen((o) => (o ? { ...o, index: i } : o))} onClose={() => setOpen(null)} />
-      <p className="muted small">Started by {session.started_by?.user_name ?? 'unknown'} at {formatDateTime(session.started_at)} · tactic revision {session.tactic.revision}</p>
+      <p className="muted small">Started by {session.started_by?.user_name ?? 'unknown'} at {formatDateTime(session.started_at)} · round tactic revision {session.tactic.revision}</p>
     </div>
   );
 }
@@ -250,6 +308,7 @@ export function GameModePage() {
 
 function GameMode({ teamId }: { teamId: number }) {
   const { state, setState, offline, lastOk, refetch } = useGameState(teamId);
+  const shortcuts = useShortcutSettings();
   const [focus, setFocus] = useState(false);
   const [seenSession, setSeenSession] = useState<number | null>(null);
   const session = state?.session ?? null;
@@ -262,7 +321,7 @@ function GameMode({ teamId }: { teamId: number }) {
     return () => document.body.classList.remove('focus-mode');
   }, [focus]);
 
-  const onUpdate = useCallback((s: GameState) => { setState(s); }, [setState]);
+  const onUpdate = useCallback((s: GameState) => { setState((prev) => ({ ...s, igl: s.igl ?? prev?.igl })); }, [setState]);
 
   if (!state) return offline ? <Alert>Cannot reach the server. Retrying…</Alert> : <Loading />;
   const endedHere = !session && state.last_ended && seenSession === state.last_ended.session_id;
@@ -280,17 +339,19 @@ function GameMode({ teamId }: { teamId: number }) {
       </div>
       {endedHere ? (
         <Alert kind="info">
-          The session for {state.last_ended!.tactic_name} was ended{state.last_ended!.ended_by ? ` by ${state.last_ended!.ended_by.user_name}` : ''} at {formatDateTime(state.last_ended!.ended_at)}.
+          The match was ended{state.last_ended!.ended_by ? ` by ${state.last_ended!.ended_by.user_name}` : ''} at {formatDateTime(state.last_ended!.ended_at)}.
         </Alert>
       ) : null}
-      {session ? <LiveSession session={session} onUpdate={(s) => { onUpdate(s); refetch(); }} focus={focus} /> : state.can_control ? (
-        <StartPanel teamId={teamId} onStarted={onUpdate} />
-      ) : (
-        <Panel title="Waiting for the IGL">
-          <p>No Game Mode session is running. This page updates automatically when your owner or IGL starts one.</p>
-          {state.last_ended && !endedHere ? <p className="muted small">Last session: {state.last_ended.tactic_name}, ended {formatDateTime(state.last_ended.ended_at)}.</p> : null}
-        </Panel>
-      )}
+      {session ? <LiveSession session={session} onUpdate={(s) => { onUpdate(s); refetch(); }} focus={focus} shortcuts={shortcuts} />
+        : state.can_control ? (
+          <StartPanel teamId={teamId} onStarted={onUpdate} />
+        ) : (
+          <Panel title="Waiting for the IGL">
+            <p>No match is running. This page updates automatically when {state.igl ? `${state.igl.user_name} (your IGL)` : 'your IGL'} starts one.</p>
+            {!state.igl ? <Alert kind="warn">Your team has no IGL. The team owner assigns one on the Team page.</Alert> : null}
+            {state.last_ended && !endedHere ? <p className="muted small">Last match: {state.last_ended.tactic_name}, ended {formatDateTime(state.last_ended.ended_at)}.</p> : null}
+          </Panel>
+        )}
     </div>
   );
 }

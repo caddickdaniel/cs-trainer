@@ -4,6 +4,7 @@ const db = require('../db/connection');
 const { notFound, conflict, httpError } = require('../errors');
 const { requireMember, requireLead } = require('./access');
 const { assertTeamImages } = require('./images');
+const { notify, teamMemberIds } = require('./notifications');
 
 const SUMMARY_COLUMNS = [
   'tactic_id', 'tactic_name', 'team_id', 'map', 'side', 'economy',
@@ -180,11 +181,27 @@ async function updateDocument(tacticId, userId, doc) {
       updated_by: userId,
       updated_at: trx.fn.now(),
     });
+    await notifyTacticUpdated(trx, { ...tactic, tactic_name: doc.tactic_name, revision: tactic.revision + 1 }, userId);
   });
   return getDocument(tacticId, userId);
 }
 
+// Tells the rest of the team a tactic changed (one notification per revision).
+async function notifyTacticUpdated(trx, tactic, actorId) {
+  const actor = await trx('users').where('user_id', actorId).first('user_name');
+  await notify(trx, await teamMemberIds(trx, tactic.team_id), {
+    kind: 'tactic_updated',
+    teamId: tactic.team_id,
+    actorId,
+    targetType: 'tactic',
+    targetId: tactic.tactic_id,
+    payload: { tactic_name: tactic.tactic_name, revision: tactic.revision, actor_name: actor && actor.user_name },
+    key: `tactic:${tactic.tactic_id}:rev:${tactic.revision}`,
+  });
+}
+
 module.exports = {
+  notifyTacticUpdated,
   loadTactic,
   loadPhases,
   listTeamTactics,

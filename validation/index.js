@@ -55,6 +55,85 @@ exports.patchMember = z.object({
   player_role: z.enum(C.PLAYER_ROLES).nullable().optional(),
 }).refine((v) => v.is_igl !== undefined || v.player_role !== undefined, 'Nothing to update');
 
+exports.recruiting = z.object({
+  is_recruiting: z.boolean().optional(),
+  recruiting_leagues: optionalText(300),
+  roles_needed: z.array(z.enum(C.PLAYER_ROLES)).max(7)
+    .transform((list) => [...new Set(list)]).optional(),
+  recruiting_notes: optionalText(1000),
+});
+
+exports.invitePlayer = z.object({ user_id: id });
+exports.joinRequest = z.object({ message: trimmed(500).optional().default('') });
+
+// Profile links must be https URLs on the matching site.
+const profileLink = (field) => z.string().trim().max(300).nullable().optional()
+  .transform((v) => (v === '' ? null : v))
+  .refine((v) => {
+    if (v == null) return true;
+    try {
+      const url = new URL(v);
+      return url.protocol === 'https:' && C.PROFILE_LINK_HOSTS[field].includes(url.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }, { message: `Must be an https link to ${C.PROFILE_LINK_HOSTS[field][0]}` });
+
+exports.profile = z.object({
+  language: optionalText(40),
+  region: optionalText(40),
+  platform: optionalText(40),
+  skill_level: optionalText(40),
+  bio: optionalText(1000),
+  steam_url: profileLink('steam_url'),
+  faceit_url: profileLink('faceit_url'),
+  esea_url: profileLink('esea_url'),
+  hltv_url: profileLink('hltv_url'),
+});
+
+// Key bindings such as "ArrowRight", "N", "Shift+N", "Ctrl+]".
+const binding = z.string().max(40).regex(/^((Ctrl|Alt|Shift|Meta)\+){0,3}([A-Z0-9]|F[1-9]|F1[0-2]|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Backspace|Delete|Home|End|PageUp|PageDown|Insert|[[\]\\;',./`=-])$/,
+  'Unsupported key binding');
+exports.settings = z.object({
+  shortcuts: z.object(Object.fromEntries(C.SHORTCUT_ACTIONS.map((a) => [a, binding]))).nullable().optional()
+    .superRefine((value, ctx) => {
+      if (!value) return;
+      const seen = new Map();
+      for (const [action, key] of Object.entries(value)) {
+        if (seen.has(key)) ctx.addIssue({ code: 'custom', path: [action], message: `Conflicts with ${seen.get(key)}` });
+        seen.set(key, action);
+      }
+    }),
+});
+
+// Calendar events. starts_at must include an offset (e.g. toISOString()).
+const isoInstant = z.string().max(40).refine((v) => /(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v)),
+  'Start time must be an ISO 8601 timestamp with a time zone offset');
+const timeZone = z.string().max(64).refine((tz) => {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Unknown time zone');
+exports.event = z.object({
+  kind: z.enum(C.EVENT_KINDS),
+  title: trimmed(80).min(1, 'Title is required'),
+  starts_at: isoInstant,
+  time_zone: timeZone,
+  opponent: optionalText(80),
+  notes: trimmed(2000).optional().default(''),
+});
+exports.eventPatch = exports.event.partial();
+exports.eventRange = z.object({ from: isoInstant.optional(), to: isoInstant.optional() });
+
+exports.gameCommand = z.object({
+  action: z.enum(['phase_next', 'phase_prev', 'phase_goto', 'tactic_next', 'tactic_prev', 'switch_side', 'new_round']),
+  index: z.number().int().min(0).optional(),
+  expected_version: z.number().int().positive(),
+}).refine((v) => v.action !== 'phase_goto' || v.index !== undefined, 'index is required for phase_goto');
+
 // Board geometry: coordinates are normalised to the map (0..1) so they stay
 // aligned at any rendered size.
 const coord = z.number().finite().min(0).max(1);

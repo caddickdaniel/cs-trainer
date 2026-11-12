@@ -74,7 +74,10 @@ describe('Game Mode', () => {
     await member.post(`/api/game-sessions/${session.session_id}/phase`).send({ action: 'next', expected_version: 1 }).expect(403);
     await member.post(`/api/game-sessions/${session.session_id}/end`).send({}).expect(403);
     await owner.patch(`/api/teams/${teamId}/members/${member.user.user_id}`).send({ is_igl: true }).expect(200);
-    await member.post(`/api/game-sessions/${session.session_id}/phase`).send({ action: 'next', expected_version: 1 }).expect(200);
+    // Transferring the IGL role bumps the live version so every screen refreshes.
+    const { version } = (await member.get(url).expect(200)).body.session;
+    expect(version).to.equal(2);
+    await member.post(`/api/game-sessions/${session.session_id}/phase`).send({ action: 'next', expected_version: version }).expect(200);
   });
 
   it('non-members cannot see or control the session', async () => {
@@ -102,13 +105,13 @@ describe('Game Mode', () => {
   });
 
   it('applies exactly one of two overlapping phase changes', async () => {
-    const { owner, member, teamId, tacticId, url } = await setup();
-    await owner.patch(`/api/teams/${teamId}/members/${member.user.user_id}`).send({ is_igl: true }).expect(200);
+    const { owner, tacticId, url } = await setup();
     const { session } = (await owner.post(url).send({ tactic_id: tacticId }).expect(201)).body;
     const path = `/api/game-sessions/${session.session_id}/phase`;
+    // e.g. the IGL's view on two screens sending the same command.
     const [r1, r2] = await Promise.all([
       owner.post(path).send({ action: 'next', expected_version: 1 }),
-      member.post(path).send({ action: 'next', expected_version: 1 }),
+      owner.post(path).send({ action: 'next', expected_version: 1 }),
     ]);
     expect([r1.status, r2.status].sort()).to.deep.equal([200, 409]);
     const loser = r1.status === 409 ? r1 : r2;

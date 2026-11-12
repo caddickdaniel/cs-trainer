@@ -44,7 +44,10 @@ describe('legacy data migration', () => {
     const rows = await connection('team_memberships').orderBy(['team_id', 'user_id']).select('team_id', 'user_id', 'is_igl', 'player_role');
     expect(rows.map((r) => `${r.team_id}:${r.user_id}`)).to.deep.equal(['1:1', '1:2', '2:2', '2:4']);
     // Legacy role text never grants access and is not copied into player_role.
-    expect(rows.every((r) => r.is_igl === false && r.player_role === null)).to.equal(true);
+    // The phase 2 migration makes each owner (with no other role) the IGL.
+    expect(rows.map((r) => `${r.team_id}:${r.user_id}:${r.player_role}:${r.is_igl}`)).to.deep.equal([
+      '1:1:igl:true', '1:2:null:false', '2:2:null:false', '2:4:igl:true',
+    ]);
   });
 
   it('records ambiguous and dangling records for review', async () => {

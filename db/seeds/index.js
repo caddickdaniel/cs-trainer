@@ -4,6 +4,8 @@
 const bcrypt = require('bcryptjs');
 const { tacticData, userData, teamData, extra } = require('../data');
 const { assertSafeToReset } = require('../guard');
+const { NODE_ENV } = require('../../config/env');
+const demo = require('../lib/demo');
 const {
   backfillMemberships,
   backfillTacticMetadata,
@@ -17,7 +19,7 @@ exports.SEED_PASSWORD = SEED_PASSWORD;
 
 exports.seed = async function (knex) {
   await assertSafeToReset(knex);
-  await knex.raw(`TRUNCATE lineup_images, game_sessions, team_invites, phase_assignments, tactic_phases,
+  await knex.raw(`TRUNCATE notifications, team_events, team_join_requests, public_images, lineup_images, game_sessions, team_invites, phase_assignments, tactic_phases,
     team_memberships, migration_review_items, user_sessions, tactics, teams, users
     RESTART IDENTITY CASCADE`);
 
@@ -43,6 +45,10 @@ exports.seed = async function (knex) {
   await backfillMemberships(knex);
   await backfillTacticMetadata(knex);
   await backfillPhasesFromSteps(knex);
+  // Owners without a role become their team's IGL (as the phase 2 migration does).
+  await knex.raw(`UPDATE team_memberships m SET player_role = 'igl', is_igl = true
+    FROM teams t WHERE t.team_id = m.team_id AND t.owner = m.user_id AND m.player_role IS NULL
+    AND NOT EXISTS (SELECT 1 FROM team_memberships o WHERE o.team_id = m.team_id AND o.player_role = 'igl')`);
 
   for (const { phases, ...tactic } of extra.tactics) {
     const [{ tactic_id }] = await knex('tactics')
@@ -56,5 +62,11 @@ exports.seed = async function (knex) {
         await knex('phase_assignments').insert(assignments.map((a) => ({ ...a, phase_id })));
       }
     }
+  }
+
+  // Development only: Test Team 1 (5 players) and 10 teamless demo players.
+  if (NODE_ENV === 'development') {
+    await demo.seedTestTeam(knex, passwordHash);
+    await demo.ensureTeamlessPlayers(knex, passwordHash);
   }
 };

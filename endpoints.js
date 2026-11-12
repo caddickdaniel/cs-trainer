@@ -36,13 +36,25 @@ exports.endpoints = {
       'PATCH /api/teams/:team_id/users/:user_id': { description: 'Owner only. Removes a player (legacy; same as DELETE members/:user_id)' },
       'GET /api/teams/:team_id/roster': { description: 'Members only. Team details, members with permissions/player roles, and the viewer\'s permissions' },
       'PATCH /api/teams/:team_id/members/:user_id': {
-        description: 'Body: { is_igl? (owner only), player_role? (owner/IGL, or the player themself) }',
+        description: 'Body: { player_role (igl|entry|support|lurker|awper|anchor|rifler|null), is_igl? (legacy) }. Assigning or removing "igl" is owner-only and moves live Game Mode control from the previous IGL in the same transaction. Other roles: owner/IGL for anyone, or the player themself',
       },
+      'PATCH /api/teams/:team_id/recruiting': { description: 'Owner only. Body: { is_recruiting?, recruiting_leagues?, roles_needed?, recruiting_notes? }' },
+      'POST /api/teams/:team_id/logo': { description: 'Owner only. Raw PNG/JPEG/WebP body (max 2 MB) sets the team picture' },
+      'DELETE /api/teams/:team_id/logo': { description: 'Owner only. Removes the team picture' },
+      'GET /api/teams/:team_id/requests': { description: 'Owner only. Requests to join, with requester profile summaries' },
+      'POST /api/teams/:team_id/requests/:request_id/invite': { description: 'Owner only. Sends the requester a player invite (does not add them)' },
+      'POST /api/teams/:team_id/requests/:request_id/decline': { description: 'Owner only. Declines a request' },
+      'GET /api/teams/:team_id/events': { description: 'Members only. Calendar events (query: from, to as ISO instants)' },
+      'GET /api/teams/:team_id/events/next': { description: 'Members only. Next upcoming event or null' },
+      'POST /api/teams/:team_id/events': { description: 'Owner only. Body: { kind: training|game, title, starts_at (ISO with offset), time_zone (IANA), opponent?, notes? }. Notifies members' },
+      'GET /api/teams/:team_id/events/:event_id': { description: 'Members only' },
+      'PATCH /api/teams/:team_id/events/:event_id': { description: 'Owner only. Partial event body. Notifies members' },
+      'DELETE /api/teams/:team_id/events/:event_id': { description: 'Owner only. Notifies members' },
       'DELETE /api/teams/:team_id/members/:user_id': { description: 'Owner only. Removes a player' },
       'POST /api/teams/:team_id/leave': { description: 'Leave the team (not available to the owner)' },
       'GET /api/teams/:team_id/invites': { description: 'Owner/IGL. Lists invites with status' },
       'POST /api/teams/:team_id/invites': {
-        description: 'Owner/IGL. Body: { expires_in_hours: 1|24|72|168, max_uses? }. Returns the token once',
+        description: 'Owner/IGL. Link invite: { expires_in_hours: 1|24|72|168, max_uses? } (token returned once). Player invite: { user_id } for a player with no team; 409 invite_pending if one is already pending',
       },
       'DELETE /api/teams/:team_id/invites/:invite_id': { description: 'Owner/IGL. Revokes an invite' },
       'GET /api/teams/:team_id/tactics': { description: 'Members only. Tactic library summaries' },
@@ -51,7 +63,7 @@ exports.endpoints = {
       'POST /api/teams/:team_id/lineup-images': {
         description: 'Owner/IGL. Uploads a lineup screenshot. Body: raw PNG with Content-Type: image/png (max 8 MB, 8192px per side). Returns { image: { image_id, width, height } }',
       },
-      'POST /api/teams/:team_id/game-session': { description: 'Owner/IGL. Body: { tactic_id }. Starts a session from a snapshot. 409 session_active if one is running' },
+      'POST /api/teams/:team_id/game-session': { description: 'IGL only. Body: { tactic_id }. Starts a match (map and side from the tactic) at round 1. 409 session_active if one is running' },
     },
     '/invites': {
       'GET /api/invites/:token': { description: 'Preview an invite: team, status (active|expired|revoked|used_up)' },
@@ -80,10 +92,41 @@ exports.endpoints = {
     },
     '/game-sessions': {
       'GET /api/game-sessions/:session_id': { description: 'Members only. A session (active or ended)' },
-      'POST /api/game-sessions/:session_id/phase': {
-        description: 'Owner/IGL. Body: { action: next|prev|goto, index?, expected_version }. 409 version_conflict returns the latest session',
+      'POST /api/game-sessions/:session_id/command': {
+        description: 'IGL only. Body: { action: phase_next|phase_prev|phase_goto|tactic_next|tactic_prev|switch_side|new_round, index?, expected_version }. Tactic navigation stays within the match map and side; new_round snapshots the selected tactic at phase 1. 409 version_conflict returns the latest session; 403 not_igl once control has moved',
       },
-      'POST /api/game-sessions/:session_id/end': { description: 'Owner/IGL. Ends the session (idempotent)' },
+      'POST /api/game-sessions/:session_id/phase': { description: 'IGL only. Legacy alias: { action: next|prev|goto, index?, expected_version }' },
+      'POST /api/game-sessions/:session_id/end': { description: 'IGL only. Ends the match (idempotent)' },
+    },
+    '/me': {
+      'GET /api/me/profile': { description: 'Own profile (includes email)' },
+      'PATCH /api/me/profile': { description: 'Body: language, region, platform, skill_level, bio, steam_url, faceit_url, esea_url, hltv_url (https links to the matching site, or empty)' },
+      'POST /api/me/avatar': { description: 'Raw PNG/JPEG/WebP body (max 2 MB, 4096 px) sets the profile picture' },
+      'DELETE /api/me/avatar': { description: 'Removes the profile picture' },
+      'GET /api/me/settings': { description: '{ shortcuts, defaults }' },
+      'PUT /api/me/settings': { description: 'Body: { shortcuts: { phase_prev, phase_next, tactic_prev, tactic_next, new_round, switch_side } | null (reset) }. Conflicting bindings are rejected' },
+      'GET /api/me/invites': { description: 'Player invites addressed to the caller' },
+      'POST /api/me/invites/:invite_id/accept': { description: 'Joins the team. Re-checks that the caller has no team (409 already_in_team)' },
+      'POST /api/me/invites/:invite_id/decline': { description: 'Declines the invite' },
+      'GET /api/me/requests': { description: 'The caller\'s requests to join teams' },
+    },
+    '/players': {
+      'GET /api/players/available': { description: 'Players with no team memberships (discovery fields only) and the caller\'s pending invite status' },
+      'GET /api/players/:user_id': { description: 'Public profile. Visible for the caller, teammates, teamless players, and players with a pending request to a team the caller owns' },
+    },
+    '/recruiting': {
+      'GET /api/recruiting/teams': { description: 'Teams marked as recruiting: discovery fields, roster size from memberships, caller\'s request status' },
+      'GET /api/recruiting/teams/:team_id': { description: 'One recruiting team (404 if not recruiting, unless the caller is a member)' },
+      'POST /api/recruiting/teams/:team_id/requests': { description: 'Request an invite (teamless players only). 409 request_pending on duplicates. Never adds the player' },
+    },
+    '/notifications': {
+      'GET /api/notifications': { description: 'Undismissed notifications, newest first, with unread_count' },
+      'POST /api/notifications/read-all': { description: 'Marks all as read' },
+      'POST /api/notifications/:notification_id/dismiss': { description: 'Dismisses one notification for the caller' },
+      'POST /api/notifications/:notification_id/open': { description: 'Re-checks access and returns { href, message? } for the target' },
+    },
+    '/pictures': {
+      'GET /api/pictures/:image_id': { description: 'Profile pictures and team logos (any signed-in user)' },
     },
     '/users': {
       'GET /api/users': { description: 'The caller and their teammates (never includes email)' },
