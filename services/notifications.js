@@ -5,7 +5,7 @@ const db = require('../db/connection');
 const { notFound } = require('../errors');
 const { getAccess } = require('./access');
 
-const KINDS = ['team_invite', 'join_request', 'event_created', 'event_updated', 'event_deleted', 'tactic_updated'];
+const KINDS = ['team_invite', 'join_request', 'event_created', 'event_updated', 'event_deleted', 'tactic_updated', 'review_started'];
 
 async function notify(trx, recipients, { kind, teamId = null, actorId = null, targetType = null, targetId = null, payload = {}, key }) {
   const ids = [...new Set(recipients)].filter((id) => id != null && id !== actorId);
@@ -37,6 +37,7 @@ function describe(n) {
     case 'event_updated': return `${by}updated "${p.title}" on the ${p.team_name} calendar`;
     case 'event_deleted': return `${by}cancelled "${p.title}" on the ${p.team_name} calendar`;
     case 'tactic_updated': return `${by}updated the tactic "${p.tactic_name}"`;
+    case 'review_started': return `${by}started a live review of "${p.title}"`;
     default: return 'Notification';
   }
 }
@@ -115,6 +116,12 @@ async function open(userId, id) {
       const tactic = await db('tactics').where({ tactic_id: n.target_id, team_id: n.team_id }).first('tactic_id');
       if (!tactic) return { href: '/tactics', message: `"${p.tactic_name}" has been deleted.` };
       return { href: `/tactics/${tactic.tactic_id}` };
+    }
+    case 'review_started': {
+      if (!(await member())) return { href: '/', message: 'You are no longer on this team.' };
+      const review = await db('review_sessions').where({ review_id: n.target_id, team_id: n.team_id }).first('status', 'demo_id');
+      if (!review || review.status !== 'active') return { href: '/demos', message: 'That live review has ended.' };
+      return { href: `/demos/${review.demo_id}?live=1` };
     }
     default:
       return { href: '/' };

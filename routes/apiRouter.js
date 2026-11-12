@@ -8,6 +8,9 @@ const imageRouter = require('./imageRouter');
 const meRouter = require('./meRouter');
 const notificationRouter = require('./notificationRouter');
 const discovery = require('./discoveryRouter');
+const sharedRouter = require('./sharedRouter');
+const demoRouter = require('./demoRouter');
+const reviewRouter = require('./reviewRouter');
 const createAuthRouter = require('./authRouter');
 const { endpoints } = require('../endpoints');
 const { loadUser, requireAuth } = require('../middleware/auth');
@@ -39,6 +42,9 @@ module.exports = ({ authLimiter }) => {
   apiRouter.use('/players', discovery.players);
   apiRouter.use('/recruiting', discovery.recruit);
   apiRouter.use('/pictures', discovery.pics);
+  apiRouter.use('/shared-tactics', sharedRouter);
+  apiRouter.use('/demos', demoRouter);
+  apiRouter.use('/reviews', reviewRouter);
 
   apiRouter.use((req, res) => {
     res.status(404).send({ message: 'Sorry, this endpoint was not found! Go to /api to see a list of endpoints' });

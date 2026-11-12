@@ -119,6 +119,8 @@ const timeZone = z.string().max(64).refine((tz) => {
 }, 'Unknown time zone');
 exports.event = z.object({
   kind: z.enum(C.EVENT_KINDS),
+  // Demo Review events may link a demo from the team's library.
+  demo_id: id.nullable().optional(),
   title: trimmed(80).min(1, 'Title is required'),
   starts_at: isoInstant,
   time_zone: timeZone,
@@ -129,10 +131,12 @@ exports.eventPatch = exports.event.partial();
 exports.eventRange = z.object({ from: isoInstant.optional(), to: isoInstant.optional() });
 
 exports.gameCommand = z.object({
-  action: z.enum(['phase_next', 'phase_prev', 'phase_goto', 'tactic_next', 'tactic_prev', 'switch_side', 'new_round']),
+  action: z.enum(['phase_next', 'phase_prev', 'phase_goto', 'tactic_next', 'tactic_prev', 'tactic_select', 'switch_side', 'new_round']),
   index: z.number().int().min(0).optional(),
+  tactic_id: id.optional(),
   expected_version: z.number().int().positive(),
-}).refine((v) => v.action !== 'phase_goto' || v.index !== undefined, 'index is required for phase_goto');
+}).refine((v) => v.action !== 'phase_goto' || v.index !== undefined, 'index is required for phase_goto')
+  .refine((v) => v.action !== 'tactic_select' || v.tactic_id !== undefined, 'tactic_id is required for tactic_select');
 
 // Board geometry: coordinates are normalised to the map (0..1) so they stay
 // aligned at any rendered size.
@@ -149,6 +153,10 @@ const lineupImage = z.object({
   caption: trimmed(120).optional().default(''),
 });
 
+// Player slots (1-5) identify players in shared and imported tactics until the
+// team maps them to its roster.
+const slot = z.number().int().min(1).max(C.LIMITS.slots).nullable().optional().default(null);
+
 const marker = z.object({
   id: clientId,
   kind: z.enum(C.MARKER_KINDS),
@@ -156,45 +164,73 @@ const marker = z.object({
   y: coord,
   level,
   user_id: id.nullable().optional().default(null),
-  label: trimmed(40).optional().default(''),
+  slot,
+  // Player markers show initials; notes show this text on the board.
+  label: trimmed(C.LIMITS.noteChars).optional().default(''),
+  // Note font size in board units (notes only).
+  size: z.number().int().min(C.NOTE_SIZE.min).max(C.NOTE_SIZE.max).optional(),
   // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
   message: 'Only utility and note markers can have lineup screenshots',
   path: ['images'],
+}).refine((m) => m.kind === 'note' || m.label.length <= 40, {
+  message: 'Labels can be at most 40 characters',
+  path: ['label'],
 });
 
 const route = z.object({
   id: clientId,
   level,
   user_id: id.nullable().optional().default(null),
+  slot,
   color: color.optional().default('#f5a524'),
   points: z.array(point).min(2).max(C.LIMITS.routePoints),
+});
+
+// A hold is an angle a player covers: a cone anchored to that player's marker
+// (it takes the marker's position and floor). angle is the cone's centre in
+// degrees (0 = right, 90 = down), spread its total width, length its reach as
+// a fraction of the map width.
+const hold = z.object({
+  id: clientId,
+  marker_id: clientId,
+  angle: z.number().finite().min(-360).max(360),
+  spread: z.number().finite().min(5).max(180),
+  length: z.number().finite().min(0.02).max(0.6),
 });
 
 const board = z.object({
   markers: z.array(marker).max(C.LIMITS.markers).default([]),
   routes: z.array(route).max(C.LIMITS.routes).default([]),
+  holds: z.array(hold).max(C.LIMITS.holds).default([]),
 }).superRefine((b, ctx) => {
-  const ids = [...b.markers, ...b.routes].map((x) => x.id);
+  const ids = [...b.markers, ...b.routes, ...b.holds].map((x) => x.id);
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Board item ids must be unique' });
+  const players = new Set(b.markers.filter((m) => m.kind === 'player').map((m) => m.id));
+  b.holds.forEach((h, i) => {
+    if (!players.has(h.marker_id)) {
+      ctx.addIssue({ code: 'custom', path: ['holds', i, 'marker_id'], message: 'A hold must belong to a player marker on this phase' });
+    }
+  });
 });
 exports.board = board;
 
 const assignment = z.object({
-  user_id: id,
+  user_id: id.nullable().optional().default(null),
+  slot,
   instruction: trimmed(2000).default(''),
   utility: trimmed(1000).default(''),
   reference_url: z.string().trim().max(500).optional().nullable()
     .refine((v) => !v || /^https?:\/\//i.test(v), 'Reference must be an http(s) URL'),
-});
+}).refine((a) => a.user_id != null || a.slot != null, 'An instruction needs a player or a player slot');
 
 const phase = z.object({
   name: trimmed(60).min(1, 'Every phase needs a name'),
   notes: trimmed(2000).default(''),
   board: board.default({ markers: [], routes: [] }),
   assignments: z.array(assignment).max(10).default([]).superRefine((list, ctx) => {
-    const ids = list.map((a) => a.user_id);
+    const ids = list.map((a) => (a.user_id != null ? `u${a.user_id}` : `s${a.slot}`));
     if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'A player can only have one instruction per phase' });
   }),
 });
@@ -268,6 +304,52 @@ exports.legacyUserPatch = z.object({
 });
 
 exports.imageId = imageId;
+
+// Shared tactics.
+exports.shareTactic = z.object({ include_images: z.boolean().optional().default(true) });
+exports.vote = z.object({ value: z.union([z.literal(1), z.literal(-1), z.literal(0)]) });
+exports.importShared = z.object({ team_id: id, tactic_name: trimmed(60).min(1).optional() });
+exports.sharedQuery = z.object({
+  map: z.enum(C.MAPS).optional(),
+  side: z.enum(C.SIDES).optional(),
+  economy: z.enum(C.ECONOMIES).optional(),
+  sort: z.enum(['top', 'new']).optional().default('top'),
+  q: z.string().trim().max(60).optional(),
+});
+
+// Demo Review.
+exports.demoUploadQuery = z.object({
+  title: z.string().trim().max(120).optional(),
+  file_name: z.string().trim().max(255).optional(),
+});
+exports.demoPatch = z.object({ title: trimmed(120).min(1) });
+const annPoint = z.object({ x: coord, y: coord });
+exports.annotation = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('drawing'),
+    round_number: z.number().int().min(1).max(200),
+    tick: z.number().int().min(0),
+    level: z.enum(C.LEVELS).optional().default('main'),
+    data: z.object({ points: z.array(annPoint).min(2).max(400), color: color.optional().default('#ffd166') }),
+  }),
+  z.object({
+    kind: z.literal('text'),
+    round_number: z.number().int().min(1).max(200),
+    tick: z.number().int().min(0),
+    level: z.enum(C.LEVELS).optional().default('main'),
+    data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166') }),
+  }),
+]);
+exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
+exports.reviewCommand = z.object({
+  action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),
+  tick: z.number().finite().min(0).optional(),
+  round_number: z.number().int().min(1).optional(),
+  speed: z.union([z.literal(0.5), z.literal(1), z.literal(2), z.literal(4)]).optional(),
+  expected_version: z.number().int().positive(),
+}).refine((c) => c.action !== 'seek' || c.tick !== undefined, 'tick is required for seek')
+  .refine((c) => c.action !== 'round' || c.round_number !== undefined, 'round_number is required to change round')
+  .refine((c) => c.action !== 'speed' || c.speed !== undefined, 'speed is required');
 exports.startSession = z.object({ tactic_id: id });
 exports.phaseChange = z.object({
   action: z.enum(['next', 'prev', 'goto']),

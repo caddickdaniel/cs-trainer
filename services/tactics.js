@@ -8,7 +8,7 @@ const { notify, teamMemberIds } = require('./notifications');
 
 const SUMMARY_COLUMNS = [
   'tactic_id', 'tactic_name', 'team_id', 'map', 'side', 'economy',
-  'grenade', 'molly', 'flash', 'smoke', 'revision', 'created_at', 'updated_at',
+  'grenade', 'molly', 'flash', 'smoke', 'revision', 'created_at', 'updated_at', 'imported_from_share_id',
 ];
 
 async function loadTactic(tacticId, trx = db, lock = false) {
@@ -26,6 +26,7 @@ async function listTeamTactics(teamId, userId) {
     .where('t.team_id', teamId)
     .select(SUMMARY_COLUMNS.map((c) => `t.${c}`))
     .select(db.raw('(select count(*)::int from tactic_phases p where p.tactic_id = t.tactic_id) as phase_count'))
+    .select(db.raw('(select s.share_id from shared_tactics s where s.source_tactic_id = t.tactic_id and s.withdrawn_at is null) as share_id'))
     .orderBy([{ column: 't.tactic_name' }, { column: 't.tactic_id' }]);
   return { tactics, can_edit: access.canLead };
 }
@@ -35,20 +36,30 @@ async function loadPhases(tacticId, trx = db) {
     .select('phase_id', 'position', 'name', 'notes', 'board');
   const assignments = phases.length
     ? await trx('phase_assignments as a')
-      .join('users as u', 'u.user_id', 'a.user_id')
+      .leftJoin('users as u', 'u.user_id', 'a.user_id')
       .whereIn('a.phase_id', phases.map((p) => p.phase_id))
-      .orderBy([{ column: 'a.phase_id' }, { column: 'a.user_id' }])
-      .select('a.phase_id', 'a.user_id', 'u.user_name', 'a.instruction', 'a.utility', 'a.reference_url')
+      .orderByRaw('a.phase_id, a.user_id NULLS LAST, a.slot')
+      .select('a.phase_id', 'a.user_id', 'a.slot', 'u.user_name', 'a.instruction', 'a.utility', 'a.reference_url')
     : [];
   return phases.map((p) => ({
     position: p.position,
     name: p.name,
     notes: p.notes,
-    board: p.board,
+    board: normaliseBoard(p.board),
     assignments: assignments
       .filter((a) => a.phase_id === p.phase_id)
       .map(({ phase_id, ...a }) => a),
   }));
+}
+
+// Boards saved before holds and player slots existed load with defaults.
+function normaliseBoard(board) {
+  const b = board || {};
+  return {
+    markers: (b.markers || []).map((m) => ({ slot: null, ...m })),
+    routes: (b.routes || []).map((r) => ({ slot: null, ...r })),
+    holds: b.holds || [],
+  };
 }
 
 async function teamRoster(teamId, trx = db) {
@@ -68,7 +79,7 @@ async function getDocument(tacticId, userId) {
   const [phases, roster] = await Promise.all([loadPhases(tacticId), teamRoster(tactic.team_id)]);
   const memberIds = new Set(roster.map((r) => r.user_id));
   for (const phase of phases) {
-    for (const a of phase.assignments) a.is_member = memberIds.has(a.user_id);
+    for (const a of phase.assignments) a.is_member = a.user_id != null && memberIds.has(a.user_id);
   }
   return { tactic: { ...tactic, phases }, roster, can_edit: access.canLead };
 }
@@ -77,7 +88,7 @@ async function getDocument(tacticId, userId) {
 async function assertAssigneesAreMembers(trx, teamId, doc) {
   const ids = new Set();
   for (const phase of doc.phases) {
-    phase.assignments.forEach((a) => ids.add(a.user_id));
+    phase.assignments.forEach((a) => a.user_id != null && ids.add(a.user_id));
     phase.board.markers.forEach((m) => m.user_id != null && ids.add(m.user_id));
     phase.board.routes.forEach((r) => r.user_id != null && ids.add(r.user_id));
   }
@@ -127,7 +138,8 @@ async function writePhases(trx, tacticId, phases) {
       await trx('phase_assignments').insert(
         phase.assignments.map((a) => ({
           phase_id,
-          user_id: a.user_id,
+          user_id: a.user_id ?? null,
+          slot: a.slot ?? null,
           instruction: a.instruction,
           utility: a.utility,
           reference_url: a.reference_url || null,
@@ -201,6 +213,10 @@ async function notifyTacticUpdated(trx, tactic, actorId) {
 }
 
 module.exports = {
+  normaliseBoard,
+  writePhases,
+  tacticRow,
+  teamRoster,
   notifyTacticUpdated,
   loadTactic,
   loadPhases,

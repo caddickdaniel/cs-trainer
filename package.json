@@ -24,7 +24,7 @@
     "seed:db": "npm run db:reset",
     "setup": "npm run db:create && npm run db:reset",
     "dev": "node scripts/dev.js",
-    "dev:server": "nodemon --watch . --ignore client --ignore spec listen.js",
+    "dev:server": "nodemon --watch . --ignore client --ignore spec --ignore storage listen.js",
     "dev:client": "npm run dev --workspace client",
     "build": "npm run build --workspace client",
     "start": "node listen.js",
@@ -37,6 +37,7 @@
   "author": "Daniel Caddick",
   "license": "ISC",
   "dependencies": {
+    "@laihoe/demoparser2": "0.42.0",
     "bcryptjs": "^3.0.2",
     "connect-pg-simple": "^10.0.0",
     "csrf-sync": "^4.2.1",

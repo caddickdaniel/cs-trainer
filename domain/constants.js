@@ -23,7 +23,7 @@ exports.mapLevels = (id) => (exports.MAP_DEFS.find((m) => m.id === id) || { leve
 // Roster roles. 'igl' is held by at most one player per team and is the only
 // role that controls live Game Mode.
 exports.PLAYER_ROLES = ['entry', 'support', 'lurker', 'awper', 'anchor', 'rifler', 'igl'];
-exports.EVENT_KINDS = ['training', 'game'];
+exports.EVENT_KINDS = ['training', 'game', 'demo_review'];
 exports.SHORTCUT_ACTIONS = ['phase_prev', 'phase_next', 'tactic_prev', 'tactic_next', 'new_round', 'switch_side'];
 exports.DEFAULT_SHORTCUTS = {
   phase_prev: 'ArrowLeft',
@@ -56,4 +56,31 @@ exports.LIMITS = {
   pictureBytes: 2 * 1024 * 1024,
   pictureMaxSide: 4096,
   playerInviteDays: 7,
+  holds: 20,
+  noteChars: 200,
+  // Shared tactics use Player 1-5 slots.
+  slots: 5,
+  annotationsPerRound: 300,
 };
+
+// Note text size on the board (board units; the board is 1000 units wide).
+exports.NOTE_SIZE = { min: 12, max: 64, default: 22 };
+
+// Demo Review. Radar transforms match the radar images in client/public/maps
+// (from CS Demo Manager, MIT, see client/public/maps/SOURCES.md):
+// px = (x - pos_x) / scale, py = (pos_y - y) / scale on a 1024px radar.
+// Positions with z below lowerBelowZ are drawn on the lower radar.
+exports.RADAR_TRANSFORMS = {
+  de_ancient: { pos_x: -2953, pos_y: 2164, scale: 5 },
+  de_anubis: { pos_x: -2796, pos_y: 3328, scale: 5.22 },
+  de_cache: { pos_x: -2000, pos_y: 3250, scale: 5.5 },
+  de_dust2: { pos_x: -2476, pos_y: 3239, scale: 4.4 },
+  de_inferno: { pos_x: -2087, pos_y: 3870, scale: 4.9 },
+  de_mirage: { pos_x: -3230, pos_y: 1713, scale: 5 },
+  de_nuke: { pos_x: -3453, pos_y: 2887, scale: 7, lowerBelowZ: -495 },
+  de_overpass: { pos_x: -4831, pos_y: 1781, scale: 5.2 },
+  de_train: { pos_x: -2308, pos_y: 2078, scale: 4.082077, lowerBelowZ: -50 },
+  de_vertigo: { pos_x: -3168, pos_y: 1762, scale: 4, lowerBelowZ: 11700 },
+};
+exports.RADAR_SIZE = 1024;
+exports.DEMO_STATUSES = ['queued', 'processing', 'ready', 'failed'];
