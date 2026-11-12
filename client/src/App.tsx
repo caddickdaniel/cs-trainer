@@ -11,6 +11,12 @@ import { TacticViewPage } from './pages/TacticView';
 import { TacticEditorPage } from './pages/TacticEditor';
 import { GameModePage } from './pages/GameMode';
 import { NotFoundPage } from './pages/NotFound';
+import { ProfilePage } from './pages/Profile';
+import { PlayerProfilePage } from './pages/PlayerProfile';
+import { InvitesPage } from './pages/Invites';
+import { RecruitingPage, RecruitingTeamPage } from './pages/Recruiting';
+import { TrainingPage } from './pages/Training';
+import { SettingsPage } from './pages/Settings';
 
 function RequireAuth() {
   const { user, loading } = useAuth();
@@ -40,6 +46,13 @@ const router = createBrowserRouter([
           { path: '/tactics/:tacticId', element: <TacticViewPage /> },
           { path: '/tactics/:tacticId/edit', element: <TacticEditorPage /> },
           { path: '/game', element: <GameModePage /> },
+          { path: '/profile', element: <ProfilePage /> },
+          { path: '/players/:userId', element: <PlayerProfilePage /> },
+          { path: '/invites', element: <InvitesPage /> },
+          { path: '/recruiting', element: <RecruitingPage /> },
+          { path: '/recruiting/:teamId', element: <RecruitingTeamPage /> },
+          { path: '/training', element: <TrainingPage /> },
+          { path: '/settings', element: <SettingsPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

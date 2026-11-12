@@ -25,10 +25,37 @@ export const findMap = (id: string | null | undefined) => MAPS.find((m) => m.id 
 export const mapLevels = (id: string | null | undefined): Level[] => findMap(id)?.levels ?? ['main'];
 export const radarUrl = (id: string, level: Level) => `/maps/${id}${level === 'lower' ? '_lower' : ''}.png`;
 export const LINEUP_KINDS = ['smoke', 'flash', 'molly', 'he', 'note'] as const;
-export const PLAYER_ROLES = ['entry', 'support', 'lurker', 'awper', 'anchor', 'rifler'] as const;
+export const PLAYER_ROLES = ['igl', 'entry', 'support', 'lurker', 'awper', 'anchor', 'rifler'] as const;
+// Display labels for stored role values.
+export const ROLE_LABEL: Record<string, string> = {
+  igl: 'IGL', entry: 'Entry', support: 'Support', lurker: 'Lurker', awper: 'AWPer', anchor: 'Anchor', rifler: 'Rifler',
+};
+export const roleLabel = (role: string | null | undefined) => (role ? ROLE_LABEL[role] ?? role : '');
+export const EVENT_KINDS = ['training', 'game'] as const;
+export const EVENT_LABEL: Record<string, string> = { training: 'Training', game: 'Game' };
+
+export const SHORTCUT_ACTIONS = ['phase_prev', 'phase_next', 'tactic_prev', 'tactic_next', 'new_round', 'switch_side'] as const;
+export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
+export const SHORTCUT_LABEL: Record<ShortcutAction, string> = {
+  phase_prev: 'Previous phase',
+  phase_next: 'Next phase',
+  tactic_prev: 'Previous tactic',
+  tactic_next: 'Next tactic',
+  new_round: 'Start a new round',
+  switch_side: 'Switch between T and CT',
+};
+export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
+  phase_prev: 'ArrowLeft', phase_next: 'ArrowRight', tactic_prev: '[', tactic_next: ']', new_round: 'N', switch_side: 'S',
+};
+export const PROFILE_LINKS = [
+  { key: 'steam_url', label: 'Steam', host: 'steamcommunity.com' },
+  { key: 'faceit_url', label: 'FACEIT', host: 'faceit.com' },
+  { key: 'esea_url', label: 'ESEA', host: 'esea.net' },
+  { key: 'hltv_url', label: 'HLTV', host: 'hltv.org' },
+] as const;
 export const MARKER_KINDS = ['player', 'smoke', 'flash', 'molly', 'he', 'note'] as const;
 export const INVITE_TTL_HOURS = [1, 24, 72, 168] as const;
-export const LIMITS = { phases: 20, markers: 60, routes: 30, routePoints: 100, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024 };
+export const LIMITS = { phases: 20, markers: 60, routes: 30, routePoints: 100, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024, pictureBytes: 2 * 1024 * 1024 };
 
 export const PLAYER_COLORS = ['#f5a524', '#4cc38a', '#5b9cf5', '#e5484d', '#b07cf7', '#3dd6d0', '#f17ac6', '#c9d36a', '#ff8a4c', '#9aa4b2'];
 

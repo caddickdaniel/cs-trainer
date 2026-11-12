@@ -81,6 +81,7 @@ export interface Membership {
   is_owner: boolean;
   is_igl: boolean;
   can_lead: boolean;
+  can_control: boolean;
   player_role: PlayerRole | null;
 }
 
@@ -94,6 +95,7 @@ export interface MeResponse {
 export interface Member {
   user_id: number;
   user_name: string;
+  avatar_url: string | null;
   is_igl: boolean;
   is_owner: boolean;
   can_lead: boolean;
@@ -110,22 +112,30 @@ export interface Team {
   platform: string | null;
   skill_level: string | null;
   description: string | null;
+  logo_url: string | null;
+  is_recruiting: boolean;
+  recruiting_leagues: string | null;
+  roles_needed: PlayerRole[];
+  recruiting_notes: string | null;
 }
 
 export interface RosterResponse {
   team: Team;
   members: Member[];
-  viewer: { is_owner: boolean; is_igl: boolean; can_lead: boolean };
+  viewer: { is_owner: boolean; is_igl: boolean; can_lead: boolean; can_control: boolean };
 }
 
 export interface Invite {
   invite_id: number;
+  kind: 'link' | 'player';
+  invitee_user_id: number | null;
+  invitee_name?: string;
   created_at: string;
   expires_at: string;
   revoked_at: string | null;
   max_uses: number | null;
   use_count: number;
-  status: 'active' | 'expired' | 'revoked' | 'used_up';
+  status: 'active' | 'pending' | 'accepted' | 'declined' | 'expired' | 'revoked' | 'used_up';
 }
 
 export interface UserRef { user_id: number; user_name: string }
@@ -148,10 +158,105 @@ export interface GameSession {
   my_assignment: Assignment | null;
   assignments?: Assignment[];
   can_control: boolean;
+  round_number: number;
+  map: string | null;
+  side: Side | null;
+  igl: UserRef | null;
+  selected_tactic: { tactic_id: number; tactic_name: string } | null;
+  side_tactic_count: number;
+  side_tactics?: { tactic_id: number; tactic_name: string }[];
 }
 
 export interface GameState {
   session: GameSession | null;
   last_ended: { session_id: number; ended_at: string; ended_by: UserRef | null; tactic_name: string } | null;
   can_control: boolean;
+  igl?: UserRef | null;
+}
+
+export interface Profile {
+  user_id: number;
+  user_name: string;
+  avatar_url: string | null;
+  language: string | null;
+  region: string | null;
+  platform: string | null;
+  skill_level: string | null;
+  bio: string | null;
+  steam_url: string | null;
+  faceit_url: string | null;
+  esea_url: string | null;
+  hltv_url: string | null;
+  email?: string;
+  team?: { team_id: number; team_name: string } | null;
+}
+
+export interface PlayerSummary {
+  user_id: number;
+  user_name: string;
+  avatar_url: string | null;
+  language: string | null;
+  region: string | null;
+  platform: string | null;
+  skill_level: string | null;
+  invite_status: 'pending' | null;
+}
+
+export interface RecruitingTeam {
+  team_id: number;
+  team_name: string;
+  logo_url: string | null;
+  language: string | null;
+  region: string | null;
+  platform: string | null;
+  skill_level: string | null;
+  description: string | null;
+  recruiting_leagues: string | null;
+  roles_needed: PlayerRole[];
+  recruiting_notes: string | null;
+  roster_size: number;
+  request_status: 'pending' | 'invited' | null;
+  can_request: boolean;
+  is_member: boolean;
+}
+
+export interface ReceivedInvite extends Invite {
+  team: { team_id: number; team_name: string; logo_url: string | null; region: string | null; language: string | null;
+    platform: string | null; skill_level: string | null; roster_size: number };
+}
+
+export interface JoinRequest {
+  request_id: number;
+  team_id: number;
+  user_id: number;
+  user_name: string;
+  avatar_url: string | null;
+  language: string | null;
+  region: string | null;
+  platform: string | null;
+  skill_level: string | null;
+  message: string;
+  status: 'pending' | 'invited' | 'declined';
+  created_at: string;
+  has_team: boolean;
+}
+
+export interface TeamEvent {
+  event_id: number;
+  team_id: number;
+  kind: 'training' | 'game';
+  title: string;
+  starts_at: string;
+  time_zone: string;
+  opponent: string | null;
+  notes: string;
+  updated_at: string;
+}
+
+export interface AppNotification {
+  notification_id: number;
+  kind: string;
+  message: string;
+  created_at: string;
+  read: boolean;
 }

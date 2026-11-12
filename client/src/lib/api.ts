@@ -75,14 +75,14 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
   return data as T;
 }
 
-// Uploads a PNG as the raw request body.
-async function uploadPng<T>(path: string, file: Blob, retry = true): Promise<T> {
+// Uploads a file as the raw request body (PNG by default).
+async function uploadPng<T>(path: string, file: Blob, retry = true, contentType = 'image/png'): Promise<T> {
   if (!csrfToken) await refreshCsrf();
   let res: Response;
   try {
     res = await fetch(`/api${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'image/png', 'X-CSRF-Token': csrfToken as string, Accept: 'application/json' },
+      headers: { 'Content-Type': contentType, 'X-CSRF-Token': csrfToken as string, Accept: 'application/json' },
       credentials: 'same-origin',
       body: file,
     });
@@ -93,9 +93,9 @@ async function uploadPng<T>(path: string, file: Blob, retry = true): Promise<T> 
   if (!res.ok) {
     if (res.status === 403 && data.code === 'csrf_invalid' && retry) {
       await refreshCsrf();
-      return uploadPng<T>(path, file, false);
+      return uploadPng<T>(path, file, false, contentType);
     }
-    const message = res.status === 413 ? 'That image is larger than 8 MB.' : (data.message as string) || res.statusText;
+    const message = res.status === 413 ? 'That image is too large.' : (data.message as string) || res.statusText;
     throw new ApiError(res.status, message, data.code as string | undefined, data);
   }
   return data as T;
@@ -103,8 +103,12 @@ async function uploadPng<T>(path: string, file: Blob, retry = true): Promise<T> 
 
 export const imageUrl = (imageId: string) => `/api/lineup-images/${imageId}`;
 
+// Profile pictures and team logos: PNG, JPEG or WebP.
+const uploadPicture = <T>(path: string, file: File) => uploadPng<T>(path, file, true, file.type);
+
 export const api = {
   uploadPng,
+  uploadPicture,
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),

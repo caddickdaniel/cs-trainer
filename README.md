@@ -2,9 +2,16 @@
 
 CS-Trainer is a Counter-Strike 2 web app for teams. Teams plan rounds, give each player a job for every phase, and follow those instructions live on a second monitor in **Game Mode**.
 
-**Milestone 1 (this branch):** a user signs up, creates a team, invites a teammate and builds a tactic. They then start it in Game Mode, and each teammate sees only the instructions assigned to them. Both users can refresh or reconnect and pick up at the current phase.
+- **Milestone 1:** sign up, create a team, invite a teammate, build a tactic and run it in Game Mode. Each teammate sees only their own instructions, and refresh or reconnect resumes the current phase.
+- **Phase 2 (this branch):**
+  - team management, with the IGL role controlling live play;
+  - player profiles, player invites and a recruiting directory;
+  - Game Mode rounds with tactic and side switching and configurable shortcuts;
+  - a Training calendar with a countdown on Home;
+  - notifications.
 
 - [Quick start](#quick-start)
+- [Phase 2](#phase-2)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
 - [Security model](#security-model)
@@ -29,7 +36,25 @@ npm run dev                 # API on :9090, Vite on :5173 (proxies /api)
 
 Open <http://localhost:5173>.
 
-**Development accounts.** The seeds create `user-a@cs-trainer.test` … `user-l@cs-trainer.test`, plus `user-m@cs-trainer.test`, who has no team. Their password is `SEED_PASSWORD` in [db/seeds/index.js](db/seeds/index.js). User A owns *Team A* and has a demo tactic, *A Split (demo)*. User B is a member of Team A. Seeds are for development and test databases only.
+**Development accounts.** Every seeded account uses the password `SEED_PASSWORD` from [db/seeds/index.js](db/seeds/index.js). Seeds are for development and test databases only.
+
+| View to test | Account | Notes |
+| --- | --- | --- |
+| Team owner (not IGL) | `test-owner@cs-trainer.test` | Owns **Test Team 1**; can manage the team but cannot control live play |
+| IGL | `test-juno@cs-trainer.test` | Test Team 1's IGL; controls Game Mode |
+| Ordinary players | `test-vex@`, `test-morrow@`, `test-talon@cs-trainer.test` | Entry, Support and AWPer on Test Team 1 |
+| Teamless players | `demo-kestrel@`, `demo-mateo@`, `demo-hana@`, `demo-liam@`, `demo-sofia@`, `demo-noah@`, `demo-priya@`, `demo-yusuf@`, `demo-emma@`, `demo-chen@cs-trainer.test` | Varied languages, regions, platforms and skill levels; some have bios and profile links |
+| Legacy sample data | `user-a@` … `user-m@cs-trainer.test` | User A owns *Team A* (demo tactic *A Split (demo)*); User M has no team |
+
+**Adding demo accounts to an existing database without a reset** (development only):
+
+```sh
+npm run db:migrate                          # apply new migrations; existing data is kept
+npm run db:demo                             # add or refresh the 10 teamless demo players
+npm run db:demo -- --team "Test Team 1"     # also add Juno, Vex, Morrow and Talon to that team
+```
+
+The script matches accounts by email and can be re-run. Teammates already on another team are skipped. Juno becomes IGL only if the team has none, otherwise Rifler.
 
 To try the two-player flow on one machine, use two browser profiles, or open one tab on `localhost:5173` and another on `127.0.0.1:5173`. Each host gets its own cookies, so the two tabs can be signed in as different users.
 
@@ -54,6 +79,7 @@ In production, Express serves `client/dist` and the API from one origin, with no
 | `npm run db:reset` | Rolls back all migrations, migrates and seeds. Refuses `NODE_ENV=production` |
 | `npm run db:migrate` / `db:rollback` / `db:seed` | Knex migrate/seed |
 | `npm run db:review` | Lists legacy records the migrations could not map unambiguously |
+| `npm run db:demo [-- --team "Name"]` | Development only: adds the demo players (and four teammates) without resetting |
 | `npm run dev` | API (nodemon) and Vite dev server together |
 | `npm test` | Mocha suite against `cs_trainer_test` |
 | `npm run lint` | ESLint (server JS + client TS/React hooks) |
@@ -259,13 +285,132 @@ Manual end-to-end check: two signed-in browser sessions, `localhost` and `127.0.
 
 Each follow-on milestone stays out of primary navigation until it has a usable workflow.
 
-1. **Training.** A team practice view for drills and lineup references. Scope: a drill list per team, with lineups that can link to a tactic phase or board marker, and owner/IGL-curated content. Reuses the board and the access checks. Not included: in-game automation or server configs.
-2. **Schedule.** A team calendar for practice sessions with explicit time zones. Store UTC times plus the creator's IANA zone, render in each viewer's zone, and support recurring practices and RSVPs. Scope: create/edit by owner/IGL, view for members, and optional ICS export. Not included: external calendar sync.
+1. **Training drills.** The team calendar shipped in Phase 2. What remains is a drill and lineup-reference library linked to tactic phases and board markers.
+2. **Calendar extras.** Recurring practices, RSVPs and ICS export, building on the Phase 2 calendar.
 3. **Steam sign-in.** An additional identity linked to an existing account. Scope: an OpenID 2.0 "link Steam" action for signed-in users, stored in a `user_identities` table that is unique per provider ID. Sign-in through a linked Steam identity comes after that. It never creates accounts implicitly or merges accounts automatically.
 4. **Demo Review.** Start with a feasibility check of the CS Demo Manager integration suggested in this README: licensing, a headless or CLI parser, and the CS2 demo format. Then import one small sample demo into a separate `demos` store, showing rounds and a basic timeline. Linking rounds to tactics comes after that.
 5. **Native overlay.** Evaluate separately after the browser Game Mode has been playtested. Consider anti-cheat and VAC policy, OS support, and whether a second-monitor page or a minimal always-on-top window is enough.
 
 Other small follow-ups: cleanup of unused lineup images (uploads are kept even if a tactic edit is abandoned, so running sessions never lose an image), moving image storage to object storage if volume grows, deriving the utility counts from board markers, a password reset / legacy-account claim flow, ownership transfer, a resolve action for review items, more maps, a public team directory, and push updates (SSE) instead of polling.
+
+## Phase 2
+
+### What was added
+
+- **Team management (owner).**
+  - Edit team details and picture, change roster roles, and remove players (with a confirmation).
+  - Delete the team, which requires typing its name.
+  - Deleting a team cascades its tactics, lineup images, invites, join requests, calendar and Game Mode sessions, and moves every member's active team to another membership or clears it.
+  - A removed player loses access straight away, because access is checked against membership on every request.
+- **Roles.** Labels are Entry, Support, Lurker, AWPer, Anchor, Rifler and IGL. Stored values are unchanged (`entry`, `awper`, …) plus a new `igl`. Role badges have icons, for example a crosshair for AWPer.
+- **IGL controls live play.**
+  - `igl` is a roster role. A unique index allows at most one per team, and a check constraint keeps the legacy `is_igl` column equal to `player_role = 'igl'`.
+  - Only the owner assigns or removes the IGL. Assigning it clears the previous IGL in the same transaction and bumps any running session's version, so every screen refreshes.
+  - Game Mode commands check the role on every request, so the former IGL gets `403 not_igl` immediately.
+  - The owner keeps team administration but controls live play only when they are the IGL.
+  - Tactic editing and invite links stay with the owner or IGL, as before.
+  - New teams start with their creator as IGL.
+- **Profiles.** Use *Edit profile* on Home or click your name in the header.
+  - Fields: language, region, platform, skill level, bio, and optional Steam, FACEIT, ESEA and HLTV links (https only, host checked on the server).
+  - Profile picture: PNG, JPEG or WebP, up to 2 MB and 4096 px, with format checked from the file header. It can be replaced or removed, and initials are shown as a fallback.
+- **Player invites.**
+  - *Invite players* on the Team page lists players with no team, with their picture, language, region, platform and skill.
+  - Clicking a name opens their profile, with bio and links.
+  - The **Invite** buttons in the list and on the profile send the same player-specific invite (`POST /api/teams/:id/invites { user_id }`) and then show *Invite pending*.
+  - Recipients review invites on **/invites** (from the bell or Home) and accept or decline. Accepting re-checks that they still have no team.
+  - Invite links still work as before.
+- **Recruiting.**
+  - The owner turns recruiting on and sets leagues, roles needed and notes.
+  - **Recruiting** in the sidebar lists recruiting teams with picture, language, region, platform, skill, leagues, roles needed and roster size (counted from memberships). Each team has a details page.
+  - **Request invite** in the directory and on the details page sends the same request and then shows *Request pending*. Duplicate pending requests are rejected.
+  - The owner reviews requests on the Team page (`/team#requests`), opens the player's profile, and either sends an invite or declines. A request never adds anyone to a team.
+  - Discovery endpoints return only profile and recruiting fields. Tactics, calendars, invites and rosters keep their membership checks.
+- **Game Mode matches.**
+  - The IGL starts a match from a tactic; its map and side become the match's.
+  - The IGL can step phases, browse that map and side's tactics (wrapping around), switch T/CT (an empty state appears when the side has no tactics), start a new round (the selected tactic's snapshot at phase 1, round number +1) and end the match.
+  - Teammates, including a non-IGL owner, get a read-only view: round, current tactic and phase, their own instruction and lineups, "Up next", and who the IGL is.
+  - Snapshots, polling, version checks and reconnect resume the right round, tactic and phase.
+- **Shortcuts.** In **Settings** (bottom of the sidebar), each user can rebind previous/next phase, previous/next tactic, new round and switch side, or reset them.
+  - Defaults: ← → [ ] N S.
+  - Conflicts are flagged in the UI and rejected by the server.
+  - Shortcuts only work on the focused Game Mode page, are ignored while typing or rebinding, and only act for the IGL. The Settings page explains this.
+  - Game Mode buttons show the current bindings.
+- **Training calendar.** **Training** (below Tactics) shows a month view with an upcoming list and event details.
+  - The owner adds, edits and removes Training and Game events: title, date, start time, and optional opponent or notes.
+  - Times are stored as UTC instants together with the IANA zone they were entered in, and are displayed in the viewer's zone, which is labelled.
+  - Home shows the next event with a countdown. It refreshes every 30 s, on focus, and when the event starts, and says when nothing is scheduled.
+- **Notifications.** A bell sits left of your name, with an unread count. It opens a modal listing notifications newest first, each with what happened, when, and a link; × dismisses one entry.
+  - Created for: a player receiving an invite; the owner receiving a join request; calendar events created, updated or removed; a tactic being updated. The person who acted is not notified.
+  - Read and dismissed state is stored per recipient.
+  - Opening a link re-checks access and whether the target still exists. A cancelled event goes to the calendar with a cancellation message, and a deleted team falls back to Home.
+  - `(user_id, dedupe_key)` is unique, so retried actions never duplicate notifications.
+- **Sidebar.** Home, Team, Recruiting, Tactics, Training and Game Mode (red accent), with Settings pinned to the bottom.
+
+### Migration (`20261112000100_phase_2.js`, additive)
+
+New tables:
+- `public_images` (profile pictures and team logos);
+- `team_join_requests`;
+- `team_events`;
+- `notifications`.
+
+New columns:
+- `users`: avatar, profile links, `settings`;
+- `teams`: logo and recruiting fields;
+- `team_invites`: `invitee_user_id`, `response`, `responded_at`, `join_request_id`. `token_hash` is now nullable: exactly one of token or invitee is set;
+- `game_sessions`: `map`, `side`, `selected_tactic_id`, `round_number`, backfilled from existing snapshots.
+
+Role reconciliation:
+- A member with legacy IGL access becomes `igl`.
+- If several members had it, the earliest keeps it (`multiple_igls` review item).
+- A team without one gets its owner as IGL when the owner has no other role. Otherwise `team_without_igl` is recorded and the owner should assign one.
+- A role replaced by `igl` is recorded as `role_replaced_by_igl`.
+- Unknown role values are cleared and recorded.
+
+Saved tactics, map layers, lineup screenshots and legacy records are untouched. `npm run db:review` lists the review items.
+
+On the maintainer's local database this applied cleanly. The 4 demo teammates were then added to the existing Test Team 1 with `npm run db:demo -- --team "Test Team 1"`. The owner keeps their Entry role and Juno became the IGL.
+
+### Verification (2026-11-12)
+
+| Command | Result |
+| --- | --- |
+| `npm run lint` | 0 problems |
+| `npm run typecheck` | 0 errors |
+| `npm test` | **109 passing**: legacy 43, auth 10, teams 15, tactics 6, Game Mode 9, images/levels 5, migrations 6, **phase 2: 15** |
+| `npm run build` | built (430 kB JS, 134 kB gzip) |
+| Fresh `db:reset` + `db:demo` on a temporary database | Test Team 1 = Test Owner (Rifler, owner), Juno (IGL), Vex, Morrow, Talon. 11 teamless players. Every seeded team has an IGL. Re-running `db:demo` changes nothing |
+
+The phase 2 tests cover:
+- owner-only actions;
+- removal and deletion cascades;
+- IGL transfer mid-session, where the old IGL gets 403, the new IGL advances, and others get the read-only view;
+- tactic navigation within map and side, side switching with an empty state, new rounds and reconnect;
+- profile link and picture validation;
+- both invite entry points and pending state;
+- accept, decline and eligibility re-check;
+- both request entry points, pending and duplicate handling, owner approve and decline, and that a request never adds the player;
+- the calendar and the next event after create, edit and delete;
+- notification recipients, link resolution including a cancelled event, independent dismissal and dedupe;
+- shortcut persistence, conflicts and reset.
+
+Manual check with separate signed-in browser sessions (`owner.localhost`, `seeker.localhost`, `rhea.localhost`):
+
+1. The owner turned recruiting on.
+2. A teamless demo player requested an invite. *Request pending* showed on the directory and details pages, and the owner's bell linked to the request, which was declined.
+3. A new player was invited from their profile page. *Invite pending* showed on the profile and in the list, the player accepted from the bell, and they left the teamless list.
+4. The IGL started a match, used `]`, `N` and `→` from the keyboard, and the teammate's read-only view followed.
+5. The owner transferred the IGL role mid-match. The owner's screen became read-only, and the new IGL's controls appeared through polling. The new IGL then used `←` and `S` (side switch with "Up next").
+6. A calendar event was created, edited and removed, and the teammate's Home countdown followed each change.
+7. Invite, calendar and tactic notifications reached the right people. The cancelled-event link showed its message, the tactic link opened the tactic, and a dismissed entry stayed gone after reload.
+8. A shortcut was rebound to `D`; a conflict was flagged and Save disabled; the new key worked in Game Mode.
+9. An existing Nuke tactic still showed its upper/lower layers and lineup screenshot.
+
+**Not verified:**
+- Uploading pictures through the browser's file picker. The picture endpoints are covered by API tests, but the picker can't be driven by automation.
+- Touch devices.
+- Clock and time-zone edge cases around daylight-saving changes.
+- The browser automation tool could not send `]` by its key name, so I typed the literal key. That's a tool limitation, not the app.
 
 ## Contact
 
