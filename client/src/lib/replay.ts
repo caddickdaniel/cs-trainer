@@ -1,6 +1,6 @@
 // Replay helpers for Demo Review: playback clock and frame interpolation.
 import type { Level } from './constants';
-import type { ReplayRound } from './types';
+import type { ReplayEvent, ReplayRound } from './types';
 
 // A playback clock: position = anchorTick (+ elapsed since anchorAt while playing).
 // anchorAt is in this browser's Date.now() time.
@@ -48,3 +48,34 @@ export function roundTime(round: { freeze_end_tick: number | null; start_tick: n
   const a = Math.abs(s);
   return `${sign}${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}`;
 }
+
+// Recorded utility and bomb state at a tick, derived only from the round's
+// events and the tick. Nothing accumulates between frames, so seeking,
+// rewinding, switching rounds or joining a live review mid-way always shows
+// exactly what was happening at that moment (no stale smokes or fires).
+export const FLASH_SHOW_TICKS = 64; // flashes and HEs are instant; show them for ~1 s
+export const BLAST_SHOW_TICKS = 48;
+export interface RecordedState {
+  smokes: ReplayEvent[];
+  fires: ReplayEvent[];
+  flashes: ReplayEvent[];
+  hes: ReplayEvent[];
+  bomb: { state: 'planted' | 'defused' | 'exploded'; event: ReplayEvent; plant?: ReplayEvent } | null;
+}
+export function recordedAt(events: ReplayEvent[], tick: number): RecordedState {
+  const active = (e: ReplayEvent) => e.tick <= tick && tick < (e.end_tick ?? e.tick);
+  const recent = (e: ReplayEvent, span: number) => e.tick <= tick && tick < e.tick + span;
+  const plant = [...events].reverse().find((e) => e.type === 'plant' && e.tick <= tick);
+  const after = plant ? events.find((e) => (e.type === 'defuse' || e.type === 'explode') && e.tick >= plant.tick && e.tick <= tick) : undefined;
+  return {
+    smokes: events.filter((e) => e.type === 'smoke' && active(e)),
+    fires: events.filter((e) => e.type === 'fire' && active(e)),
+    flashes: events.filter((e) => e.type === 'flash' && recent(e, FLASH_SHOW_TICKS)),
+    hes: events.filter((e) => e.type === 'he' && recent(e, BLAST_SHOW_TICKS)),
+    bomb: after ? { state: after.type === 'defuse' ? 'defused' : 'exploded', event: after, plant } : plant ? { state: 'planted', event: plant } : null,
+  };
+}
+
+export const RECORDED_LABEL: Record<string, string> = {
+  smoke: 'Smoke', flash: 'Flash', he: 'HE', fire: 'Molotov', plant: 'Bomb planted', defuse: 'Bomb defused', explode: 'Bomb exploded', kill: 'Kill', round_end: 'Round end',
+};

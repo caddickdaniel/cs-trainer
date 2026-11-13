@@ -1,8 +1,8 @@
-// Development only: adds the demo accounts to an existing database without
-// resetting it. Safe to run repeatedly.
+// Development only: adds or refreshes the demo data (db/data/demo.js) in an
+// existing database without resetting it. Safe to run repeatedly; it never
+// deletes anything or moves players who have joined other teams.
 //
-//   npm run db:demo                          # 10 teamless demo players + 30 shared tactics
-//   npm run db:demo -- --team "Test Team 1"  # ...and 4 teammates for that team
+//   npm run db:demo   # recruits, Practice Roster, recruiting teams, 30 shared tactics
 const bcrypt = require('bcryptjs');
 const { NODE_ENV } = require('../config/env');
 
@@ -13,28 +13,17 @@ if (NODE_ENV === 'production') {
 
 const db = require('../db/connection');
 const { SEED_PASSWORD } = require('../db/seeds');
-const { ensureTeamlessPlayers, ensureTeammates } = require('../db/lib/demo');
+const { ensureDemoData } = require('../db/lib/demo');
 const { ensureSharedTactics } = require('../db/lib/sharedTactics');
-
-const arg = (name) => {
-  const i = process.argv.indexOf(name);
-  return i >= 0 ? process.argv[i + 1] : undefined;
-};
 
 (async () => {
   const [{ name }] = (await db.raw('SELECT current_database() AS name')).rows;
   console.log(`database "${name}" (${NODE_ENV})`);
   const hash = await bcrypt.hash(SEED_PASSWORD, 10);
   await db.transaction(async (trx) => {
-    await ensureTeamlessPlayers(trx, hash, (m) => console.log(`  ${m}`));
+    if (process.argv.includes('--team')) console.log('  note: --team is no longer supported; the test roster is the "Practice Roster" team.');
+    await ensureDemoData(trx, hash, (m) => console.log(`  ${m}`));
     await ensureSharedTactics(trx, hash, (m) => console.log(`  ${m}`));
-    const teamName = arg('--team');
-    if (teamName) {
-      const teams = await trx('teams').where('team_name', teamName).select('team_id');
-      if (teams.length !== 1) throw new Error(`Expected exactly one team named "${teamName}", found ${teams.length}`);
-      console.log(`team "${teamName}" (${teams[0].team_id}):`);
-      await ensureTeammates(trx, teams[0].team_id, hash, (m) => console.log(`  ${m}`));
-    }
   });
   console.log(`Demo accounts use the password in db/seeds/index.js (SEED_PASSWORD).`);
 })()

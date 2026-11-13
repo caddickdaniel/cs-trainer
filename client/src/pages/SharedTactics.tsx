@@ -7,7 +7,8 @@ import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
 import type { Marker, Phase, SharedListing, SharedTactic, SharePreview } from '../lib/types';
 import { Alert, Loading, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
-import { MapBoard, ownerColor } from '../components/MapBoard';
+import { MapBoard } from '../components/MapBoard';
+import { PlayerColorsProvider, colorFor } from '../lib/playerColors';
 import { BuyListSummary } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers } from '../components/Lineups';
 
@@ -167,6 +168,7 @@ export function SharedTacticPage() {
               <button key={i} type="button" role="tab" aria-selected={i === index} className={i === index ? 'on' : ''} onClick={() => setIndex(i)}>{i + 1}. {p.name}</button>
             ))}
           </div>
+          <PlayerColorsProvider colors={t.player_colors}>
           <div className="board-layout">
             <div className="stack">
               <LevelSwitch map={t.map} level={level} board={phase.board} onChange={setLevel} />
@@ -179,7 +181,7 @@ export function SharedTacticPage() {
                 <ul className="instructions">
                   {phase.assignments.map((a) => (
                     <li key={a.slot}>
-                      <span className="dot" style={{ background: ownerColor({ user_id: null, slot: a.slot }) }} />
+                      <span className="dot" style={{ background: colorFor({ user_id: null, slot: a.slot }, t.player_colors) }} />
                       <div><strong>Player {a.slot}</strong>{a.instruction ? <p>{a.instruction}</p> : null}{a.utility ? <p className="muted">Utility: {a.utility}</p> : null}</div>
                     </li>
                   ))}
@@ -191,6 +193,7 @@ export function SharedTacticPage() {
               {lineups.length ? <><h3>Lineups</h3><LineupGallery markers={lineups} onOpen={(m, i) => setOpen({ marker: m, index: i })} /></> : null}
             </Panel>
           </div>
+          </PlayerColorsProvider>
         </>
       ) : null}
       <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}

@@ -54,10 +54,13 @@ export interface TacticFields {
   smoke: number;
   loadouts?: Loadout[];
   bomb_carrier?: PlayerRef | null;
+  player_colors?: PlayerColor[];
 }
 
 export interface PlayerRef { user_id: number | null; slot: number | null }
 // One player's buy list for the round.
+export type PlayerColorId = 'orange' | 'green' | 'blue' | 'yellow' | 'purple';
+export interface PlayerColor extends PlayerRef { color: PlayerColorId }
 export interface Loadout extends PlayerRef { smoke: number; flash: number; molly: number; he: number; kit: boolean }
 export type GrenadeCounts = { smoke: number; flash: number; molly: number; he: number };
 // A player's utility at the current Game Mode phase.
@@ -192,6 +195,7 @@ export interface GameSession {
   assignments?: Assignment[];
   my_utility: PlayerUtility | null;
   bomb_carrier?: PlayerRef | null;
+  player_colors?: PlayerColor[];
   utility?: PlayerUtility[];
   can_control: boolean;
   round_number: number;
@@ -339,6 +343,7 @@ export interface SharedTactic extends SharedListing {
   slot_count: number;
   loadouts?: Loadout[];
   bomb_carrier?: PlayerRef | null;
+  player_colors?: PlayerColor[];
   phases: SharedPhase[];
 }
 export interface SharePreview {
@@ -385,7 +390,11 @@ export interface DemoDetail extends DemoSummary {
 }
 export interface ReplayEvent {
   tick: number;
-  type: 'kill' | 'plant' | 'defuse' | 'explode' | 'round_end';
+  type: 'kill' | 'plant' | 'defuse' | 'explode' | 'round_end' | 'smoke' | 'flash' | 'he' | 'fire';
+  // Smoke and fire: when the effect ended (from the demo, or estimated).
+  end_tick?: number;
+  // Fire: molotov (T) or incendiary (CT).
+  variant?: 'molotov' | 'incendiary';
   attacker?: number | null;
   victim?: number | null;
   player?: number | null;

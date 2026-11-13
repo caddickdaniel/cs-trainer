@@ -3,3 +3,5 @@ node_modules
 client/dist
 *.log
 storage/
+desktop/node_modules
+desktop/dist

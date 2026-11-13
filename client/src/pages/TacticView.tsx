@@ -11,6 +11,7 @@ import { MapBoard } from '../components/MapBoard';
 import { Icon } from '../components/Icons';
 import { ShareDialog } from './SharedTactics';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { PlayerColorsProvider } from '../lib/playerColors';
 import { BuyListSummary } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
@@ -66,6 +67,7 @@ export function TacticViewPage() {
               </button>
             ))}
           </div>
+          <PlayerColorsProvider colors={tactic.player_colors}>
           <div className="board-layout">
             <div className="stack">
               <LevelSwitch map={map} level={level} board={phase.board} onChange={(l) => setLevelChoice({ phase: phaseIndex, level: l })} />
@@ -87,6 +89,7 @@ export function TacticViewPage() {
               ) : null}
             </Panel>
           </div>
+          </PlayerColorsProvider>
         </>
       )}
       <LineupLightbox marker={open?.marker ?? null} index={open?.index ?? 0}

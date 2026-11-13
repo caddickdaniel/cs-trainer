@@ -18,6 +18,7 @@
     "db:reset": "node scripts/db-reset.js",
     "db:review": "node scripts/db-review.js",
     "db:demo": "node scripts/seed-demo.js",
+    "demos:reprocess": "node scripts/reprocess-demos.js",
     "migrate:make": "knex migrate:make",
     "migrate:latest": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",

@@ -25,6 +25,8 @@ const paths: Record<string, string> = {
   close: 'M6 6l12 12M18 6L6 18',
   edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',
   hold: 'M5 19L19 7M5 19l3-12M5 19l12-3',
+  player: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM7.5 17.5c1-2 2.6-3 4.5-3s3.5 1 4.5 3',
+  note: 'M5 4h14v11l-5 5H5zM14 20v-5h5M8 9h8M8 13h5',
   play: 'M7 4l13 8-13 8z',
   pause: 'M7 4h3v16H7zM14 4h3v16h-3z',
   upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',

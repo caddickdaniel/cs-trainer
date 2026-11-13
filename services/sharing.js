@@ -43,6 +43,8 @@ function buildSnapshot(tactic, phases, { includeImages }) {
   // Buy lists and the bomb carrier keep their player's slot (or take the next one).
   (tactic.loadouts || []).forEach(visit);
   if (tactic.bomb_carrier) visit(tactic.bomb_carrier);
+  // Colours follow their player's slot; a colour for a player with nothing
+  // else in the tactic does not take a slot of its own.
   const slotOf = (item) => {
     const key = keyOf(item);
     return key ? slots.get(key) ?? null : null;
@@ -92,6 +94,7 @@ function buildSnapshot(tactic, phases, { includeImages }) {
         loadouts: (tactic.loadouts || []).map((l) => ({ ...l, user_id: null, slot: slotOf(l) })).filter((l) => l.slot != null),
         bomb_carrier: tactic.side === 'T' && tactic.bomb_carrier && slotOf(tactic.bomb_carrier) != null
           ? { user_id: null, slot: slotOf(tactic.bomb_carrier) } : null,
+        player_colors: (tactic.player_colors || []).map((c) => ({ user_id: null, slot: slotOf(c), color: c.color })).filter((c) => c.slot != null),
       },
       slot_count: slots.size,
       phases: snapshotPhases,

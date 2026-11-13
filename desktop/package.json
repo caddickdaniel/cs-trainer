@@ -1,0 +1,23 @@
+{
+  "name": "cs-trainer-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CS Trainer for the IGL's second monitor, with global Game Mode hotkeys (Windows-first).",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --dir",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "dev.cs-trainer.desktop",
+    "productName": "CS Trainer",
+    "files": ["src/**/*", "package.json"],
+    "directories": { "output": "dist" },
+    "win": { "target": ["nsis", "portable"] }
+  }
+}

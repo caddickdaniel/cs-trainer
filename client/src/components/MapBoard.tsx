@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { findMap, LIMITS, NOTE_SIZE, PLAYER_COLORS, SLOT_COLORS, radarUrl, UTILITY_ICON, type Level } from '../lib/constants';
+import { findMap, LIMITS, NOTE_SIZE, radarUrl, UTILITY_ICON, type Level } from '../lib/constants';
+import { fallbackColor, textOn, usePlayerColors } from '../lib/playerColors';
 import type { Board, Hold, Marker, MarkerKind, Point, Route } from '../lib/types';
 import { PracticeYardMap } from './PracticeYardMap';
 import { landmarksFor } from '../lib/landmarks';
@@ -11,22 +12,17 @@ const round = (n: number) => Math.round(Math.min(1, Math.max(0, n)) * 10000) / 1
 let idCounter = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(idCounter++).toString(36)}`;
 
-// Colour is derived from the user id so a player has the same colour in the
-// editor, the viewer and every Game Mode screen.
-export function playerColor(userId: number | null, _players?: number[]) {
-  if (userId == null) return '#d7dde4';
-  return PLAYER_COLORS[userId % PLAYER_COLORS.length];
+// Fallback colour (no in-game colour set on the tactic), derived from the user
+// id. Pages showing a tactic use usePlayerColors() for the tactic's colours.
+export function playerColor(userId: number | null) {
+  return fallbackColor({ user_id: userId });
 }
 
 // Board items belong to a roster player (user_id) or, in shared and imported
 // tactics, to a player slot (Player 1-5) that is not mapped yet.
 type Owned = { user_id: number | null; slot?: number | null };
 export const ownerKey = (item: Owned) => (item.user_id != null ? `u${item.user_id}` : item.slot ? `s${item.slot}` : null);
-export function ownerColor(item: Owned) {
-  if (item.user_id != null) return playerColor(item.user_id);
-  if (item.slot) return SLOT_COLORS[(item.slot - 1) % SLOT_COLORS.length];
-  return '#d7dde4';
-}
+export const ownerColor = (item: Owned) => fallbackColor(item);
 export const sameOwner = (a: Owned, b: Owned) => ownerKey(a) != null && ownerKey(a) === ownerKey(b);
 
 const levelOf = (item: { level?: Level }) => item.level ?? 'main';
@@ -115,12 +111,16 @@ export function MapBackground({ map, level, landmarks = true }: { map: string; l
   );
 }
 
-// The bomb carrier's badge, beside their player marker.
+// The bomb carrier's badge: half the old size, immediately right of the
+// player marker (radius 22) with a slight overlap. It is drawn inside the
+// marker's group, so it moves, changes floor and scales with the marker.
+export const BOMB_BADGE = { x: 27, y: 0, w: 14, h: 16 };
 function BombBadge() {
+  const { x, y, w, h } = BOMB_BADGE;
   return (
-    <g transform="translate(20,-40)" pointerEvents="none" data-bomb-badge="">
-      <rect x="-14" y="-16" width="28" height="32" rx="6" fill="#111" stroke="#e5484d" strokeWidth="2.5" />
-      <image href="/icons/bomb.png" x="-10" y="-13" width="20" height="26" />
+    <g transform={`translate(${x},${y})`} pointerEvents="none" data-bomb-badge="">
+      <rect x={-w / 2} y={-h / 2} width={w} height={h} rx="3" fill="#111" stroke="#e5484d" strokeWidth="1.5" />
+      <image href="/icons/bomb.png" x={-5} y={-6.5} width={10} height={13} />
     </g>
   );
 }
@@ -211,6 +211,7 @@ export function MapBoard({
   const frameRef = useFitToViewport<HTMLDivElement>(fitReserve);
   const [drag, setDrag] = useState<Drag | null>(null);
   const editable = Boolean(onChange);
+  const colorOf = usePlayerColors();
   const holds = boardHolds(board);
   const initials = (item: Owned) => {
     if (item.user_id == null) return item.slot ? `P${item.slot}` : '';
@@ -309,7 +310,7 @@ export function MapBoard({
   const dim = (item: Owned) => highlightUserId != null && item.user_id !== highlightUserId;
 
   const renderRoute = (route: Route, draft = false) => {
-    const color = ownerKey(route) ? ownerColor(route) : route.color;
+    const color = ownerKey(route) ? colorOf(route) : route.color;
     const pts = route.points.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ');
     const selected = route.id === selectedId;
     const last = route.points[route.points.length - 1];
@@ -349,7 +350,7 @@ export function MapBoard({
       return (
         <g key={`c-${m.id}`} opacity={dim(m) ? 0.25 : 1} pointerEvents="none" data-connector-for={m.id}>
           <line {...line} stroke="#000" strokeOpacity="0.7" strokeWidth="9" strokeDasharray="0 14" strokeLinecap="round" />
-          <line {...line} stroke={ownerColor(m)} strokeWidth="6" strokeDasharray="0 14" strokeLinecap="round" />
+          <line {...line} stroke={colorOf(m)} strokeWidth="6" strokeDasharray="0 14" strokeLinecap="round" />
         </g>
       );
     });
@@ -357,7 +358,7 @@ export function MapBoard({
   const renderHold = (h: Hold) => {
     const anchor = board.markers.find((m) => m.id === h.marker_id);
     if (!anchor || levelOf(anchor) !== level) return null;
-    const color = ownerColor(anchor);
+    const color = colorOf(anchor);
     const cx = anchor.x * SIZE;
     const cy = anchor.y * SIZE;
     const selected = h.id === selectedId;
@@ -388,7 +389,7 @@ export function MapBoard({
   };
 
   const renderMarker = (m: Marker) => {
-    const color = ownerColor(m);
+    const color = colorOf(m);
     const selected = m.id === selectedId;
     const hasImages = Boolean(m.images?.length);
     const activatable = !editable && hasImages && Boolean(onMarkerActivate);
@@ -421,7 +422,7 @@ export function MapBoard({
         break;
       }
       default:
-        shape = <><circle r="22" fill={color} stroke="#111" strokeWidth="3" /><text y="7" textAnchor="middle" fontSize="18" fontWeight="700" fill="#111">{initials(m)}</text></>;
+        shape = <><circle r="22" fill={color} stroke="#111" strokeWidth="3" /><text y="7" textAnchor="middle" fontSize="18" fontWeight="700" fill={textOn(color)}>{initials(m)}</text></>;
         ring = 32;
     }
     const holdTarget = editable && tool === 'hold' && m.kind === 'player';

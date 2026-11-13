@@ -308,6 +308,8 @@ const loadout = z.object({
   .refine((l) => l.smoke + l.flash + l.molly + l.he <= U.MAX_GRENADES, `A player can carry at most ${U.MAX_GRENADES} grenades`);
 const owner = z.object({ user_id: id.nullable().optional().default(null), slot })
   .refine((o) => o.user_id != null || o.slot != null, 'Choose a player or a player slot');
+const playerColor = z.object({ user_id: id.nullable().optional().default(null), slot, color: z.enum(C.PLAYER_COLOR_IDS) })
+  .refine((o) => o.user_id != null || o.slot != null, 'A colour needs a player or a player slot');
 
 const tacticDocumentBase = z.object({
   tactic_name: trimmed(60).min(1, 'Name is required'),
@@ -324,6 +326,13 @@ const tacticDocumentBase = z.object({
   }),
   // T only: who carries the bomb.
   bomb_carrier: owner.nullable().optional().default(null),
+  // In-game colours: one per player, each colour used once.
+  player_colors: z.array(playerColor).max(C.PLAYER_COLOR_IDS.length).default([]).superRefine((list, ctx) => {
+    const keys = list.map(U.ownerKey);
+    if (new Set(keys).size !== keys.length) ctx.addIssue({ code: 'custom', message: 'A player can only have one colour' });
+    const colors = list.map((c) => c.color);
+    if (new Set(colors).size !== colors.length) ctx.addIssue({ code: 'custom', message: 'Each colour can only be given to one player' });
+  }),
   phases: z.array(phase).min(1, 'Add at least one phase').max(C.LIMITS.phases),
 });
 
