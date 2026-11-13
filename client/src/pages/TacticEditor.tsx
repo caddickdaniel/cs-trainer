@@ -11,9 +11,11 @@ import type { Assignment, Board, Hold, LineupImage, Loadout, Marker, Phase, Play
 import { BUY_LIMITS, GRENADES, GRENADE_LABEL, MAX_GRENADES, describeCounts, emptyLoadout, grenadeTotal, refKey, utilityPlan, type PlayerPlan } from '../lib/utility';
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
+import { KitIcon } from '../components/UtilityCard';
 import { MapBoard, boardHolds, newId, ownerKey, sameOwner, type Tool } from '../components/MapBoard';
 import { PLAYER_PALETTE, PlayerColorsProvider, assignColor, autoAssign, colorFor, colorKey } from '../lib/playerColors';
 import { useEditorSplit } from '../lib/useEditorSplit';
+import { draftHasWork, otherDrafts, switchMapDraft, type MapDrafts } from '../lib/mapDrafts';
 import { LevelSwitch } from '../components/Lineups';
 import type { DocumentResponse } from './TacticView';
 
@@ -107,7 +109,8 @@ function BuyList({ who, side, loadout, plan, phaseIndex, bomb, onChange, onBomb 
           </label>
         ))}
         {side === 'CT' ? (
-          <label className="inline-check buy-item"><input type="checkbox" checked={l.kit} onChange={(e) => onChange({ ...l, kit: e.target.checked })} /> Defuse kit</label>
+          <label className="inline-check buy-item"><input type="checkbox" checked={l.kit} onChange={(e) => onChange({ ...l, kit: e.target.checked })} />
+            <KitIcon size={18} /> Defuse kit</label>
         ) : (
           <label className="inline-check buy-item"><input type="checkbox" checked={bomb} onChange={(e) => onBomb(e.target.checked)} />
             <img src="/icons/bomb.png" alt="" width="14" height="18" /> Carries the bomb</label>
@@ -504,6 +507,8 @@ export function TacticEditorPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Create Tactic only: the boards of other maps visited in this flow.
+  const [mapDrafts, setMapDrafts] = useState<MapDrafts>({});
   const skipBlock = useRef(false);
   useDocumentTitle(isNew ? 'New tactic' : `Edit ${fields.tactic_name || 'tactic'}`);
 
@@ -608,6 +613,7 @@ export function TacticEditorPage() {
   const plan = useMemo(() => utilityPlan(loadouts, phases), [loadouts, phases]);
   const colors = useMemo(() => fields.player_colors ?? [], [fields.player_colors]);
   const { setLayout, stacked, style: splitStyle, dividerProps } = useEditorSplit();
+  const keptDrafts = isNew ? otherDrafts(mapDrafts, fields.map, draftHasWork) : [];
   const overPlans = [...plan.values()].reduce((n, p) => n + p.over.length, 0);
 
   const save = async () => {
@@ -656,6 +662,8 @@ export function TacticEditorPage() {
         ? await api.post<DocumentResponse>(`/teams/${team!.team_id}/tactics`, payload)
         : await api.put<DocumentResponse>(`/tactics/${tacticId}/document`, { ...payload, revision });
       setDirty(false);
+      // Only the selected map was saved; the other maps' drafts are dropped.
+      setMapDrafts({});
       navigate(`/tactics/${res.tactic.tactic_id}`, { replace: isNew });
     } catch (err) {
       skipBlock.current = false;
@@ -669,8 +677,30 @@ export function TacticEditorPage() {
     }
   };
 
-  // Switching to a map without a lower level moves lower-level items to main.
+  // Create Tactic: each map keeps its own board and phases. The first visit
+  // to a map starts clean; returning restores what was drawn there.
+  const switchMapDraftTo = (map: string) => {
+    let current = phases;
+    if (draft.length >= 2 && phase.board.routes.length < LIMITS.routes) {
+      const route: Route = { id: newId('r'), level, ...active, color: '#ffffff', points: draft };
+      current = phases.map((p, i) => (i === index ? { ...p, board: { ...p.board, routes: [...p.board.routes, route] } } : p));
+    }
+    setDraft([]);
+    const { drafts, next } = switchMapDraft(mapDrafts, fields.map, { phases: current, index, level }, map,
+      () => ({ phases: [newPhase(1)], index: 0, level: 'main' }));
+    setMapDrafts(drafts);
+    setPhases(next.phases);
+    setIndex(Math.min(next.index, next.phases.length - 1));
+    setLevel(mapLevels(map).includes(next.level) ? next.level : 'main');
+    setSelectedId(null);
+    setFields({ ...fields, map });
+    touch();
+  };
+
+  // Editing a saved tactic: the board stays and moves to the new map;
+  // switching to a map without a lower level moves lower-level items to main.
   const changeMap = (map: string) => {
+    if (isNew) { switchMapDraftTo(map); return; }
     const hasLower = mapLevels(map).includes('lower');
     const lowerItems = phases.some((p) => [...p.board.markers, ...p.board.routes].some((i) => i.level === 'lower'));
     if (!hasLower && lowerItems
@@ -752,6 +782,11 @@ export function TacticEditorPage() {
           </label>
         </div>
         <div className="row editor-actions">
+          {keptDrafts.length ? (
+            <span className="muted small kept-drafts" role="status">
+              Drafts kept for {keptDrafts.map((m) => MAPS.find((x) => x.id === m)?.name ?? m).join(', ')}. Save keeps only {MAPS.find((x) => x.id === fields.map)?.name ?? fields.map}.
+            </span>
+          ) : null}
           <Link className="btn ghost" to={isNew ? '/tactics' : `/tactics/${tacticId}`}>Cancel</Link>
           <button type="button" className="btn primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : dirty || isNew ? 'Save tactic' : 'Saved'}</button>
         </div>

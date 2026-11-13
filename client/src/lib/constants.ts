@@ -65,6 +65,8 @@ export const LIMITS = {
 };
 export const NOTE_SIZE = { min: 12, max: 64, default: 22, step: 2 };
 // Supplied utility icons (client/public/icons/utility).
+// Transparent CT defuse kit image for buy lists and instructions.
+export const KIT_ICON = '/icons/defuse-kit.png';
 export const UTILITY_ICON: Record<string, string> = {
   smoke: '/icons/utility/smoke.png', flash: '/icons/utility/flash.png', molly: '/icons/utility/molly.png', he: '/icons/utility/he.png',
 };

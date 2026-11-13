@@ -3,7 +3,7 @@ import { findRank, platformLabel } from '../lib/catalogue';
 
 // Original rank badges (not official artwork) in each platform's colours,
 // always with a readable text label.
-function Shape({ rank }: { rank: Rank }) {
+export function RankShape({ rank }: { rank: Rank }) {
   const c = rank.color;
   if (rank.platform === 'faceit') {
     // Circular level gauge.
@@ -51,14 +51,14 @@ export function RankBadge({ cat, platform, rankId, legacyPlatform, legacySkill, 
       const full = `${platformLabel(cat, rank.platform)} ${rank.label}`;
       return (
         <span className={`rank-badge compact rank-${rank.platform}`} style={{ ['--rank' as string]: rank.color }} title={title} role="img" aria-label={full}>
-          <Shape rank={rank} />
+          <RankShape rank={rank} />
           <span aria-hidden="true">{rank.platform === 'premier' ? rank.label : platformLabel(cat, rank.platform)}</span>
         </span>
       );
     }
     return (
       <span className={`rank-badge rank-${rank.platform}`} style={{ ['--rank' as string]: rank.color }} title={title}>
-        <Shape rank={rank} />
+        <RankShape rank={rank} />
         <span>{platformLabel(cat, rank.platform)} {rank.label}</span>
       </span>
     );

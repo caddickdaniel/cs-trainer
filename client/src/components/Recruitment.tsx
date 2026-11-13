@@ -2,7 +2,8 @@ import { useId, useMemo, useState, type KeyboardEvent } from 'react';
 import type { Catalogue, PlatformId } from '../lib/catalogue';
 import { competitionLabel, findRank, platformLabel, ranksOf } from '../lib/catalogue';
 import type { PlayerRanks, RankRequirement } from '../lib/types';
-import { RankBadge } from './RankBadge';
+import { RankBadge, RankShape } from './RankBadge';
+import { formatRequirement } from '../lib/rankRange';
 
 // One platform's rank options (shared by profiles, player search and team
 // requirements so the choices are identical everywhere).
@@ -35,15 +36,18 @@ export function PlayerRankList({ cat, ranks, legacyPlatform, legacySkill }: {
   );
 }
 
-// "FACEIT Level 5 – Level 8" or a single band.
+// One requirement as a single span: "[10] FACEIT (2,001–2,500)". The badge
+// is drawn once when both ends share it; the stored bands are unchanged.
 export function RequirementBadge({ cat, req }: { cat: Catalogue | null; req: RankRequirement }) {
-  const min = findRank(cat, req.min);
-  const max = findRank(cat, req.max);
-  if (!min || !max) return null;
+  const d = cat ? formatRequirement(cat.ranks, platformLabel(cat, req.platform), req) : null;
+  if (!d) return null;
   return (
-    <span className="requirement">
-      <RankBadge cat={cat} rankId={req.min} />
-      {req.max !== req.min ? <><span className="muted">to</span><span className="rank-range-end">{max.label}</span></> : null}
+    <span className={`requirement rank-badge rank-${req.platform}`} style={{ ['--rank' as string]: d.badges[0].color }}
+      role="img" aria-label={d.label} title={`${d.label} (self-reported ranks)`}>
+      <span className="requirement-badges" aria-hidden="true">
+        {d.badges.map((r, i) => <span key={r.id} className="requirement-badge">{i ? <span className="muted">–</span> : null}<RankShape rank={r} /></span>)}
+      </span>
+      <span aria-hidden="true">{d.text}</span>
     </span>
   );
 }
@@ -51,7 +55,7 @@ export function RequirementBadge({ cat, req }: { cat: Catalogue | null; req: Ran
 export function RequirementList({ cat, list, legacy }: { cat: Catalogue | null; list: RankRequirement[]; legacy?: string | null }) {
   if (!list.length && !legacy) return <span className="muted">Any rank</span>;
   return (
-    <span className="stack tight">
+    <span className="requirement-list">
       {list.map((r) => <RequirementBadge key={r.platform} cat={cat} req={r} />)}
       {legacy ? <span className="rank-badge rank-legacy" title="Entered before rank options existed">{legacy}</span> : null}
     </span>
@@ -94,6 +98,7 @@ export function RequirementsEditor({ cat, value, onChange }: { cat: Catalogue | 
             ) : null}
             <button type="button" className="btn ghost small danger" aria-label={`Remove ${platformLabel(cat, r.platform)} requirement`}
               onClick={() => onChange(value.filter((_, j) => j !== i))}>Remove</button>
+            <span className="requirement-summary small"><span className="muted">Shown to players as</span> <RequirementBadge cat={cat} req={r} /></span>
           </div>
         );
       })}
