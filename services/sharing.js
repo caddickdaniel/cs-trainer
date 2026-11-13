@@ -40,6 +40,9 @@ function buildSnapshot(tactic, phases, { includeImages }) {
     p.board.markers.forEach(visit);
     p.board.routes.forEach(visit);
   }
+  // Buy lists and the bomb carrier keep their player's slot (or take the next one).
+  (tactic.loadouts || []).forEach(visit);
+  if (tactic.bomb_carrier) visit(tactic.bomb_carrier);
   const slotOf = (item) => {
     const key = keyOf(item);
     return key ? slots.get(key) ?? null : null;
@@ -61,6 +64,7 @@ function buildSnapshot(tactic, phases, { includeImages }) {
           images: images.map((i) => ({ image_id: i.image_id, caption: i.caption || '' })),
         };
         if (m.size != null) out.size = m.size;
+        if (m.reference) out.reference = true;
         return out;
       }),
       routes: p.board.routes.map((r) => ({
@@ -85,6 +89,9 @@ function buildSnapshot(tactic, phases, { includeImages }) {
         molly: tactic.molly,
         flash: tactic.flash,
         smoke: tactic.smoke,
+        loadouts: (tactic.loadouts || []).map((l) => ({ ...l, user_id: null, slot: slotOf(l) })).filter((l) => l.slot != null),
+        bomb_carrier: tactic.side === 'T' && tactic.bomb_carrier && slotOf(tactic.bomb_carrier) != null
+          ? { user_id: null, slot: slotOf(tactic.bomb_carrier) } : null,
       },
       slot_count: slots.size,
       phases: snapshotPhases,

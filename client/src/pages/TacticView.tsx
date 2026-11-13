@@ -11,6 +11,7 @@ import { MapBoard } from '../components/MapBoard';
 import { Icon } from '../components/Icons';
 import { ShareDialog } from './SharedTactics';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { BuyListSummary } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
 export interface DocumentResponse { tactic: TacticDocument; roster: RosterEntry[]; can_edit: boolean }
@@ -44,7 +45,7 @@ export function TacticViewPage() {
           <h1>{tactic.tactic_name}</h1>
           <p className="muted">
             <SideBadge side={tactic.side} /> {ECONOMY_LABEL[tactic.economy] ?? tactic.economy} · {mapName(tactic.map)} ·
-            Utility: {tactic.smoke} smoke, {tactic.flash} flash, {tactic.molly} molly, {tactic.grenade} HE · rev {tactic.revision}
+            rev {tactic.revision}
           </p>
         </div>
         <div className="row">
@@ -69,12 +70,15 @@ export function TacticViewPage() {
             <div className="stack">
               <LevelSwitch map={map} level={level} board={phase.board} onChange={(l) => setLevelChoice({ phase: phaseIndex, level: l })} />
               <MapBoard board={phase.board} map={map} level={level} players={roster} highlightUserId={null}
-                onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} />
+                onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} bomb={tactic.side === 'T' ? tactic.bomb_carrier : null} />
             </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}
               <PhaseInstructions assignments={phase.assignments} players={players} highlight={user?.user_id} />
               {phase.assignments.some((a) => a.user_id === user?.user_id) ? <Badge tone="gold">Your instruction is highlighted</Badge> : null}
+              <h3>Utility</h3>
+              <BuyListSummary loadouts={tactic.loadouts ?? []} bomb={tactic.bomb_carrier} phases={tactic.phases} phaseIndex={phaseIndex} side={tactic.side}
+                name={(r) => (r.user_id != null ? roster.find((x) => x.user_id === r.user_id)?.user_name ?? 'Former player' : `Player ${r.slot}`)} />
               {lineups.length ? (
                 <>
                   <h3>Lineups</h3>

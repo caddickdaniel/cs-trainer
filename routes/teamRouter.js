@@ -63,6 +63,13 @@ teamRouter.route('/:team_id/demos')
     res.status(201).send(await demos.upload(tid(req), req.user.user_id, req, v.demoUploadQuery.parse(req.query)));
   }))
   .all(handle405);
+// Body: { share_code, title? }. Queues the match for retrieval and processing.
+teamRouter.route('/:team_id/demos/share-code')
+  .post(asyncHandler(async (req, res) => {
+    const result = await demos.importShareCode(tid(req), req.user.user_id, v.shareCodeImport.parse(req.body));
+    res.status(result.existing ? 200 : 202).send(result);
+  }))
+  .all(handle405);
 teamRouter.route('/:team_id/review')
   .get(asyncHandler(async (req, res) => {
     res.set('Cache-Control', 'no-store');

@@ -11,6 +11,7 @@ import { Icon } from '../components/Icons';
 import { bindingFromEvent, formatBinding, isTyping, useShortcutSettings, type Shortcuts } from '../lib/shortcuts';
 import { MapBoard } from '../components/MapBoard';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { TeamUtility, UtilityCard } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
 const POLL_MS = 2000;
@@ -205,11 +206,14 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
   useEffect(() => {
     if (!control) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (busy || isTyping(e.target) || !document.hasFocus() || document.querySelector('dialog[open]')) return;
+      if (isTyping(e.target) || !document.hasFocus()) return;
       const binding = bindingFromEvent(e);
       const action = (Object.keys(shortcuts) as Command[]).find((a) => shortcuts[a] === binding);
       if (!action) return;
+      // Handled keys never scroll the page (arrows, Home, End), even while a
+      // command is still being sent or the key is held down.
       e.preventDefault();
+      if (busy || e.repeat) return;
       run(action);
     };
     window.addEventListener('keydown', onKey);
@@ -294,6 +298,7 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
             ) : (
               <p className="call-text muted">No instruction for you this phase. Hold your position and follow the IGL's call.</p>
             )}
+            {session.my_utility ? <UtilityCard u={session.my_utility} phaseIndex={session.current_phase} /> : null}
             {myLineups.length ? (
               <>
                 <h2 className="lineup-heading">Your lineups</h2>
@@ -307,11 +312,18 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
               <PhaseInstructions assignments={session.assignments ?? []} players={players} highlight={user?.user_id} />
             </Panel>
           ) : null}
+          {control && session.utility?.length ? (
+            <Panel title={session.current_phase === 0 ? 'Team buy' : 'Team utility at the start of this phase'}>
+              <TeamUtility list={session.utility} name={(u) => (u.user_id != null
+                ? (session.assignments ?? []).find((a) => a.user_id === u.user_id)?.user_name ?? (u.user_id === user?.user_id ? user.user_name : `Player #${u.user_id}`)
+                : `Player ${u.slot} (unmapped)`)} />
+            </Panel>
+          ) : null}
         </div>
         <div className="stack">
           <LevelSwitch map={map} level={level} board={session.phase.board} onChange={(l) => setLevelChoice({ key: phaseKey, level: l })} />
           <MapBoard board={session.phase.board} map={map} level={level} players={boardPlayers} highlightUserId={user?.user_id ?? null}
-            onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for phase ${session.phase.name}`} />
+            onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for phase ${session.phase.name}`} bomb={session.bomb_carrier ?? null} />
           {otherLineups.length ? (
             <details className="panel">
               <summary>Team lineups this phase ({otherLineups.length})</summary>

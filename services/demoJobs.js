@@ -7,7 +7,9 @@ const { fork } = require('child_process');
 const db = require('../db/connection');
 const config = require('../config/env');
 
+const fs = require('fs');
 const CHILD = path.join(__dirname, '..', 'workers', 'demo-parse-child.js');
+const FETCH_CHILD = path.join(__dirname, '..', 'workers', 'demo-fetch-child.js');
 const MAX_ATTEMPTS = 2;
 
 const storagePath = (key) => path.join(config.demoStorageDir, key);
@@ -70,6 +72,32 @@ function parseInChild(file, timeoutMs = config.demoParseTimeoutMs) {
   });
 }
 
+// Downloads (and decompresses) a replay into `file` in a child process.
+function fetchInChild(url, file, timeoutMs = 15 * 60 * 1000) {
+  return new Promise((resolve, reject) => {
+    const child = fork(FETCH_CHILD, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(reject, { code: 'timeout', message: 'Downloading the replay took too long and was stopped.' }); }, timeoutMs);
+    child.on('message', (msg) => (msg.ok ? finish(resolve, msg) : finish(reject, { code: msg.code, message: msg.message })));
+    child.on('exit', (code, signal) => finish(reject, { code: 'download_failed', message: `The download stopped unexpectedly (${signal || `exit ${code}`}).` }));
+    child.send({ url, file, maxBytes: config.demoMaxBytes });
+  });
+}
+
+// Share-code imports have no file until the replay is fetched through the
+// replay provider; uploads already have theirs.
+async function ensureFile(demo, { locate, download }) {
+  const file = storagePath(demo.storage_key);
+  if (demo.source !== 'share_code' || fs.existsSync(file)) return file;
+  const { decodeShareCode } = require('./shareCode');
+  const url = await locate(decodeShareCode(demo.share_code));
+  fs.mkdirSync(config.demoStorageDir, { recursive: true });
+  const { size } = await download(url, file);
+  await db('demos').where('demo_id', demo.demo_id).update({ byte_size: size });
+  return file;
+}
+
 async function claimNext() {
   return db.transaction(async (trx) => {
     const row = await trx('demos').where('status', 'queued').orderBy('created_at').forUpdate().skipLocked().first();
@@ -121,11 +149,12 @@ async function markFailed(demoId, code, message) {
 }
 
 // Processes one queued demo. `parse` is injectable for tests.
-async function processNext({ parse = parseInChild } = {}) {
+async function processNext({ parse = parseInChild, locate = (ids) => require('./replayProvider').locateReplay(ids), download = fetchInChild } = {}) {
   const demo = await claimNext();
   if (!demo) return null;
   try {
-    const result = await parse(storagePath(demo.storage_key));
+    const file = await ensureFile(demo, { locate, download });
+    const result = await parse(file);
     await saveResult(demo.demo_id, result);
     return { demo_id: demo.demo_id, status: 'ready' };
   } catch (err) {
@@ -196,4 +225,4 @@ function notifyQueued() {
   if (wake) wake();
 }
 
-module.exports = { importDemoStats, backfillNextStats, start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };
+module.exports = { fetchInChild, importDemoStats, backfillNextStats, start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };

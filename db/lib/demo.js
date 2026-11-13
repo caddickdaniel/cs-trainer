@@ -3,16 +3,21 @@
 const { teamlessPlayers, testTeamOwner, testTeammates } = require('../data/demo');
 
 const PROFILE = ['user_name', 'language', 'region', 'platform', 'skill_level', 'bio', 'steam_url', 'faceit_url', 'esea_url', 'hltv_url'];
-const { mapLegacyRank } = require('../../domain/catalogue');
+const { mapLegacyRank, RANK_COLUMNS } = require('../../domain/catalogue');
 
 // Demo data lists platform and skill as players would type them; store the
-// catalogue rank when it maps, and keep unmappable text (e.g. "Perfect World") as legacy.
+// catalogue rank when it maps, and keep unmappable text (e.g. "Perfect World")
+// as legacy. `ranks` adds ranks on further platforms.
 function profileOf(p) {
   const profile = Object.fromEntries(PROFILE.map((k) => [k, p[k] ?? null]));
+  for (const col of Object.values(RANK_COLUMNS)) profile[col] = null;
   const mapped = p.platform ? mapLegacyRank(p.platform, p.skill_level) : null;
-  profile.rank_platform = mapped ? mapped.platform : null;
-  profile.rank_id = mapped ? mapped.rank : null;
-  if (mapped && mapped.rank) { profile.platform = null; profile.skill_level = null; }
+  if (mapped && mapped.rank) {
+    profile[RANK_COLUMNS[mapped.platform]] = mapped.rank;
+    profile.platform = null;
+    profile.skill_level = null;
+  }
+  for (const [platform, rank] of Object.entries(p.ranks || {})) profile[RANK_COLUMNS[platform]] = rank;
   return profile;
 }
 
@@ -63,7 +68,9 @@ async function ensureTeammates(knex, teamId, passwordHash, log = () => {}) {
 async function seedTestTeam(knex, passwordHash) {
   const { user_id: ownerId } = await upsertUser(knex, testTeamOwner, passwordHash);
   const [team] = await knex('teams')
-    .insert({ team_name: 'Test Team 1', owner: ownerId, language: 'English', region: 'EU', platform: 'FACEIT', skill_level: '8',
+    .insert({ team_name: 'Test Team 1', owner: ownerId, language: 'English', region: 'EU West',
+      rank_requirements: JSON.stringify([{ platform: 'faceit', min: 'faceit:7', max: 'faceit:9' }, { platform: 'premier', min: 'premier:15000', max: 'premier:22500' }]),
+      competitions: ['esea-league', 'faceit-mm'],
       description: 'Development team for testing tactics and Game Mode.' })
     .returning('team_id');
   await knex('team_memberships').insert({ team_id: team.team_id, user_id: ownerId, player_role: 'rifler', is_igl: false });
@@ -72,4 +79,4 @@ async function seedTestTeam(knex, passwordHash) {
   return team.team_id;
 }
 
-module.exports = { ensureTeamlessPlayers, ensureTeammates, seedTestTeam };
+module.exports = { ensureTeamlessPlayers, ensureTeammates, seedTestTeam, upsertUser };

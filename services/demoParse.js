@@ -301,6 +301,16 @@ function summarise({ map, events, rounds, roundData, players, teamOf, score }) {
 
 const EVENT_NAMES = ['round_start', 'round_freeze_end', 'round_end', 'player_death', 'player_hurt', 'bomb_planted', 'bomb_defused', 'bomb_exploded'];
 
+// Version of the native binary actually loaded (package.json overrides pin
+// the platform builds ahead of the wrapper package; see README).
+function parserVersion() {
+  const plat = { 'linux-x64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu', 'darwin-arm64': 'darwin-arm64', 'darwin-x64': 'darwin-x64', 'win32-x64': 'win32-x64-msvc' }[`${process.platform}-${process.arch}`];
+  for (const name of [plat && `@laihoe/demoparser2-${plat}`, '@laihoe/demoparser2'].filter(Boolean)) {
+    try { return require(`${name}/package.json`).version; } catch { /* try the next one */ }
+  }
+  return 'unknown';
+}
+
 // Native parse of one file (runs in the worker process).
 function parseDemoFile(file) {
   let parser;
@@ -315,16 +325,31 @@ function parseDemoFile(file) {
   } catch (err) {
     throw new DemoError('corrupt_demo', `This demo couldn't be read (${err.message || err}).`);
   }
-  const events = parser.parseEvents(file, EVENT_NAMES, ['X', 'Y', 'Z'], ['is_warmup_period', 'total_rounds_played']);
+  // A parser error after a readable header almost always means the demo was
+  // recorded by a newer CS2 build than this parser version understands (for
+  // example build 14197 needs demoparser2 0.42.2). Say so instead of passing
+  // on the parser's internal error name.
+  const incompatible = (err) => new DemoError('parser_incompatible',
+    `This demo was recorded by a CS2 build (network protocol ${header.network_protocol || 'unknown'}) that this server's demo parser `
+    + `(demoparser2 ${parserVersion()}) can't read yet: ${err.message || err}. Update the parser, then retry the demo.`);
+  let events;
+  try {
+    events = parser.parseEvents(file, EVENT_NAMES, ['X', 'Y', 'Z'], ['is_warmup_period', 'total_rounds_played']);
+  } catch (err) {
+    throw incompatible(err);
+  }
   const rounds = findRounds(events);
   const wanted = [];
   for (const r of rounds) {
     for (let tk = Math.ceil(r.start_tick / STEP) * STEP; tk <= r.end_tick; tk += STEP) wanted.push(tk);
   }
-  const ticks = wanted.length
-    ? parser.parseTicks(file, ['X', 'Y', 'Z', 'yaw', 'is_alive', 'health', 'team_num'], wanted)
-    : [];
+  let ticks = [];
+  try {
+    if (wanted.length) ticks = parser.parseTicks(file, ['X', 'Y', 'Z', 'yaw', 'is_alive', 'health', 'team_num'], wanted);
+  } catch (err) {
+    throw incompatible(err);
+  }
   return buildReplay({ header, events, ticks });
 }
 
-module.exports = { STATS_VERSION, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };
+module.exports = { parserVersion, STATS_VERSION, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };

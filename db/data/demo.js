@@ -5,17 +5,17 @@
 // Ten players with no team, for the recruitment screens. Some optional
 // fields are deliberately missing.
 exports.teamlessPlayers = [
-  { email: 'demo-kestrel@cs-trainer.test', user_name: 'Kestrel', language: 'Polish', region: 'EU West', platform: 'FACEIT', skill_level: '9',
+  { email: 'demo-kestrel@cs-trainer.test', user_name: 'Kestrel', language: 'Polish', region: 'EU West', platform: 'FACEIT', skill_level: '9', ranks: { premier: 'premier:17500', esea: 'esea:a-' },
     bio: 'Entry fragger, loves Ancient and Inferno. Looking for a team that scrims three nights a week.',
     steam_url: 'https://steamcommunity.com/id/demo-kestrel', faceit_url: 'https://www.faceit.com/en/players/demo-kestrel' },
-  { email: 'demo-mateo@cs-trainer.test', user_name: 'Mateo', language: 'Spanish (Spain)', region: 'EU West', platform: 'ESEA', skill_level: 'B+' },
+  { email: 'demo-mateo@cs-trainer.test', user_name: 'Mateo', language: 'Spanish (Spain)', region: 'EU West', platform: 'ESEA', skill_level: 'B+', ranks: { faceit: 'faceit:7' } },
   { email: 'demo-hana@cs-trainer.test', user_name: 'Hana', language: 'Japanese', region: 'Asia East', platform: 'Premier', skill_level: '21,400',
     bio: 'Support player. Utility first, frags second. Happy to IGL if needed.',
     hltv_url: 'https://www.hltv.org/player/0/demo-hana' },
   { email: 'demo-liam@cs-trainer.test', user_name: 'Liam', language: 'English', region: 'North America East', platform: 'FACEIT', skill_level: '10',
     bio: 'AWPer with 4k hours. Ex-ESEA Main.', faceit_url: 'https://www.faceit.com/en/players/demo-liam',
     esea_url: 'https://play.esea.net/users/demo-liam' },
-  { email: 'demo-sofia@cs-trainer.test', user_name: 'Sofia', language: 'Portuguese (Brazil)', region: 'South America', platform: 'FACEIT', skill_level: '7' },
+  { email: 'demo-sofia@cs-trainer.test', user_name: 'Sofia', language: 'Portuguese (Brazil)', region: 'South America', platform: 'FACEIT', skill_level: '7', ranks: { premier: 'premier:12500' } },
   { email: 'demo-noah@cs-trainer.test', user_name: 'Noah', language: 'German', region: 'EU West', platform: 'Premier', skill_level: '18,250',
     bio: 'Lurker. Calm comms, good with late-round info.', steam_url: 'https://steamcommunity.com/id/demo-noah' },
   { email: 'demo-priya@cs-trainer.test', user_name: 'Priya', language: 'English', region: 'Oceania', platform: 'FACEIT', skill_level: '6',

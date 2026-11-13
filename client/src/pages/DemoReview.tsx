@@ -9,16 +9,19 @@ import { isTyping } from '../lib/shortcuts';
 import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayRound } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
-import { MapBackground } from '../components/MapBoard';
+import { MapBackground, UtilityGlyph, useFitToViewport } from '../components/MapBoard';
+import { UTILITY_ICON } from '../lib/constants';
 
 const SIZE = 1000;
+type UtilityKind = 'smoke' | 'flash' | 'he' | 'molly';
+const UTILITY_KINDS: [UtilityKind, string][] = [['smoke', 'Smoke'], ['flash', 'Flash'], ['he', 'HE'], ['molly', 'Molotov']];
 const SPEEDS = [0.5, 1, 2, 4];
 const SIDE_COLOR = { CT: '#5b9cf5', T: '#f5a524' } as const;
 const fmtSize = (bytes: number) => (bytes > 1048576 ? `${(bytes / 1048576).toFixed(0)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
 // ---- Library ---------------------------------------------------------------------
 
-interface LibraryResponse { demos: DemoSummary[]; can_upload: boolean; can_manage: boolean; limits: { max_bytes: number; per_team: number } }
+interface LibraryResponse { demos: DemoSummary[]; can_upload: boolean; can_manage: boolean; limits: { max_bytes: number; per_team: number }; share_codes?: boolean }
 
 function StatusPill({ status }: { status: DemoSummary['status'] }) {
   const label = { queued: 'Queued', processing: 'Processing', ready: 'Ready', failed: 'Failed' }[status];
@@ -79,8 +82,10 @@ function DemoLibrary({ teamId }: { teamId: number }) {
     setProgress(0);
     try {
       const q = new URLSearchParams({ file_name: file.name, ...(title.trim() ? { title: title.trim() } : {}) });
-      await api.uploadFile(`/teams/${teamId}/demos?${q}`, file, setProgress);
-      setNotice('Uploaded. The demo is being processed in the background; this list updates when it is ready.');
+      const res = await api.uploadFile<{ retried?: boolean }>(`/teams/${teamId}/demos?${q}`, file, setProgress);
+      setNotice(res?.retried
+        ? 'This demo was already in your library but had failed, so it is being processed again.'
+        : 'Uploaded. The demo is being processed in the background; this list updates when it is ready.');
       setFile(null);
       setTitle('');
       if (inputRef.current) inputRef.current.value = '';
@@ -89,6 +94,28 @@ function DemoLibrary({ teamId }: { teamId: number }) {
       setError(errorMessage(err));
     } finally {
       setProgress(null);
+    }
+  };
+
+  const [shareCode, setShareCode] = useState('');
+  const [importing, setImporting] = useState(false);
+  const importCode = async () => {
+    setError(null);
+    setNotice(null);
+    const code = shareCode.trim();
+    if (!/^CSGO(-[A-Za-z0-9]{5}){5}$/.test(code)) { setError('That is not a CS2 match share code. It looks like CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx.'); return; }
+    setImporting(true);
+    try {
+      const res = await api.post<{ existing: boolean; retried?: boolean; demo: DemoSummary }>(`/teams/${teamId}/demos/share-code`, { share_code: code });
+      setNotice(res.existing
+        ? (res.retried ? `This match was already imported as “${res.demo.title}” and failed, so it is being fetched again.` : `This match is already in your library as “${res.demo.title}”.`)
+        : 'Match queued. The replay is being fetched from Valve and processed; this list updates when it is ready.');
+      setShareCode('');
+      await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -123,6 +150,14 @@ function DemoLibrary({ teamId }: { teamId: number }) {
           <button type="button" className="btn primary" disabled={!file || progress !== null} onClick={upload}><Icon name="upload" /> Upload</button>
         </div>
         {progress !== null ? <progress className="upload-progress" value={progress} max={1} aria-label="Upload progress" /> : null}
+        <div className="row wrap share-code-row">
+          <input aria-label="Match share code" placeholder="or paste a match share code: CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" value={shareCode}
+            maxLength={200} onChange={(e) => setShareCode(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') importCode(); }} />
+          <button type="button" className="btn" disabled={!shareCode.trim() || importing} onClick={importCode}>{importing ? 'Importing…' : 'Import match'}</button>
+        </div>
+        {lib.data && lib.data.share_codes === false ? (
+          <p className="muted small">Share code import needs a replay provider on this server; without one, codes are checked and you're told to upload the .dem instead.</p>
+        ) : null}
         <p className="muted small">CS2 .dem files up to {fmtSize(lib.data?.limits.max_bytes ?? 0)}; {lib.data?.limits.per_team} demos per team.
           Supported for 2D replay: Ancient, Anubis, Cache, Dust II, Inferno, Mirage, Nuke, Overpass, Train and Vertigo.</p>
       </Panel>
@@ -140,6 +175,7 @@ function DemoLibrary({ teamId }: { teamId: number }) {
                       {d.map ? `${mapName(d.map)} · ` : ''}{d.round_count ? `${d.round_count} rounds · ` : ''}{fmtSize(d.byte_size)} ·
                       {' '}uploaded {formatDateTime(d.created_at)}{d.uploaded_by?.user_name ? ` by ${d.uploaded_by.user_name}` : ''}
                     </div>
+                    {d.source === 'share_code' && d.status !== 'ready' ? <div className="muted small">From share code {d.share_code}</div> : null}
                     {d.status === 'failed' ? <div className="error-text">{d.error_message}</div> : null}
                   </div>
                   <StatusPill status={d.status} />
@@ -299,7 +335,7 @@ export function DemoPage() {
 }
 
 type Mode = 'solo' | 'control' | 'follow';
-type Tool = 'none' | 'draw' | 'text';
+type Tool = 'none' | 'draw' | 'text' | 'utility';
 
 function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: number; canControlReview: boolean }) {
   const { user } = useAuth();
@@ -332,11 +368,16 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const levels = mapLevels(demo.map);
   const [level, setLevel] = useState<Level>('main');
   const [tool, setTool] = useState<Tool>('none');
+  // Utility tool: which grenade to place; moving: the utility marker that the next map click moves.
+  const [utilityKind, setUtilityKind] = useState<UtilityKind>('smoke');
+  const [moving, setMoving] = useState<number | null>(null);
   const [text, setText] = useState('');
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
+  // Leaves room for the annotation toolbar under the board.
+  const frameRef = useFitToViewport<HTMLDivElement>(64);
 
   // Personal/team annotations outside a live review.
   const notes = useLoad(
@@ -449,6 +490,16 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
       }
     } catch (err) { setError(errorMessage(err)); }
   };
+  // Moves a utility marker or changes its type (live: the IGL's change reaches everyone following).
+  const editAnnotation = async (a: Annotation, patch: Record<string, unknown>) => {
+    setError(null);
+    try {
+      if (mode === 'solo') { await api.patch(`/demos/${demo.demo_id}/annotations/${a.annotation_id}`, patch); await notes.reload(); } else if (liveHere) {
+        const res = await api.patch<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/annotations/${a.annotation_id}`, patch);
+        sync.adopt(res.review);
+      }
+    } catch (err) { setError(errorMessage(err)); }
+  };
   const removeAnnotation = async (a: Annotation) => {
     try {
       if (mode === 'solo') { await api.delete(`/demos/${demo.demo_id}/annotations/${a.annotation_id}`); await notes.reload(); } else if (liveHere) {
@@ -458,9 +509,21 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     } catch (err) { setError(errorMessage(err)); }
   };
   const onDown = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (!canAnnotate || tool === 'none') return;
+    if (!canAnnotate) return;
+    if (moving != null) {
+      const p = toPoint(e);
+      const a = annotations.find((x) => x.annotation_id === moving);
+      setMoving(null);
+      if (p && a) editAnnotation(a, { x: p.x, y: p.y, level });
+      return;
+    }
+    if (tool === 'none') return;
     const p = toPoint(e);
     if (!p) return;
+    if (tool === 'utility') {
+      saveAnnotation({ kind: 'utility', data: { x: p.x, y: p.y, utility: utilityKind } });
+      return;
+    }
     if (tool === 'text') {
       if (!text.trim()) { setError('Type the text first, then click the map to place it.'); return; }
       saveAnnotation({ kind: 'text', data: { x: p.x, y: p.y, text: text.trim() } });
@@ -551,7 +614,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             <input type="range" aria-label="Playback position" min={info.start_tick} max={info.end_tick} step={1} value={Math.round(tick)} disabled={!canControl}
               onChange={(e) => control.seek(Number(e.target.value))} />
           </div>
-          <div className="board-frame">
+          <div className="board-frame" ref={frameRef}>
             <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} className={`board${tool !== 'none' && canAnnotate ? ' editable' : ''}`} role="img"
               aria-label={`Replay of round ${roundNumber}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
               style={{ cursor: canAnnotate && tool !== 'none' ? 'crosshair' : undefined, touchAction: tool !== 'none' ? 'none' : undefined }}
@@ -587,7 +650,14 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   </g>
                 );
               }) : null}
-              {visibleAnnotations.map((a) => (a.kind === 'drawing' ? (
+              {visibleAnnotations.filter((a) => a.kind === 'utility').map((a) => (
+                <g key={a.annotation_id} transform={`translate(${(a.data.x ?? 0) * SIZE},${(a.data.y ?? 0) * SIZE})`} pointerEvents="none"
+                  opacity={moving === a.annotation_id ? 0.4 : 0.95} data-utility-annotation={a.data.utility}>
+                  {a.data.utility === 'smoke' ? <circle r="40" fill="#c9d0d8" opacity="0.35" /> : a.data.utility === 'molly' ? <circle r="30" fill="#e8833a" opacity="0.35" /> : null}
+                  <UtilityGlyph kind={a.data.utility ?? 'smoke'} color="#ffd166" r={16} />
+                </g>
+              ))}
+              {visibleAnnotations.filter((a) => a.kind !== 'utility').map((a) => (a.kind === 'drawing' ? (
                 <polyline key={a.annotation_id} points={(a.data.points ?? []).map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')}
                   fill="none" stroke={a.data.color ?? '#ffd166'} strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
               ) : (
@@ -604,6 +674,17 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               <button type="button" className={tool === 'none' ? 'on' : ''} aria-pressed={tool === 'none'} onClick={() => setTool('none')}><Icon name="select" /> View</button>
               <button type="button" className={tool === 'draw' ? 'on' : ''} aria-pressed={tool === 'draw'} onClick={() => setTool('draw')}><Icon name="pen" /> Draw</button>
               <button type="button" className={tool === 'text' ? 'on' : ''} aria-pressed={tool === 'text'} onClick={() => setTool('text')}><Icon name="text" /> Text</button>
+              <button type="button" className={tool === 'utility' ? 'on' : ''} aria-pressed={tool === 'utility'} onClick={() => setTool('utility')}>
+                <img src={UTILITY_ICON.smoke} alt="" width="16" height="16" /> Utility</button>
+              {tool === 'utility' ? (
+                <span className="segmented" role="group" aria-label="Utility type">
+                  {UTILITY_KINDS.map(([k, label]) => (
+                    <button key={k} type="button" className={utilityKind === k ? 'on' : ''} aria-pressed={utilityKind === k} onClick={() => setUtilityKind(k)}>
+                      <img src={UTILITY_ICON[k]} alt="" width="14" height="14" /> {label}</button>
+                  ))}
+                </span>
+              ) : null}
+              {moving != null ? <span className="muted small">Click the map to move the marker. <button type="button" className="btn ghost small" onClick={() => setMoving(null)}>Cancel</button></span> : null}
               {tool === 'text' ? <input aria-label="Annotation text" maxLength={200} placeholder="Type, then click the map" value={text} onChange={(e) => setText(e.target.value)} /> : null}
               {mode === 'control' ? (
                 <button type="button" className="btn ghost small danger" disabled={busy || !annotations.length}
@@ -665,9 +746,18 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                 {annotations.map((a) => (
                   <li key={a.annotation_id} className="row space">
                     <button type="button" disabled={!canControl} onClick={() => control.seek(a.tick)}>
-                      <span className="muted">{roundTime(info, a.tick, tickrate)}</span> {a.kind === 'text' ? `“${a.data.text}”` : 'Drawing'}
+                      <span className="muted">{roundTime(info, a.tick, tickrate)}</span> {a.kind === 'text' ? `“${a.data.text}”`
+                        : a.kind === 'utility' ? <><img src={UTILITY_ICON[a.data.utility ?? 'smoke']} alt="" width="14" height="14" /> {UTILITY_KINDS.find(([k]) => k === a.data.utility)?.[1] ?? 'Utility'}{a.level === 'lower' ? ' (lower)' : ''}</> : 'Drawing'}
                       {a.author ? <span className="muted"> · {a.author.user_name}</span> : null}
                     </button>
+                    {a.kind === 'utility' && (mode === 'control' || (mode === 'solo' && a.author?.user_id === user?.user_id)) ? (
+                      <span className="row tight">
+                        <select aria-label="Utility type" value={a.data.utility} onChange={(e) => editAnnotation(a, { utility: e.target.value })}>
+                          {UTILITY_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                        </select>
+                        <button type="button" className="btn ghost small" onClick={() => setMoving(a.annotation_id)}>Move</button>
+                      </span>
+                    ) : null}
                     {(mode === 'control' || (mode === 'solo' && a.author?.user_id === user?.user_id))
                       ? <button type="button" className="btn ghost small" aria-label="Remove annotation" onClick={() => removeAnnotation(a)}><Icon name="close" size={14} /></button> : null}
                   </li>

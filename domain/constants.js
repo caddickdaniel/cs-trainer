@@ -28,11 +28,14 @@ exports.SHORTCUT_ACTIONS = ['phase_prev', 'phase_next', 'tactic_prev', 'tactic_n
 exports.DEFAULT_SHORTCUTS = {
   phase_prev: 'ArrowLeft',
   phase_next: 'ArrowRight',
-  tactic_prev: '[',
-  tactic_next: ']',
-  new_round: 'N',
-  switch_side: 'S',
+  tactic_prev: 'ArrowUp',
+  tactic_next: 'ArrowDown',
+  new_round: 'Home',
+  switch_side: 'End',
 };
+// Defaults before Phase 5, used when a new default would clash with a key a
+// player already chose for another action.
+exports.PREVIOUS_SHORTCUTS = { tactic_prev: '[', tactic_next: ']', new_round: 'N', switch_side: 'S' };
 // Profile links must point at these sites.
 exports.PROFILE_LINK_HOSTS = {
   steam_url: ['steamcommunity.com'],

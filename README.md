@@ -331,7 +331,7 @@ Other small follow-ups: cleanup of unused lineup images (uploads are kept even i
   - Teammates, including a non-IGL owner, get a read-only view: round, current tactic and phase, their own instruction and lineups, "Up next", and who the IGL is.
   - Snapshots, polling, version checks and reconnect resume the right round, tactic and phase.
 - **Shortcuts.** In **Settings** (bottom of the sidebar), each user can rebind previous/next phase, previous/next tactic, new round and switch side, or reset them.
-  - Defaults: ← → [ ] N S.
+  - Defaults (Phase 5): ← → for phases, ↑ ↓ for tactics, Home for a new round, End to switch side (previously ← → [ ] N S).
   - Conflicts are flagged in the UI and rejected by the server.
   - Shortcuts only work on the focused Game Mode page, are ignored while typing or rebinding, and only act for the IGL. The Settings page explains this.
   - Game Mode buttons show the current bindings.
@@ -611,6 +611,45 @@ Manual checks in signed-in browser sessions (test accounts Juno, Vex and Kestrel
 2. In the Team page's player search, Premier listed Hana and Noah, and 20,000–22,499 narrowed it to Hana. Typing "ger" in Language and pressing Enter left only Noah.
 3. The Mirage demo uploaded by two teams resolved to **one** match. With Juno temporarily linked to the demo's top player (local test data, removed afterwards), Home showed 1 match, 100% win rate, K/D 27.00, ADR 183.2 and 41% headshots. Vex saw the same aggregates on Juno's profile, with no demo links, and got 404 for the other team's demo.
 4. Settings showed sign-in methods, the tracking opt-in, "FACEIT isn't available on this server yet" and the Valve status. The sign-in page's Steam link redirected to Steam's OpenID endpoint with the right return URL.
+
+## Phase 5
+
+### What was added
+
+- **Profiles, teams and recruitment.** Players keep one optional self-reported rank per platform (Premier, FACEIT, ESEA); editing one never touches the others. Create Team, Edit Team, Edit Profile and the player search use the same searchable Language and Region lists. Player search has a column and a rank filter per platform (all active filters must match; blank = not entered). Recruiting teams set up to one requirement per platform, either an exact band or a range, shown on the listing and team page. Leagues and matchmaking (grouped: ESEA League (on FACEIT), UKIC League; Premier, FACEIT Matchmaking, ESEA Matchmaking (legacy)) are a searchable multi-select from `domain/catalogue.js` (`COMPETITIONS`; add entries there, never rename ids).
+- **Shared tactic voting.** Voting already worked for other accounts (+1, switching −2, clearing reverses, persisted). The arrows that "did nothing" were the publisher's: the API refuses votes from the publishing team, and the page showed disabled arrows with no reason. The creator now sees the score with "Your team shared this, so you can't vote on it." Failed votes show "Vote not saved: …".
+- **30 development shared tactics** (`db/lib/sharedTactics.js`): three for every side × economy across seven maps, 2–3 phases, all five slots positioned and instructed every phase, routes, utility matching each slot's buy list, the bomb (Player 3) on T and kits on CT. Published by a dev-only "Community Library" team. `npm run db:demo` (and the development seed) creates them once and refreshes them afterwards without duplicating listings or touching votes and imports.
+- **Board layout.** Boards are sized to the window height on desktop (`useFitToViewport`), the editor puts tools, floor switch and legend in a rail beside the board, the inspector is narrower, and long sections scroll inside their column. Below 1100 px the layout stacks.
+- **Map landmarks.** CT/T spawn icons and A/B bombsite markers are part of the radar background layer (`client/src/lib/landmarks.ts`, radar coordinates, per floor), so every view that draws the radar shows them and they never take clicks.
+- **Per-player buy lists.** The team-wide counters are replaced by a buy list per player under Player Instructions (CS2 carry limits), a defuse kit on CT, and the bomb carrier on T (badge on their marker and in their instructions). Assigned utility markers are the planned throws; a marker can be marked "Reference only". Each throw is counted once (a marker kept in later phases by id is not counted again). What a player has at the start of a phase is derived from the buy list and earlier phases (`domain/utility.js`, mirrored in `client/src/lib/utility.ts`), so going back, refreshing or reconnecting gives the same counts. Over-planned utility is flagged in the editor and Game Mode. Buy lists and the bomb travel through Player 1–5 slots when sharing/importing and are copied into the Game Mode round snapshot.
+- **Shortcuts.** New defaults (see Phase 2) for new users and Reset to defaults. Saved bindings are kept; if a new default clashes with a key a player already saved for another action, that action keeps its previous default. Handled keys never scroll the page; keys are ignored while typing, rebinding, in dropdowns/listboxes or modals, and on held-down repeats. The shortcut editor is on the right of Settings on desktop.
+- **Demo Review.** Utility annotations (Smoke, Flash, HE, Molotov) saved with round, tick and floor; change type, move and remove them solo or, as the IGL, live (followers see each change). Match share code import (below).
+
+### HLTV demo failure (`spirit-vs-g2-m3-ancient.dem`)
+
+- Reproduced through the normal upload: the 253 MB file uploaded completely (under the 600 MB limit, valid `PBDEMS2` header) and the job failed within ~60 ms with `InvalidArg` / `EntityNotFound`.
+- Cause: the demo was recorded by **CS2 build 14197** (network protocol 14197, the 11 November 2026 update), which changed how 8-bit fields are encoded. `@laihoe/demoparser2` 0.42.0 misreads every entity after that, so `parseEvents` fails on any event (the Nuke map of the same series fails with `IllegalPathOp`). Demos from older builds (14169) still parsed.
+- Fix: upstream fixed it in 0.42.2 (LaihoE/demoparser#375). The 0.42.2 platform binaries are on npm but the wrapper package was not re-released, so `package.json` `overrides` pin the platform packages to 0.42.2 (darwin-x64 and others without a 0.42.2 build keep the stub). Drop the overrides once `@laihoe/demoparser2` 0.42.2+ is published.
+- Parser errors after a readable header now say the demo is from a newer CS2 build than the parser supports, with the protocol and parser version. Re-uploading a demo that failed retries the existing import instead of reporting a duplicate.
+- After the fix the original file imported through the UI in ~2 s: Ancient, 18 rounds, G2 13–5, playable replay. All three maps of the series parse. The 253 MB file is not committed.
+
+### Match share codes
+
+- `POST /api/teams/:team_id/demos/share-code { share_code }` validates and decodes the code (`services/shareCode.js`: match ID, outcome ID, token) and reuses an existing import of the same match.
+- The replay URL only comes from Valve's Game Coordinator through a logged-in game client, so retrieval goes through a configurable **replay provider** (`MATCH_REPLAY_PROVIDER_URL`, optional `MATCH_REPLAY_PROVIDER_TOKEN`; contract in `services/replayProvider.js`). The returned URL must be on an allowed host (`MATCH_REPLAY_HOSTS`, default `replay*.valve.net`). The job downloads and bunzips it in a child process (`workers/demo-fetch-child.js`) with the size limit and signature check, then parses it like an upload.
+- Messages: invalid code (400), no provider configured (503), replay expired/unknown, provider errors, non-Valve download address, and the usual parser errors.
+- **Verified with mocks only**: no provider or bot account is available, so the provider and replay server are local fakes in `spec/phase5.spec.js`. Code decoding is checked against a published example.
+
+### Migrations and commands
+
+- `20261115000100_phase_5_ranks.js`: `users.premier_rank/faceit_rank/esea_rank` (filled from Phase 4's rank; a platform chosen without a rank, and unmappable text such as "FACEIT 10", stay as legacy text for the player to review or remove), `teams.rank_requirements` (filled only when the legacy platform/skill maps to one band) and `teams.competitions` (legacy `recruiting_leagues` text kept until the owner edits competitions). `rank_platform/rank_id` and legacy text columns are kept.
+- `20261115000200_phase_5_loadouts.js`: `tactics.loadouts` and `tactics.bomb_carrier`; buy lists are filled for existing tactics only from utility markers already assigned to players. Legacy grenade/molly/flash/smoke totals are unchanged. Adds the `utility` annotation kind.
+- `20261115000300_phase_5_share_codes.js`: `demos.source`, `share_code`, `valve_match_id` (unique per team).
+- Run `npm install` (parser override, `unbzip2-stream`), `npm run db:migrate`, then `npm run db:demo` for the 30 shared tactics.
+
+### Map landmark sources
+
+Mirage, Nuke (CT, A, B on the lower floor) and Ancient come from the HLTV demos (median player position per CS2 place name). Dust II, Inferno, Anubis, Cache, Vertigo (T spawn on the lower floor) and Nuke's T spawn come from the zones outlined on the radar images. **Overpass and Train** have neither and were placed from the map layout; check them against a demo.
 
 ## Contact
 

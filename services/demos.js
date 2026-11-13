@@ -18,6 +18,8 @@ const present = (d, names) => ({
   team_id: d.team_id,
   title: d.title,
   original_name: d.original_name,
+  source: d.source || 'upload',
+  share_code: d.share_code || null,
   byte_size: Number(d.byte_size),
   status: d.status,
   error_code: d.error_code,
@@ -54,6 +56,7 @@ async function listDemos(teamId, userId) {
     can_upload: true,
     can_manage: access.canLead,
     limits: { max_bytes: config.demoMaxBytes, per_team: config.demoDemosPerTeam },
+    share_codes: require('./replayProvider').configured(),
   };
 }
 
@@ -139,7 +142,16 @@ async function upload(teamId, userId, req, { title, file_name: fileName } = {}) 
     throw err;
   }
   const sha256 = hash.digest('hex');
-  const existing = await db('demos').where({ team_id: teamId, sha256 }).first('demo_id', 'title');
+  const existing = await db('demos').where({ team_id: teamId, sha256 }).first('demo_id', 'title', 'status');
+  if (existing && existing.status === 'failed') {
+    // Uploading a failed demo again retries the existing import (same file,
+    // same id) instead of being blocked as a duplicate.
+    await fsp.rm(file, { force: true });
+    const [again] = await db('demos').where('demo_id', existing.demo_id)
+      .update({ status: 'queued', attempts: 0, error_code: null, error_message: null }).returning('*');
+    demoJobs.notifyQueued();
+    return { demo: present(again, await userNames([again.uploaded_by])), retried: true };
+  }
   if (existing) {
     await fsp.rm(file, { force: true });
     throw conflict(`This demo is already in your library as "${existing.title}"`, 'demo_exists', { demo_id: existing.demo_id });
@@ -157,6 +169,48 @@ async function upload(teamId, userId, req, { title, file_name: fileName } = {}) 
   demoJobs.notifyQueued();
   const names = await userNames([userId]);
   return { demo: present(demo, names) };
+}
+
+// Queues a demo from a CS2 match share code. The code is checked here; the
+// replay itself is fetched by the processing job through the replay
+// provider, then processed exactly like an upload. A match already in the
+// team's library is reused rather than imported twice.
+async function importShareCode(teamId, userId, { share_code: input, title }) {
+  await requireMember(teamId, userId);
+  const { decodeShareCode } = require('./shareCode');
+  const ids = (() => {
+    try { return decodeShareCode(input); } catch (err) { throw badRequest(err.message, err.code); }
+  })();
+  const existing = await db('demos').where({ team_id: teamId, valve_match_id: ids.match_id }).first();
+  if (existing) {
+    if (existing.status === 'failed') {
+      const [again] = await db('demos').where('demo_id', existing.demo_id)
+        .update({ status: 'queued', attempts: 0, error_code: null, error_message: null }).returning('*');
+      demoJobs.notifyQueued();
+      return { demo: present(again, await userNames([again.uploaded_by])), existing: true, retried: true };
+    }
+    return { demo: present(existing, await userNames([existing.uploaded_by])), existing: true };
+  }
+  const provider = require('./replayProvider');
+  try { provider.assertConfigured(); } catch (err) { throw httpError(err.status, err.message, err.code); }
+  const { count } = await db('demos').where('team_id', teamId).count('* as count').first();
+  if (Number(count) >= config.demoDemosPerTeam) {
+    throw conflict(`This team has reached its limit of ${config.demoDemosPerTeam} demos. Delete one to upload another.`, 'demo_quota');
+  }
+  const [demo] = await db('demos').insert({
+    team_id: teamId,
+    uploaded_by: userId,
+    title: (title && title.trim()) || `Match ${ids.share_code}`,
+    original_name: `${ids.share_code}.dem`,
+    byte_size: 0,
+    sha256: `share-code:${ids.match_id}`,
+    storage_key: `${crypto.randomUUID()}.dem`,
+    source: 'share_code',
+    share_code: ids.share_code,
+    valve_match_id: ids.match_id,
+  }).returning('*');
+  demoJobs.notifyQueued();
+  return { demo: present(demo, await userNames([userId])), existing: false };
 }
 
 async function requireManage(demoId, userId) {
@@ -245,6 +299,25 @@ async function createAnnotation(demoId, userId, body) {
   return { annotation: presentAnnotation(row, await userNames([userId])) };
 }
 
+// Applies an edit to a utility annotation row (shared by solo and live reviews).
+async function applyAnnotationPatch(trx, row, patch) {
+  if (row.kind !== 'utility') throw badRequest('Only utility markers can be moved or changed; remove and redraw other annotations', 'not_editable');
+  const data = { ...row.data, ...(patch.x !== undefined ? { x: patch.x } : {}), ...(patch.y !== undefined ? { y: patch.y } : {}),
+    ...(patch.utility ? { utility: patch.utility } : {}) };
+  const [updated] = await trx('demo_annotations').where('annotation_id', row.annotation_id)
+    .update({ data: JSON.stringify(data), ...(patch.level ? { level: patch.level } : {}) }).returning('*');
+  return updated;
+}
+
+async function updateAnnotation(demoId, annotationId, userId, patch) {
+  const { access } = await loadDemo(demoId, userId);
+  const row = await db('demo_annotations').where({ demo_id: demoId, annotation_id: annotationId }).whereNull('review_id').first();
+  if (!row) throw notFound('Annotation not found');
+  if (row.author_id !== userId && !access.canLead) throw forbidden('You can only change your own annotations');
+  const updated = await applyAnnotationPatch(db, row, patch);
+  return { annotation: presentAnnotation(updated, await userNames([updated.author_id])) };
+}
+
 async function deleteAnnotation(demoId, annotationId, userId) {
   const { access } = await loadDemo(demoId, userId);
   const row = await db('demo_annotations').where({ demo_id: demoId, annotation_id: annotationId }).whereNull('review_id').first();
@@ -255,6 +328,6 @@ async function deleteAnnotation(demoId, annotationId, userId) {
 }
 
 module.exports = {
-  listDemos, getDemo, roundData, upload, renameDemo, retryDemo, deleteDemo,
-  listAnnotations, createAnnotation, deleteAnnotation, insertAnnotation, presentAnnotation, userNames, loadDemo,
+  listDemos, getDemo, roundData, upload, importShareCode, renameDemo, retryDemo, deleteDemo,
+  listAnnotations, createAnnotation, updateAnnotation, applyAnnotationPatch, deleteAnnotation, insertAnnotation, presentAnnotation, userNames, loadDemo,
 };

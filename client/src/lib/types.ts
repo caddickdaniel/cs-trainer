@@ -21,6 +21,8 @@ export interface Marker {
   // Note text uses `label`; size is its font size in board units.
   label: string;
   size?: number;
+  // Utility only: a reference, not one of the player's planned throws.
+  reference?: boolean;
   images?: (LineupImage & { url?: string })[];
 }
 export interface Route { id: string; level?: Level; user_id: number | null; slot?: number | null; color: string; points: Point[] }
@@ -45,10 +47,24 @@ export interface TacticFields {
   map: string;
   side: Side;
   economy: Economy;
+  // Legacy team-wide totals (kept as stored; per-player buy lists replace them).
   grenade: number;
   molly: number;
   flash: number;
   smoke: number;
+  loadouts?: Loadout[];
+  bomb_carrier?: PlayerRef | null;
+}
+
+export interface PlayerRef { user_id: number | null; slot: number | null }
+// One player's buy list for the round.
+export interface Loadout extends PlayerRef { smoke: number; flash: number; molly: number; he: number; kit: boolean }
+export type GrenadeCounts = { smoke: number; flash: number; molly: number; he: number };
+// A player's utility at the current Game Mode phase.
+export interface PlayerUtility extends PlayerRef {
+  buy: GrenadeCounts; kit: boolean; bomb: boolean;
+  available: GrenadeCounts; planned: GrenadeCounts;
+  over: { phase: number; kind: keyof GrenadeCounts; planned: number; available: number }[];
 }
 
 export interface TacticDocument extends Omit<TacticFields, 'map' | 'side' | 'economy'> {
@@ -113,6 +129,10 @@ export interface Member {
   joined_at: string;
 }
 
+export type PlayerRanks = { premier: string | null; faceit: string | null; esea: string | null };
+// A team's recruitment requirement on one platform: an exact band (min = max) or a range.
+export interface RankRequirement { platform: 'premier' | 'faceit' | 'esea'; min: string; max: string }
+
 export interface Team {
   team_id: number;
   team_name: string;
@@ -125,6 +145,9 @@ export interface Team {
   logo_url: string | null;
   is_recruiting: boolean;
   recruiting_leagues: string | null;
+  rank_requirements: RankRequirement[];
+  competitions: string[];
+  legacy_requirement: string | null;
   roles_needed: PlayerRole[];
   recruiting_notes: string | null;
 }
@@ -167,6 +190,9 @@ export interface GameSession {
   phase: { index: number; name: string; notes: string; board: Board };
   my_assignment: Assignment | null;
   assignments?: Assignment[];
+  my_utility: PlayerUtility | null;
+  bomb_carrier?: PlayerRef | null;
+  utility?: PlayerUtility[];
   can_control: boolean;
   round_number: number;
   map: string | null;
@@ -192,8 +218,7 @@ export interface Profile {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  rank_platform: string | null;
-  rank_id: string | null;
+  ranks: PlayerRanks;
   legacy_platform: string | null;
   legacy_skill_level: string | null;
   bio: string | null;
@@ -211,8 +236,7 @@ export interface PlayerSummary {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  rank_platform: string | null;
-  rank_id: string | null;
+  ranks: PlayerRanks;
   legacy_platform: string | null;
   legacy_skill_level: string | null;
   invite_status: 'pending' | null;
@@ -228,6 +252,9 @@ export interface RecruitingTeam {
   skill_level: string | null;
   description: string | null;
   recruiting_leagues: string | null;
+  rank_requirements: RankRequirement[];
+  competitions: string[];
+  legacy_requirement: string | null;
   roles_needed: PlayerRole[];
   recruiting_notes: string | null;
   roster_size: number;
@@ -238,7 +265,8 @@ export interface RecruitingTeam {
 
 export interface ReceivedInvite extends Invite {
   team: { team_id: number; team_name: string; logo_url: string | null; region: string | null; language: string | null;
-    platform: string | null; skill_level: string | null; roster_size: number };
+    platform: string | null; skill_level: string | null; roster_size: number;
+    rank_requirements: RankRequirement[]; legacy_requirement: string | null };
 }
 
 export interface JoinRequest {
@@ -249,8 +277,7 @@ export interface JoinRequest {
   avatar_url: string | null;
   language: string | null;
   region: string | null;
-  rank_platform: string | null;
-  rank_id: string | null;
+  ranks: PlayerRanks;
   legacy_platform: string | null;
   legacy_skill_level: string | null;
   message: string;
@@ -310,6 +337,8 @@ export interface SharedTactic extends SharedListing {
   flash: number;
   smoke: number;
   slot_count: number;
+  loadouts?: Loadout[];
+  bomb_carrier?: PlayerRef | null;
   phases: SharedPhase[];
 }
 export interface SharePreview {
@@ -323,6 +352,8 @@ export interface SharePreview {
 // ---- Demo Review ----------------------------------------------------------------
 export type DemoStatus = 'queued' | 'processing' | 'ready' | 'failed';
 export interface DemoSummary {
+  source?: 'upload' | 'share_code';
+  share_code?: string | null;
   demo_id: number;
   team_id: number;
   title: string;
@@ -385,8 +416,8 @@ export interface Annotation {
   round_number: number;
   tick: number;
   level: Level;
-  kind: 'drawing' | 'text';
-  data: { points?: Point[]; x?: number; y?: number; text?: string; color?: string };
+  kind: 'drawing' | 'text' | 'utility';
+  data: { points?: Point[]; x?: number; y?: number; text?: string; color?: string; utility?: 'smoke' | 'flash' | 'he' | 'molly' };
   review_id: number | null;
   author: UserRef | null;
   created_at: string;

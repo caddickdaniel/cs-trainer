@@ -9,7 +9,10 @@ import { Alert, Loading, Panel } from '../components/ui';
 import { Avatar } from '../components/People';
 import { Combobox } from '../components/Combobox';
 import { RankBadge } from '../components/RankBadge';
+import { RankSelect } from '../components/Recruitment';
 import { useCatalogue } from '../lib/catalogue';
+
+const PLATFORMS = ['premier', 'faceit', 'esea'] as const;
 
 const PICTURE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
@@ -26,8 +29,11 @@ export function ProfilePage() {
 
   const apply = (p: Profile) => {
     setProfile(p);
-    setForm(Object.fromEntries(['language', 'region', 'rank_platform', 'rank_id', 'bio', ...PROFILE_LINKS.map((l) => l.key)]
-      .map((k) => [k, (p as unknown as Record<string, string | null>)[k] ?? ''])));
+    setForm({
+      ...Object.fromEntries(['language', 'region', 'bio', ...PROFILE_LINKS.map((l) => l.key)]
+        .map((k) => [k, (p as unknown as Record<string, string | null>)[k] ?? ''])),
+      ...Object.fromEntries(PLATFORMS.map((k) => [`rank_${k}`, p.ranks[k] ?? ''])),
+    });
   };
 
   useEffect(() => {
@@ -40,9 +46,11 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      const body: Record<string, string | null> = { ...form };
-      // Only send a rank choice when one was made (keeps legacy text otherwise).
-      if (!form.rank_platform) { delete body.rank_platform; delete body.rank_id; } else body.rank_id = form.rank_id || null;
+      const body: Record<string, unknown> = Object.fromEntries(Object.entries(form).filter(([k]) => !k.startsWith('rank_')));
+      // Only send the platforms that changed; the others are left as they are.
+      const ranks = Object.fromEntries(PLATFORMS.filter((k) => (form[`rank_${k}`] || null) !== profile?.ranks[k])
+        .map((k) => [k, form[`rank_${k}`] || null]));
+      if (Object.keys(ranks).length) body.ranks = ranks;
       apply((await api.patch<{ profile: Profile }>('/me/profile', body)).profile);
       setSaved(true);
     } catch (err) {
@@ -98,31 +106,28 @@ export function ProfilePage() {
               onChange={(v) => setForm({ ...form, language: v })} />
             <Combobox label="Region" options={cat?.regions ?? []} value={form.region ?? ''} emptyLabel="Not set"
               onChange={(v) => setForm({ ...form, region: v })} />
-            <label>Platform
-              <select value={form.rank_platform ?? ''} onChange={(e) => {
-                const platform = e.target.value;
-                // A rank from another platform no longer applies.
-                const keep = cat?.ranks.find((r) => r.id === form.rank_id)?.platform === platform;
-                setForm({ ...form, rank_platform: platform, rank_id: keep ? form.rank_id : '' });
-              }}>
-                <option value="">Not set</option>
-                {(cat?.platforms ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-              </select>
-            </label>
-            <label>Skill
-              <select value={form.rank_id ?? ''} disabled={!form.rank_platform} onChange={(e) => setForm({ ...form, rank_id: e.target.value })}>
-                <option value="">{form.rank_platform ? 'Choose a rank' : 'Choose a platform first'}</option>
-                {(cat?.ranks ?? []).filter((r) => r.platform === form.rank_platform).map((r) => (
-                  <option key={r.id} value={r.id}>{r.label}{r.colorName ? ` (${r.colorName})` : ''}</option>
-                ))}
-              </select>
-            </label>
           </div>
+          <fieldset className="rank-fields">
+            <legend>Ranks (optional, self-reported)</legend>
+            <div className="grid3">
+              {PLATFORMS.map((k) => (
+                <div key={k} className="stack tight">
+                  <RankSelect cat={cat} platform={k} label={cat?.platforms.find((p) => p.id === k)?.label ?? k} value={form[`rank_${k}`] ?? ''}
+                    onChange={(v) => setForm({ ...form, [`rank_${k}`]: v })} />
+                  {form[`rank_${k}`] ? <RankBadge cat={cat} rankId={form[`rank_${k}`]} /> : null}
+                </div>
+              ))}
+            </div>
+          </fieldset>
           {profile.legacy_platform || profile.legacy_skill_level ? (
-            <p className="muted small">You previously entered “{[profile.legacy_platform, profile.legacy_skill_level].filter(Boolean).join(' · ')}”.
-              It's kept until you choose a platform and rank above.</p>
+            <div className="legacy-note small">
+              <span className="muted">You previously entered “{[profile.legacy_platform, profile.legacy_skill_level].filter(Boolean).join(' · ')}”, which
+                doesn't match one rank exactly. It's still shown on your profile; choose the matching rank above, then remove it.</span>
+              <button type="button" className="btn ghost small" onClick={async () => {
+                try { apply((await api.patch<{ profile: Profile }>('/me/profile', { clear_legacy_rank: true })).profile); } catch (err) { setError(errorMessage(err)); }
+              }}>Remove old entry</button>
+            </div>
           ) : null}
-          {form.rank_id ? <p className="row small">Shown as <RankBadge cat={cat} rankId={form.rank_id} /> <span className="muted">(self-reported)</span></p> : null}
           <label>Bio<textarea rows={4} maxLength={1000} value={form.bio ?? ''} onChange={(e) => setForm({ ...form, bio: e.target.value })} /></label>
           <h3>Profile links (optional)</h3>
           <div className="grid2">

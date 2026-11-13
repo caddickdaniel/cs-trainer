@@ -5,6 +5,16 @@ import { useDocumentTitle, useLoad } from '../lib/hooks';
 import type { RecruitingTeam } from '../lib/types';
 import { Alert, Badge, Loading, Panel } from '../components/ui';
 import { Avatar, Facts, RoleBadge } from '../components/People';
+import { CompetitionList, RequirementList } from '../components/Recruitment';
+import { useCatalogue, type Catalogue } from '../lib/catalogue';
+
+function TeamFacts({ cat, t }: { cat: Catalogue | null; t: RecruitingTeam }) {
+  return (
+    <Facts items={[['Language', t.language], ['Region', t.region],
+      ['Plays', t.competitions.length || t.recruiting_leagues ? <CompetitionList cat={cat} ids={t.competitions} legacy={t.recruiting_leagues} /> : null],
+      ['Rank requirements', <RequirementList cat={cat} list={t.rank_requirements} legacy={t.legacy_requirement} />]]} />
+  );
+}
 
 // Same request from the directory entry and the details page.
 function RequestInviteButton({ team, onDone }: { team: RecruitingTeam; onDone: () => void }) {
@@ -41,6 +51,7 @@ function RolesNeeded({ roles }: { roles: string[] }) {
 
 export function RecruitingPage() {
   useDocumentTitle('Recruiting');
+  const cat = useCatalogue();
   const data = useLoad(() => api.get<{ teams: RecruitingTeam[]; viewer_has_team: boolean }>('/recruiting/teams'), []);
   if (data.loading && !data.data) return <Loading />;
   const teams = data.data?.teams ?? [];
@@ -66,7 +77,7 @@ export function RecruitingPage() {
                   <div className="muted small">{t.roster_size} player{t.roster_size === 1 ? '' : 's'}</div>
                 </div>
               </div>
-              <Facts items={[['Language', t.language], ['Region', t.region], ['Platform', t.platform], ['Skill', t.skill_level], ['Leagues', t.recruiting_leagues]]} />
+              <TeamFacts cat={cat} t={t} />
               <div><span className="muted small">Looking for</span><br /><RolesNeeded roles={t.roles_needed} /></div>
               <div className="row space">
                 <Link className="btn ghost small" to={`/recruiting/${t.team_id}`}>Details</Link>
@@ -84,6 +95,7 @@ export function RecruitingTeamPage() {
   const { teamId } = useParams();
   const data = useLoad(() => api.get<{ team: RecruitingTeam }>(`/recruiting/teams/${teamId}`), [teamId]);
   useDocumentTitle(data.data?.team.team_name ?? 'Team');
+  const cat = useCatalogue();
   if (data.loading && !data.data) return <Loading />;
   if (!data.data) return <Panel title="Team"><Alert>{data.error}</Alert><Link to="/recruiting">Back to recruiting</Link></Panel>;
   const t = data.data.team;
@@ -98,7 +110,7 @@ export function RecruitingTeamPage() {
             <RequestInviteButton team={t} onDone={data.reload} />
           </div>
         </div>
-        <Facts items={[['Language', t.language], ['Region', t.region], ['Platform', t.platform], ['Skill level', t.skill_level], ['Leagues planned', t.recruiting_leagues]]} />
+        <TeamFacts cat={cat} t={t} />
         <h3>Roles needed</h3>
         <RolesNeeded roles={t.roles_needed} />
         {t.recruiting_notes ? <><h3>About the opening</h3><p className="bio">{t.recruiting_notes}</p></> : null}

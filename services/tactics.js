@@ -9,6 +9,7 @@ const { notify, teamMemberIds } = require('./notifications');
 const SUMMARY_COLUMNS = [
   'tactic_id', 'tactic_name', 'team_id', 'map', 'side', 'economy',
   'grenade', 'molly', 'flash', 'smoke', 'revision', 'created_at', 'updated_at', 'imported_from_share_id',
+  'loadouts', 'bomb_carrier',
 ];
 
 async function loadTactic(tacticId, trx = db, lock = false) {
@@ -92,6 +93,8 @@ async function assertAssigneesAreMembers(trx, teamId, doc) {
     phase.board.markers.forEach((m) => m.user_id != null && ids.add(m.user_id));
     phase.board.routes.forEach((r) => r.user_id != null && ids.add(r.user_id));
   }
+  (doc.loadouts || []).forEach((l) => l.user_id != null && ids.add(l.user_id));
+  if (doc.bomb_carrier && doc.bomb_carrier.user_id != null) ids.add(doc.bomb_carrier.user_id);
   if (!ids.size) return;
   const members = new Set(
     await trx('team_memberships').where('team_id', teamId).whereIn('user_id', [...ids]).pluck('user_id')
@@ -118,6 +121,8 @@ const tacticRow = (doc) => ({
   molly: doc.molly,
   flash: doc.flash,
   smoke: doc.smoke,
+  loadouts: JSON.stringify(doc.loadouts || []),
+  bomb_carrier: doc.side === 'T' && doc.bomb_carrier ? JSON.stringify(doc.bomb_carrier) : null,
   // Legacy boolean columns kept in sync for existing callers.
   T: doc.side === 'T',
   CT: doc.side === 'CT',

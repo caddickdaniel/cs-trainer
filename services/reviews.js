@@ -218,6 +218,20 @@ async function removeAnnotation(reviewId, annotationId, userId) {
   return { review: await present(updated, userId) };
 }
 
+// Moving or changing a utility marker during a live review (IGL only).
+async function updateAnnotation(reviewId, annotationId, userId, patch) {
+  await loadForControl(reviewId, userId);
+  const updated = await db.transaction(async (trx) => {
+    const row = await trx('demo_annotations').where({ review_id: reviewId, annotation_id: annotationId }).first();
+    if (!row) throw notFound('Annotation not found');
+    await demos.applyAnnotationPatch(trx, row, patch);
+    const [rev] = await trx('review_sessions').where('review_id', reviewId)
+      .update({ version: trx.raw('version + 1'), updated_at: trx.fn.now() }).returning('*');
+    return rev;
+  });
+  return { review: await present(updated, userId) };
+}
+
 async function end(reviewId, userId) {
   const review = await db('review_sessions').where('review_id', reviewId).first();
   if (!review) throw notFound('Review not found');
@@ -231,4 +245,4 @@ async function end(reviewId, userId) {
   return { review: await present(row || review, userId) };
 }
 
-module.exports = { getCurrent, getReview, start, command, annotate, removeAnnotation, end, positionAt };
+module.exports = { getCurrent, getReview, start, command, annotate, updateAnnotation, removeAnnotation, end, positionAt };
