@@ -4,9 +4,9 @@ import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { LEVEL_LABEL, mapLevels, mapName, type Level } from '../lib/constants';
 import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
-import { clockTick, frameAt, roundTime, type Clock } from '../lib/replay';
+import { BLAST_SHOW_TICKS, clockTick, FLASH_SHOW_TICKS, frameAt, recordedAt, roundTime, RECORDED_LABEL, type Clock } from '../lib/replay';
 import { isTyping } from '../lib/shortcuts';
-import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayRound } from '../lib/types';
+import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayEvent, ReplayRound } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBackground, UtilityGlyph, useFitToViewport } from '../components/MapBoard';
@@ -17,6 +17,12 @@ type UtilityKind = 'smoke' | 'flash' | 'he' | 'molly';
 const UTILITY_KINDS: [UtilityKind, string][] = [['smoke', 'Smoke'], ['flash', 'Flash'], ['he', 'HE'], ['molly', 'Molotov']];
 const SPEEDS = [0.5, 1, 2, 4];
 const SIDE_COLOR = { CT: '#5b9cf5', T: '#f5a524' } as const;
+// Recorded effects (from the demo) are drawn with dashed edges in the
+// thrower's side colour; manual utility annotations use a solid yellow ring.
+const RECORDED_UTILITY: ReplayEvent['type'][] = ['smoke', 'flash', 'he', 'fire'];
+// Radius in board units (1000 = radar width): CS2 smoke ~144 and fire ~120
+// game units at the radars' ~5 units/pixel.
+const RECORDED_RADIUS = { smoke: 28, fire: 22 };
 const fmtSize = (bytes: number) => (bytes > 1048576 ? `${(bytes / 1048576).toFixed(0)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
 // ---- Library ---------------------------------------------------------------------
@@ -370,6 +376,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const [tool, setTool] = useState<Tool>('none');
   // Utility tool: which grenade to place; moving: the utility marker that the next map click moves.
   const [utilityKind, setUtilityKind] = useState<UtilityKind>('smoke');
+  // Recorded utility from the demo (each viewer can hide it; it is derived
+  // from the shared playback position, so everyone in a live review sees the same).
+  const [showRecorded, setShowRecorded] = useState(true);
   const [moving, setMoving] = useState<number | null>(null);
   const [text, setText] = useState('');
   const [draft, setDraft] = useState<Point[] | null>(null);
@@ -548,7 +557,13 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const players = useMemo(() => new Map(demo.players.map((p) => [p.index, p.name])), [demo.players]);
   const visibleAnnotations = annotations.filter((a) => a.tick <= tick + 1 && (a.level ?? 'main') === level);
   const kills = round ? round.events.filter((ev) => ev.type === 'kill' && ev.tick <= tick) : [];
-  const plant = round ? round.events.find((ev) => ev.type === 'plant' && ev.tick <= tick) : undefined;
+  // Recorded utility and bomb state at this exact tick (see recordedAt).
+  const rec = round && showRecorded ? recordedAt(round.events, tick) : null;
+  const sideOf = new Map(round ? round.roster.map((p) => [p.player, p.side]) : []);
+  const recColor = (ev: ReplayEvent) => (ev.player != null && sideOf.get(ev.player) ? SIDE_COLOR[sideOf.get(ev.player)!] : '#d7dde4');
+  const onLevel = (ev: ReplayEvent) => ev.x != null && ev.y != null && (ev.level ?? 'main') === level;
+  const who = (ev: ReplayEvent) => (ev.player != null ? players.get(ev.player) ?? `Player ${ev.player + 1}` : null);
+  const secs = (ticks: number) => Math.max(0, Math.round(ticks / tickrate));
   const span = info.end_tick - info.start_tick || 1;
   const pct = (t: number) => `${((t - info.start_tick) / span) * 100}%`;
 
@@ -598,6 +613,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                 </select>
               </label>
             </div>
+            <label className="inline-check small" title="Smokes, flashes, HEs, molotovs, plants and defusals recorded in the demo">
+              <input type="checkbox" checked={showRecorded} onChange={(e) => setShowRecorded(e.target.checked)} /> Recorded utility
+            </label>
             {levels.length > 1 ? (
               <div className="segmented" role="group" aria-label="Radar floor">
                 {levels.map((l) => <button key={l} type="button" className={level === l ? 'on' : ''} aria-pressed={level === l} onClick={() => setLevel(l)}>{LEVEL_LABEL[l]}</button>)}
@@ -605,9 +623,10 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             ) : null}
           </div>
           <div className="timeline">
-            {round ? round.events.filter((ev) => ev.type !== 'round_end').map((ev, i) => (
+            {round ? round.events.filter((ev) => ev.type !== 'round_end' && (showRecorded || !RECORDED_UTILITY.includes(ev.type))).map((ev, i) => (
               <button key={i} type="button" className={`tl-mark ${ev.type}`} style={{ left: pct(ev.tick) }} disabled={!canControl}
-                title={`${roundTime(info, ev.tick, tickrate)} ${ev.type}`} aria-label={`Jump to ${ev.type} at ${roundTime(info, ev.tick, tickrate)}`}
+                title={`${roundTime(info, ev.tick, tickrate)} ${RECORDED_LABEL[ev.type] ?? ev.type}${who(ev) ? ` · ${who(ev)}` : ''}`}
+                aria-label={`Jump to ${RECORDED_LABEL[ev.type] ?? ev.type} at ${roundTime(info, ev.tick, tickrate)}`}
                 onClick={() => control.seek(Math.max(info.start_tick, ev.tick - 2 * tickrate))} />
             )) : null}
             {annotations.map((a) => <span key={a.annotation_id} className="tl-mark annotation" style={{ left: pct(a.tick) }} />)}
@@ -625,10 +644,50 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   <path d="M-8,-8 L8,8 M8,-8 L-8,8" stroke="#ff5a5f" strokeWidth="4" strokeLinecap="round" />
                 </g>
               ))}
-              {plant && plant.x != null && (plant.level ?? 'main') === level ? (
-                <g transform={`translate(${plant.x * SIZE},${plant.y! * SIZE})`} pointerEvents="none">
-                  <rect x="-11" y="-8" width="22" height="16" rx="3" fill="#e5484d" stroke="#fff" strokeWidth="2" />
-                  <text y="5" textAnchor="middle" fontSize="11" fill="#fff" fontWeight="700">C4</text>
+              {rec ? (
+                <g className="recorded" pointerEvents="none" data-recorded-layer="">
+                  {rec.smokes.filter(onLevel).map((ev) => (
+                    <g key={`s${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="smoke">
+                      <circle r={RECORDED_RADIUS.smoke} fill="#c9d0d8" fillOpacity="0.55" stroke={recColor(ev)} strokeWidth="2" strokeDasharray="5 4" />
+                      <UtilityGlyph kind="smoke" color={recColor(ev)} r={10} />
+                      <text y={RECORDED_RADIUS.smoke + 13} textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">
+                        {secs((ev.end_tick ?? tick) - tick)}s</text>
+                    </g>
+                  ))}
+                  {rec.fires.filter(onLevel).map((ev) => (
+                    <g key={`f${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="fire">
+                      <circle r={RECORDED_RADIUS.fire} fill="#e8833a" fillOpacity="0.5" stroke={recColor(ev)} strokeWidth="2" strokeDasharray="5 4" />
+                      <UtilityGlyph kind="molly" color={recColor(ev)} r={10} />
+                      <text y={RECORDED_RADIUS.fire + 13} textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">
+                        {secs((ev.end_tick ?? tick) - tick)}s</text>
+                    </g>
+                  ))}
+                  {rec.flashes.filter(onLevel).map((ev) => (
+                    <g key={`fl${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="flash"
+                      opacity={Math.max(0.25, 1 - (tick - ev.tick) / FLASH_SHOW_TICKS)}>
+                      <circle r="20" fill="#fffbe0" fillOpacity="0.6" />
+                      <UtilityGlyph kind="flash" color={recColor(ev)} r={10} />
+                    </g>
+                  ))}
+                  {rec.hes.filter(onLevel).map((ev) => (
+                    <g key={`he${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="he"
+                      opacity={Math.max(0.25, 1 - (tick - ev.tick) / BLAST_SHOW_TICKS)}>
+                      <circle r="22" fill="none" stroke="#ff7a45" strokeWidth="4" />
+                      <UtilityGlyph kind="he" color={recColor(ev)} r={10} />
+                    </g>
+                  ))}
+                  {rec.bomb ? (() => {
+                    const at = rec.bomb.state === 'defused' ? rec.bomb.event : rec.bomb.plant ?? rec.bomb.event;
+                    if (!onLevel(at)) return null;
+                    const fill = rec.bomb.state === 'defused' ? '#2f9e66' : '#e5484d';
+                    return (
+                      <g transform={`translate(${at.x! * SIZE},${at.y! * SIZE})`} data-recorded={`bomb-${rec.bomb.state}`}>
+                        {rec.bomb.state === 'exploded' && tick - rec.bomb.event.tick < 2 * tickrate ? <circle r="46" fill="#ff7a45" fillOpacity="0.35" /> : null}
+                        <rect x="-12" y="-9" width="24" height="18" rx="3" fill={fill} stroke="#fff" strokeWidth="2" />
+                        <text y="5" textAnchor="middle" fontSize="11" fill="#fff" fontWeight="700">{rec.bomb.state === 'defused' ? 'DEF' : 'C4'}</text>
+                      </g>
+                    );
+                  })() : null}
                 </g>
               ) : null}
               {round ? round.roster.map((p, i) => {
@@ -669,6 +728,10 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             </svg>
           </div>
           {!round && !roundError ? <p className="muted small">Loading round…</p> : null}
+          <p className="replay-legend small muted">
+            <span><span className="legend-swatch recorded" aria-hidden="true" /> Recorded in the demo (dashed, thrower's side colour)</span>
+            <span><span className="legend-swatch annotation" aria-hidden="true" /> Team annotations (solid yellow)</span>
+          </p>
           {canAnnotate ? (
             <div className="toolbar" role="toolbar" aria-label="Annotation tools">
               <button type="button" className={tool === 'none' ? 'on' : ''} aria-pressed={tool === 'none'} onClick={() => setTool('none')}><Icon name="select" /> View</button>
@@ -724,7 +787,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           <Panel title="Timeline">
             {round ? (
               <ul className="event-feed">
-                {round.events.map((ev, i) => (
+                {round.events.filter((ev) => showRecorded || !RECORDED_UTILITY.includes(ev.type)).map((ev, i) => (
                   <li key={i}>
                     <button type="button" className={ev.tick <= tick ? 'past' : ''} disabled={!canControl}
                       onClick={() => control.seek(Math.max(info.start_tick, ev.tick - 2 * tickrate))}>
@@ -732,7 +795,13 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                       {ev.type === 'kill' ? <>{ev.attacker != null ? players.get(ev.attacker) : 'World'} ✕ {ev.victim != null ? players.get(ev.victim) : '?'} <span className="muted">({ev.weapon}{ev.headshot ? ', HS' : ''})</span></>
                         : ev.type === 'plant' ? <>Bomb planted{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
                           : ev.type === 'defuse' ? <>Bomb defused{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
-                            : ev.type === 'explode' ? <>Bomb exploded</>
+                            : ev.type === 'explode' ? <>Bomb exploded{ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
+                              : RECORDED_UTILITY.includes(ev.type) ? (
+                                <><span className={`rec-dot ${ev.type}`} aria-hidden="true" />{ev.type === 'fire' ? (ev.variant === 'incendiary' ? 'Incendiary' : 'Molotov') : RECORDED_LABEL[ev.type]}
+                                  {who(ev) ? ` · ${who(ev)}` : ''}
+                                  {ev.end_tick != null ? <span className="muted"> ({secs(ev.end_tick - ev.tick)} s)</span> : null}
+                                  {ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
+                              )
                               : <>Round end: {ev.winner} win{ev.reason ? ` (${ev.reason.replace(/_/g, ' ')})` : ''}</>}
                     </button>
                   </li>

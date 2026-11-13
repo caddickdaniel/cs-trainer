@@ -7,11 +7,13 @@ import {
   type Level,
 } from '../lib/constants';
 import { useDocumentTitle } from '../lib/hooks';
-import type { Assignment, Board, Hold, LineupImage, Loadout, Marker, Phase, PlayerRef, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
+import type { Assignment, Board, Hold, LineupImage, Loadout, Marker, Phase, PlayerColor, PlayerColorId, PlayerRef, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
 import { BUY_LIMITS, GRENADES, GRENADE_LABEL, MAX_GRENADES, describeCounts, emptyLoadout, grenadeTotal, refKey, utilityPlan, type PlayerPlan } from '../lib/utility';
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
-import { MapBoard, boardHolds, newId, ownerColor, ownerKey, playerColor, sameOwner, type Tool } from '../components/MapBoard';
+import { MapBoard, boardHolds, newId, ownerKey, sameOwner, type Tool } from '../components/MapBoard';
+import { PLAYER_PALETTE, PlayerColorsProvider, assignColor, autoAssign, colorFor, colorKey } from '../lib/playerColors';
+import { useEditorSplit } from '../lib/useEditorSplit';
 import { LevelSwitch } from '../components/Lineups';
 import type { DocumentResponse } from './TacticView';
 
@@ -75,7 +77,7 @@ function PlayerPicker({ label = 'Player', value, roster, slots, onChange }: {
   );
 }
 const DEFAULT_FIELDS: TacticFields = {
-  tactic_name: '', map: DEFAULT_MAP, side: 'T', economy: 'Fullbuy', grenade: 0, molly: 0, flash: 0, smoke: 0, loadouts: [], bomb_carrier: null,
+  tactic_name: '', map: DEFAULT_MAP, side: 'T', economy: 'Fullbuy', grenade: 0, molly: 0, flash: 0, smoke: 0, loadouts: [], bomb_carrier: null, player_colors: [],
 };
 
 // One player's buy list (CS2 carry limits) and, for this phase, what they
@@ -340,14 +342,40 @@ function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId,
   );
 }
 
-function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, loadouts, bomb, plan, onLoadouts, onBomb }: {
+// The five in-game colours as a radio group; picking a colour another player
+// has swaps it with them, so every colour stays unique.
+function ColorPicker({ who, name, colors, onChange }: { who: Who; name: string; colors: PlayerColor[]; onChange: (c: PlayerColor[]) => void }) {
+  const mine = colors.find((c) => colorKey(c) === whoValue(who))?.color ?? null;
+  const holderName = (id: PlayerColorId) => {
+    const h = colors.find((c) => c.color === id && colorKey(c) !== whoValue(who));
+    return h ? ` (swap with ${h.user_id != null ? 'another player' : `Player ${h.slot}`})` : '';
+  };
+  return (
+    <div className="color-picker" role="radiogroup" aria-label={`In-game colour for ${name}`}>
+      <span className="field-label">In-game colour</span>
+      <div className="row tight-row">
+        {PLAYER_PALETTE.map((c) => (
+          <button key={c.id} type="button" role="radio" aria-checked={mine === c.id} className={`swatch${mine === c.id ? ' on' : ''}`}
+            style={{ background: c.hex }} title={`${c.label}${holderName(c.id)}`} aria-label={`${c.label}${holderName(c.id)}`}
+            onClick={() => onChange(assignColor(colors, who, c.id))} />
+        ))}
+        <button type="button" role="radio" aria-checked={mine == null} className={`swatch none${mine == null ? ' on' : ''}`} title="No colour (automatic)"
+          aria-label="No colour (automatic)" onClick={() => onChange(assignColor(colors, who, null))}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, loadouts, bomb, plan, colors, onLoadouts, onBomb, onColors }: {
   phase: Phase; phaseIndex: number; roster: RosterEntry[]; slots: number[]; onChange: (a: Assignment[]) => void;
-  side: string; loadouts: Loadout[]; bomb: PlayerRef | null; plan: Map<string, PlayerPlan>;
-  onLoadouts: (l: Loadout[]) => void; onBomb: (b: PlayerRef | null) => void;
+  side: string; loadouts: Loadout[]; bomb: PlayerRef | null; plan: Map<string, PlayerPlan>; colors: PlayerColor[];
+  onLoadouts: (l: Loadout[]) => void; onBomb: (b: PlayerRef | null) => void; onColors: (c: PlayerColor[]) => void;
 }) {
   const players = roster.map((r) => r.user_id);
   const keyOf = (a: { user_id: number | null; slot?: number | null }) => whoValue(a);
   const get = (who: Who) => phase.assignments.find((a) => keyOf(a) === whoValue(who));
+  // Utility text and reference links are no longer edited here (they live on
+  // map markers), but values saved by older versions are kept as they are.
   const set = (who: Who, patch: Partial<Assignment>) => {
     const existing = get(who) ?? { ...who, instruction: '', utility: '', reference_url: null };
     const next = { ...existing, ...patch };
@@ -355,18 +383,24 @@ function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, lo
     onChange([...others, next].sort((a, b) => keyOf(a).localeCompare(keyOf(b))));
   };
   const outsiders = phase.assignments.filter((a) => a.user_id != null && !players.includes(a.user_id));
-  const fieldset = (who: Who, title: React.ReactNode, color: string, sub?: string) => {
+  const fieldset = (who: Who, title: string, sub?: string) => {
     const a = get(who);
+    const legacy = a && (a.utility?.trim() || a.reference_url);
     return (
       <fieldset key={whoValue(who)} className="player-fieldset">
-        <legend><span className="dot" style={{ background: color }} /> {title}{sub ? <span className="muted"> · {sub}</span> : null}
+        <legend><span className="dot" style={{ background: colorFor(who, colors) }} /> {title}{sub ? <span className="muted"> · {sub}</span> : null}
           {side === 'T' && refKey(bomb) === whoValue(who) ? <span className="bomb-tag"><img src="/icons/bomb.png" alt="" width="12" height="16" /> Bomb</span> : null}</legend>
-        <label>Instruction<textarea rows={2} maxLength={2000} value={a?.instruction ?? ''} onChange={(e) => set(who, { instruction: e.target.value })}
+        <label>Instruction<textarea rows={3} maxLength={2000} value={a?.instruction ?? ''} onChange={(e) => set(who, { instruction: e.target.value })}
           placeholder="What this player does in this phase" /></label>
-        <div className="grid2">
-          <label>Utility<input maxLength={1000} value={a?.utility ?? ''} onChange={(e) => set(who, { utility: e.target.value })} placeholder="e.g. Smoke CT, flash over" /></label>
-          <label>Reference URL<input type="url" maxLength={500} value={a?.reference_url ?? ''} onChange={(e) => set(who, { reference_url: e.target.value || null })} placeholder="https://…" /></label>
-        </div>
+        {a && legacy ? (
+          <div className="legacy-note small">
+            <span className="muted">From an older version of this tactic (kept when you save):</span>
+            {a.utility?.trim() ? <span>Utility: {a.utility}</span> : null}
+            {a.reference_url ? <span>Reference: <a href={a.reference_url} target="_blank" rel="noreferrer noopener">{a.reference_url}</a></span> : null}
+            <button type="button" className="btn ghost small" onClick={() => set(who, { utility: '', reference_url: null })}>Remove old entry</button>
+          </div>
+        ) : null}
+        <ColorPicker who={who} name={title} colors={colors} onChange={onColors} />
         <BuyList who={who} side={side} loadout={loadouts.find((l) => refKey(l) === whoValue(who))} plan={plan.get(whoValue(who))}
           phaseIndex={phaseIndex} bomb={refKey(bomb) === whoValue(who)}
           onChange={(l) => onLoadouts([...loadouts.filter((x) => refKey(x) !== whoValue(who)), l])}
@@ -374,6 +408,8 @@ function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, lo
       </fieldset>
     );
   };
+  const everyone: Who[] = [...roster.map((r) => ({ user_id: r.user_id, slot: null })), ...slots.map((n) => ({ user_id: null, slot: n }))];
+  const missing = everyone.filter((w) => !colors.some((c) => colorKey(c) === whoValue(w)));
   return (
     <div className="stack">
       {outsiders.length ? (
@@ -381,15 +417,21 @@ function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, lo
           {outsiders.map((a) => a.user_name ?? `Player ${a.user_id}`).join(', ')} {outsiders.length > 1 ? 'are' : 'is'} no longer on the team; their instructions will be removed when you save.
         </Alert>
       ) : null}
-      {roster.map((r) => fieldset({ user_id: r.user_id, slot: null }, r.user_name, playerColor(r.user_id, players), roleLabel(r.player_role) || undefined))}
-      {slots.map((n) => fieldset({ user_id: null, slot: n }, `Player ${n}`, ownerColor({ user_id: null, slot: n }), 'unmapped slot'))}
+      {missing.length && colors.length < PLAYER_PALETTE.length ? (
+        <div className="row wrap">
+          <button type="button" className="btn small" onClick={() => onColors(autoAssign(colors, everyone))}>Assign in-game colours</button>
+          <span className="muted small">Gives free colours, in order, to players without one.</span>
+        </div>
+      ) : null}
+      {roster.map((r) => fieldset({ user_id: r.user_id, slot: null }, r.user_name, roleLabel(r.player_role) || undefined))}
+      {slots.map((n) => fieldset({ user_id: null, slot: n }, `Player ${n}`, 'unmapped slot'))}
     </div>
   );
 }
 
 // Maps imported Player 1-5 slots to roster players across every phase.
-function SlotMapper({ slots, roster, phases, onApply }: {
-  slots: number[]; roster: RosterEntry[]; phases: Phase[]; onApply: (map: Record<number, number>) => void;
+function SlotMapper({ slots, roster, phases, colors, onApply }: {
+  slots: number[]; roster: RosterEntry[]; phases: Phase[]; colors: PlayerColor[]; onApply: (map: Record<number, number>) => void;
 }) {
   const [choice, setChoice] = useState<Record<number, number>>({});
   const used = new Set(phases.flatMap((p) => [...p.board.markers, ...p.board.routes, ...p.assignments]
@@ -399,10 +441,10 @@ function SlotMapper({ slots, roster, phases, onApply }: {
   return (
     <div className="stack">
       <p className="small muted">This tactic was imported. Choose who plays each slot; until then the slot stays editable as “Player N”.
-        Mapping moves the slot's markers, routes, holds, utility and instructions to that player in every phase.</p>
+        Mapping moves the slot's markers, routes, holds, utility, colour and instructions to that player in every phase.</p>
       {slots.map((n) => (
         <label key={n} className="row">
-          <span className="dot" style={{ background: ownerColor({ user_id: null, slot: n }) }} /> Player {n}
+          <span className="dot" style={{ background: colorFor({ user_id: null, slot: n }, colors) }} /> Player {n}
           <select value={choice[n] ?? ''} onChange={(e) => setChoice({ ...choice, [n]: Number(e.target.value) || 0 })}>
             <option value="">Not mapped yet</option>
             {roster.map((r) => <option key={r.user_id} value={r.user_id}>{r.user_name}{used.has(r.user_id) ? ' (already used)' : ''}</option>)}
@@ -484,7 +526,7 @@ export function TacticEditorPage() {
             tactic_name: t.tactic_name, map: t.map ?? 'practice_yard', side: t.side ?? 'T',
             economy: (ECONOMIES as readonly string[]).includes(t.economy) ? (t.economy as TacticFields['economy']) : 'Eco',
             grenade: t.grenade, molly: t.molly, flash: t.flash, smoke: t.smoke,
-            loadouts: t.loadouts ?? [], bomb_carrier: t.bomb_carrier ?? null,
+            loadouts: t.loadouts ?? [], bomb_carrier: t.bomb_carrier ?? null, player_colors: t.player_colors ?? [],
           });
           setPhases(t.phases.length ? t.phases : [newPhase(1)]);
           setRevision(t.revision);
@@ -564,6 +606,8 @@ export function TacticEditorPage() {
   const bomb = fields.side === 'T' ? fields.bomb_carrier ?? null : null;
   const slots = useMemo(() => unmappedSlots(phases, [...loadouts, bomb]), [phases, loadouts, bomb]);
   const plan = useMemo(() => utilityPlan(loadouts, phases), [loadouts, phases]);
+  const colors = useMemo(() => fields.player_colors ?? [], [fields.player_colors]);
+  const { setLayout, stacked, style: splitStyle, dividerProps } = useEditorSplit();
   const overPlans = [...plan.values()].reduce((n, p) => n + p.over.length, 0);
 
   const save = async () => {
@@ -586,6 +630,7 @@ export function TacticEditorPage() {
       loadouts: loadouts.filter((l) => keep(l) && (grenadeTotal(l) || (fields.side === 'CT' && l.kit)))
         .map((l) => ({ user_id: l.user_id ?? null, slot: l.user_id != null ? null : l.slot ?? null, smoke: l.smoke, flash: l.flash, molly: l.molly, he: l.he, kit: fields.side === 'CT' && l.kit })),
       bomb_carrier: fields.side === 'T' && keep(bomb) ? { user_id: bomb!.user_id ?? null, slot: bomb!.user_id != null ? null : bomb!.slot ?? null } : null,
+      player_colors: colors.filter(keep).map((c) => ({ user_id: c.user_id ?? null, slot: c.user_id != null ? null : c.slot ?? null, color: c.color })),
       phases: toSave.map((p) => ({
         name: p.name.trim() || 'Phase',
         notes: p.notes,
@@ -660,14 +705,18 @@ export function TacticEditorPage() {
   if (loadError) return <Panel title="Tactic"><Alert>{loadError}</Alert><Link className="btn" to="/tactics">Back</Link></Panel>;
   if (!canEdit) return <Panel title="Read only"><p>Only the team owner or an IGL can edit tactics.</p><Link className="btn" to={isNew ? '/tactics' : `/tactics/${tacticId}`}>Back</Link></Panel>;
 
-  const tools: { id: Tool; label: string; icon?: string }[] = [
-    { id: 'select', label: 'Select / move', icon: 'select' },
-    { id: 'route', label: 'Draw route', icon: 'route' },
-    { id: 'hold', label: 'Hold', icon: 'hold' },
+  // Line icons for tools without a supplied symbol; the grenade tools reuse
+  // the supplied utility icons.
+  const TOOL_ICON: Record<string, string> = { select: 'select', route: 'route', hold: 'hold', player: 'player', note: 'note' };
+  const tools: { id: Tool; label: string }[] = [
+    { id: 'select', label: 'Select / move' },
+    { id: 'route', label: 'Draw route' },
+    { id: 'hold', label: 'Hold' },
     ...MARKER_KINDS.map((k) => ({ id: k as Tool, label: MARKER_LABEL[k] })),
   ];
 
   return (
+    <PlayerColorsProvider colors={colors}>
     <div className="stack editor-page">
       <Alert kind="warn">{notice}</Alert>
       <Alert>{error}</Alert>
@@ -730,12 +779,15 @@ export function TacticEditorPage() {
         ) : null}
       </div>
 
-      <div className="board-layout editor">
+      <div className={`board-layout editor${stacked ? ' stacked' : ''}`} ref={setLayout} style={splitStyle}>
         <div className="tool-rail">
           <div className="toolbar vertical" role="toolbar" aria-label="Board tools" aria-orientation="vertical">
             {tools.map((t) => (
               <button key={t.id} type="button" className={tool === t.id ? 'on' : ''} aria-pressed={tool === t.id} onClick={() => chooseTool(t.id)} title={t.label}>
-                {t.icon ? <Icon name={t.icon} /> : null} {t.label}
+                <span className="tool-icon" aria-hidden="true">
+                  {UTILITY_ICON[t.id] ? <img src={UTILITY_ICON[t.id]} alt="" width="18" height="18" /> : <Icon name={TOOL_ICON[t.id]} />}
+                </span>
+                {t.label}
               </button>
             ))}
           </div>
@@ -759,10 +811,10 @@ export function TacticEditorPage() {
             ? 'Drag markers or route handles to move them. Dotted lines join each player to their utility.'
             : tool === 'hold'
               ? 'Press a player marker and drag towards the angle they should hold. Select a cone to adjust or remove it.'
-              : `Click the map to place a ${MARKER_LABEL[tool].toLowerCase()}.`}</p>}
+              : `Click the map to place ${tool === 'he' ? 'an' : 'a'} ${MARKER_LABEL[tool]}.`}</p>}
           <div className="legend vertical">
-            {roster.map((r) => <span key={r.user_id}><span className="dot" style={{ background: playerColor(r.user_id) }} /> {r.user_name}</span>)}
-            {slots.map((n) => <span key={`s${n}`}><span className="dot" style={{ background: ownerColor({ user_id: null, slot: n }) }} /> Player {n}</span>)}
+            {roster.map((r) => <span key={r.user_id}><span className="dot" style={{ background: colorFor({ user_id: r.user_id }, colors) }} /> {r.user_name}</span>)}
+            {slots.map((n) => <span key={`s${n}`}><span className="dot" style={{ background: colorFor({ user_id: null, slot: n }, colors) }} /> Player {n}</span>)}
           </div>
         </div>
         <div className="board-cell">
@@ -770,7 +822,8 @@ export function TacticEditorPage() {
             selectedId={selectedId} onSelect={setSelectedId} activePlayer={active.user_id} activeSlot={active.slot} draftRoute={draft} onDraftRoute={setDraft}
             label={`Editable board for ${phase.name}`} bomb={bomb} />
         </div>
-        <div className="stack">
+        {!stacked ? <div className="split-divider" {...dividerProps}><span aria-hidden="true" /></div> : null}
+        <div className="stack editor-side">
           <Panel title="Phase">
             <div className="form compact">
               <label>Phase name<input maxLength={60} value={phase.name} onChange={(e) => setPhase({ name: e.target.value })} /></label>
@@ -791,9 +844,15 @@ export function TacticEditorPage() {
           </Panel>
           {slots.length ? (
             <Panel title="Map player slots">
-              <SlotMapper slots={slots} roster={roster} phases={phases} onApply={(m) => {
+              <SlotMapper slots={slots} roster={roster} phases={phases} colors={colors} onApply={(m) => {
                 setPhases(mapSlots(phases, m));
-                setFields({ ...fields, loadouts: loadouts.map((l) => mapRef(l, m)), bomb_carrier: fields.bomb_carrier ? mapRef(fields.bomb_carrier, m) : null });
+                // A slot's colour moves to its player (replacing any colour that player had).
+                const mapped = colors.map((c) => mapRef(c, m));
+                const newOwners = new Set(mapped.filter((c, i) => c !== colors[i]).map((c) => colorKey(c)));
+                setFields({
+                  ...fields, loadouts: loadouts.map((l) => mapRef(l, m)), bomb_carrier: fields.bomb_carrier ? mapRef(fields.bomb_carrier, m) : null,
+                  player_colors: mapped.filter((c, i) => c !== colors[i] || !newOwners.has(colorKey(c))),
+                });
                 touch();
               }} />
             </Panel>
@@ -801,12 +860,14 @@ export function TacticEditorPage() {
           <Panel title="Player instructions" className="scroll-panel">
             {overPlans ? <Alert kind="warn">This plan uses more utility than {overPlans === 1 ? 'a player buys' : 'players buy'} ({overPlans} issue{overPlans === 1 ? '' : 's'}). Check the buy lists below.</Alert> : null}
             <InstructionsForm phase={phase} phaseIndex={Math.min(index, phases.length - 1)} roster={roster} slots={slots} onChange={(a) => setPhase({ assignments: a })}
-              side={fields.side} loadouts={loadouts} bomb={bomb} plan={plan}
+              side={fields.side} loadouts={loadouts} bomb={bomb} plan={plan} colors={colors}
+              onColors={(c) => { setFields({ ...fields, player_colors: c }); touch(); }}
               onLoadouts={(l) => { setFields({ ...fields, loadouts: l }); touch(); }}
               onBomb={(b) => { setFields({ ...fields, bomb_carrier: b }); touch(); }} />
           </Panel>
         </div>
       </div>
     </div>
+    </PlayerColorsProvider>
   );
 }

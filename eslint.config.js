@@ -4,7 +4,7 @@ const tseslint = require('typescript-eslint');
 const reactHooks = require('eslint-plugin-react-hooks');
 
 module.exports = tseslint.config(
-  { ignores: ['node_modules', 'client/dist', 'client/node_modules'] },
+  { ignores: ['node_modules', 'client/dist', 'client/node_modules', 'desktop/node_modules', 'desktop/dist'] },
   {
     files: ['**/*.js'],
     ignores: ['client/**'],

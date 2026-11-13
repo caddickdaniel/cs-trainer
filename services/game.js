@@ -86,6 +86,8 @@ async function present(session, userId, canControl, trx = db) {
     // The player's buy list and what they have at the start of this phase.
     my_utility: utilityFor(plan, `u${userId}`, session.current_phase),
     bomb_carrier: snap.tactic.side === 'T' ? snap.bomb_carrier || null : null,
+    // Sessions started before colours existed have none (derived colours are used).
+    player_colors: snap.player_colors || [],
     // The IGL sees every player's instruction for the current phase.
     assignments: canControl ? phase.assignments : undefined,
     utility: canControl ? plan.map((p) => utilityFor(plan, p.key, session.current_phase)) : undefined,
@@ -147,6 +149,7 @@ async function buildSnapshot(tactic) {
     // Copied with the round so editing the tactic never changes a live round.
     loadouts: tactic.loadouts || [],
     bomb_carrier: tactic.bomb_carrier || null,
+    player_colors: tactic.player_colors || [],
     phases: phases.map((p) => ({ name: p.name, notes: p.notes, board: p.board, assignments: p.assignments })),
   };
 }

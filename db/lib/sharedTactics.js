@@ -150,7 +150,8 @@ function buildTactic(side, economy, plan, map, variant) {
       assignments: [0, 1, 2, 3, 4].map((i) => ({
         slot: slot(i),
         instruction: INSTRUCTIONS[side][i][Math.min(p, 1)] + (side === 'T' && i === 2 ? ' (you carry the bomb)' : ''),
-        utility: p === 1 ? Object.entries(buys[i]).filter(([, n]) => n).map(([k]) => k).join(', ') : '',
+        // Utility lives on the buy lists and map markers (no free-text utility).
+        utility: '',
       })),
     });
   }
@@ -162,6 +163,8 @@ function buildTactic(side, economy, plan, map, variant) {
       map, side, economy, ...totals,
       loadouts,
       bomb_carrier: side === 'T' ? { user_id: null, slot: 3 } : null,
+      // In-game colours, in palette order for Player 1-5.
+      player_colors: ['orange', 'green', 'blue', 'yellow', 'purple'].map((color, i) => ({ user_id: null, slot: i + 1, color })),
     },
     slot_count: 5,
     phases,

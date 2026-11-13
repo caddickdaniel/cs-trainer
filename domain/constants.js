@@ -87,3 +87,14 @@ exports.RADAR_TRANSFORMS = {
 };
 exports.RADAR_SIZE = 1024;
 exports.DEMO_STATUSES = ['queued', 'processing', 'ready', 'failed'];
+
+// CS2 in-game teammate colours. A tactic can give each player (or Player 1-5
+// slot) one of these; each colour is used once per tactic.
+exports.PLAYER_PALETTE = [
+  { id: 'orange', label: 'Orange', hex: '#eda338' },
+  { id: 'green', label: 'Green', hex: '#109856' },
+  { id: 'blue', label: 'Blue', hex: '#68a3e5' },
+  { id: 'yellow', label: 'Yellow', hex: '#e6f13d' },
+  { id: 'purple', label: 'Purple', hex: '#803ca1' },
+];
+exports.PLAYER_COLOR_IDS = exports.PLAYER_PALETTE.map((c) => c.id);

@@ -262,7 +262,12 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
           <>
             <div className="row space">
               <h1>{team.team_name}</h1>
-              {viewer.is_owner ? <button type="button" className="btn ghost small" onClick={startEdit}><Icon name="edit" /> Edit details</button> : null}
+              {viewer.is_owner ? (
+                <div className="row tight-row">
+                  <button type="button" className="btn ghost small" onClick={startEdit}><Icon name="edit" /> Edit details</button>
+                  <DeleteTeamButton roster={roster} />
+                </div>
+              ) : null}
             </div>
             <Facts items={[['Language', team.language], ['Region', team.region],
               ['Plays', team.competitions.length || team.recruiting_leagues ? <CompetitionList cat={cat} ids={team.competitions} legacy={team.recruiting_leagues} /> : null],
@@ -465,7 +470,7 @@ function Invites({ teamId }: { teamId: number }) {
                   {p.legacy_platform || p.legacy_skill_level ? <div><RankBadge cat={cat} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></div> : null}</div></div></td>
                 <td>{p.language ?? <span className="muted">—</span>}</td>
                 <td>{p.region ?? <span className="muted">—</span>}</td>
-                {PLATFORM_IDS.map((k) => <td key={k}>{p.ranks[k] ? <RankBadge cat={cat} rankId={p.ranks[k]} /> : null}</td>)}
+                {PLATFORM_IDS.map((k) => <td key={k}>{p.ranks[k] ? <RankBadge cat={cat} rankId={p.ranks[k]} compact /> : null}</td>)}
                 <td className="right">
                   <InviteButton teamId={players.data!.inviting_team?.team_id} userId={p.user_id} status={p.invite_status}
                     canInvite={players.data!.can_invite} onDone={refreshAll} />
@@ -522,40 +527,60 @@ function Invites({ teamId }: { teamId: number }) {
   );
 }
 
-function DeleteTeam({ roster }: { roster: RosterResponse }) {
+// Owner-only. Opens a confirmation dialog; the final button stays disabled
+// until the owner types DELETE. The server re-checks ownership.
+function DeleteTeamButton({ roster }: { roster: RosterResponse }) {
   const { refresh } = useAuth();
   const navigate = useNavigate();
+  const ref = useRef<HTMLDialogElement>(null);
   const [confirm, setConfirm] = useState('');
-  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const name = roster.team.team_name;
+  const others = roster.members.length - 1;
+  const open = () => { setConfirm(''); setError(null); ref.current?.showModal(); };
   const remove = async () => {
     setError(null);
+    setBusy(true);
     try {
       await api.delete(`/teams/${roster.team.team_id}`);
+      ref.current?.close();
       await refresh();
       navigate('/team');
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      setBusy(false);
     }
   };
   return (
-    <Panel title="Delete team" className="danger-zone">
-      {!open ? (
-        <button type="button" className="btn ghost danger" onClick={() => setOpen(true)}><Icon name="trash" /> Delete {name}…</button>
-      ) : (
-        <div className="form compact">
-          <p>This permanently deletes {name} with its tactics, lineup screenshots, calendar, invites and Game Mode history.
-            All {roster.members.length} members lose access. This cannot be undone.</p>
-          <label>Type the team name to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+    <>
+      <button type="button" className="btn ghost small danger" onClick={open}><Icon name="trash" /> Delete team</button>
+      <dialog ref={ref} className="modal" aria-labelledby="delete-team-title" aria-describedby="delete-team-desc">
+        <form method="dialog" className="modal-body" onSubmit={(e) => { e.preventDefault(); if (confirm === 'DELETE') void remove(); }}>
+          <h2 id="delete-team-title">Delete {name}?</h2>
+          <div id="delete-team-desc" className="stack tight">
+            <p>This permanently deletes the team <strong>{name}</strong> and everything that belongs to it:</p>
+            <ul className="privacy-list">
+              <li>its tactics, lineup screenshots and calendar events</li>
+              <li>its community listings (and their votes and import counts)</li>
+              <li>uploaded demos, demo reviews and annotations</li>
+              <li>open invites, join requests and Game Mode history</li>
+            </ul>
+            <p>{others > 0 ? `${others} other member${others === 1 ? '' : 's'} will lose access. ` : ''}Player accounts and profiles are not deleted. This cannot be undone.</p>
+          </div>
+          <label>Type DELETE to confirm
+            <input value={confirm} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm(e.target.value)} aria-describedby="delete-team-hint" />
+          </label>
+          <span id="delete-team-hint" className="muted small">Capital letters, exactly as shown.</span>
           <Alert>{error}</Alert>
           <div className="row">
-            <button type="button" className="btn danger-solid" disabled={confirm !== name} onClick={remove}>Delete team permanently</button>
-            <button type="button" className="btn ghost" onClick={() => { setOpen(false); setConfirm(''); }}>Cancel</button>
+            <button type="submit" className="btn danger-solid" disabled={confirm !== 'DELETE' || busy}>{busy ? 'Deleting…' : 'Delete team permanently'}</button>
+            <button type="button" className="btn ghost" onClick={() => ref.current?.close()}>Cancel</button>
           </div>
-        </div>
-      )}
-    </Panel>
+        </form>
+      </dialog>
+    </>
   );
 }
 
@@ -617,7 +642,6 @@ function TeamView({ teamId }: { teamId: number }) {
           {!viewer.is_owner ? <button type="button" className="btn ghost danger" onClick={leave}>Leave team</button> : null}
         </Panel>
         {viewer.is_owner ? <RecruitingSettings key={`${team.team_id}-${team.is_recruiting}`} team={team} onChange={reload} /> : null}
-        {viewer.is_owner ? <DeleteTeam roster={roster.data} /> : null}
       </div>
       <div className="stack">
         {viewer.is_owner ? <JoinRequests teamId={teamId} /> : null}

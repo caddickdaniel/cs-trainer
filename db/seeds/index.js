@@ -64,10 +64,10 @@ exports.seed = async function (knex) {
     }
   }
 
-  // Development only: Test Team 1 (5 players) and 10 teamless demo players.
+  // Development only: teamless recruits, the five-player Practice Roster,
+  // recruiting teams (db/data/demo.js) and the shared tactic library.
   if (NODE_ENV === 'development') {
-    await demo.seedTestTeam(knex, passwordHash);
-    await demo.ensureTeamlessPlayers(knex, passwordHash);
+    await demo.ensureDemoData(knex, passwordHash);
     await require('../lib/sharedTactics').ensureSharedTactics(knex, passwordHash);
   }
 };

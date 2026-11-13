@@ -40,21 +40,23 @@ Open <http://localhost:5173>.
 
 | View to test | Account | Notes |
 | --- | --- | --- |
-| Team owner (not IGL) | `test-owner@cs-trainer.test` | Owns **Test Team 1**; can manage the team but cannot control live play |
-| IGL | `test-juno@cs-trainer.test` | Test Team 1's IGL; controls Game Mode |
-| Ordinary players | `test-vex@`, `test-morrow@`, `test-talon@cs-trainer.test` | Entry, Support and AWPer on Test Team 1 |
-| Teamless players | `demo-kestrel@`, `demo-mateo@`, `demo-hana@`, `demo-liam@`, `demo-sofia@`, `demo-noah@`, `demo-priya@`, `demo-yusuf@`, `demo-emma@`, `demo-chen@cs-trainer.test` | Varied languages, regions, platforms and skill levels; some have bios and profile links |
+| Team owner (not IGL) | `test-owner@cs-trainer.test` (Test Owner) | Owns **Practice Roster**; can manage and delete the team but cannot control live play |
+| IGL | `test-igl@cs-trainer.test` (Sable) | Practice Roster's IGL; controls Game Mode and live Demo Review |
+| Ordinary players | `test-blitz@`, `test-wren@`, `test-onyx@cs-trainer.test` | Entry, Support and Lurker on Practice Roster (read-only Game Mode) |
+| Teamless recruits | 16 `demo-*@cs-trainer.test` accounts (Kestrel, Mateo, Hana, Liam, Sofia, Noah, Priya, Yusuf, Emma, Chen, Amira, Oskar, Lucia, Dmitri, Grace, Tomás) | Varied languages and regions; all three ranks, partial ranks, no rank, and one legacy-only entry (Chen, "Perfect World") |
+| Recruiting teams | `demo-owner-lights@`, `-pride@`, `-pampas@`, `-circuit@cs-trainer.test` | Owners of Northern Lights, Lion Pride, Pampas Five and Iron Circuit: several platform rank requirements each, leagues and matchmaking selected |
 | Legacy sample data | `user-a@` … `user-m@cs-trainer.test` | User A owns *Team A* (demo tactic *A Split (demo)*); User M has no team |
 
-**Adding demo accounts to an existing database without a reset** (development only):
+The fixtures are in [db/data/demo.js](db/data/demo.js); ranks use the current model (one optional Premier, FACEIT and ESEA rank each).
+
+**Refreshing the demo data without a reset** (development only):
 
 ```sh
-npm run db:migrate                          # apply new migrations; existing data is kept
-npm run db:demo                             # add or refresh the 10 teamless demo players
-npm run db:demo -- --team "Test Team 1"     # also add Juno, Vex, Morrow and Talon to that team
+npm run db:migrate   # apply new migrations; existing data is kept
+npm run db:demo      # add or refresh recruits, Practice Roster, recruiting teams and the 30 shared tactics
 ```
 
-The script matches accounts by email and can be re-run. Teammates already on another team are skipped. Juno becomes IGL only if the team has none, otherwise Rifler.
+`db:demo` matches accounts by email and teams by name and owner. It refreshes seeded profile fields, ranks and recruitment settings, and adds anything missing. It never deletes users, teams, tactics, demos, votes or memberships, and never moves a fixture player who has since joined another team (it logs a note instead). Re-running it changes nothing. The old `--team` option was removed; the test roster is its own team.
 
 To try the two-player flow on one machine, use two browser profiles, or open one tab on `localhost:5173` and another on `127.0.0.1:5173`. Each host gets its own cookies, so the two tabs can be signed in as different users.
 
@@ -79,7 +81,8 @@ In production, Express serves `client/dist` and the API from one origin, with no
 | `npm run db:reset` | Rolls back all migrations, migrates and seeds. Refuses `NODE_ENV=production` |
 | `npm run db:migrate` / `db:rollback` / `db:seed` | Knex migrate/seed |
 | `npm run db:review` | Lists legacy records the migrations could not map unambiguously |
-| `npm run db:demo [-- --team "Name"]` | Development only: adds the demo players (and four teammates) without resetting |
+| `npm run db:demo` | Development only: adds or refreshes the demo data (recruits, Practice Roster, recruiting teams, shared tactics) without resetting or deleting |
+| `npm run demos:reprocess [-- --all \| <ids>]` | Re-parses ready demos for the current replay data (recorded utility); keeps annotations |
 | `npm run dev` | API (nodemon) and Vite dev server together |
 | `npm test` | Mocha suite against `cs_trainer_test` |
 | `npm run lint` | ESLint (server JS + client TS/React hooks) |
@@ -649,7 +652,127 @@ Manual checks in signed-in browser sessions (test accounts Juno, Vex and Kestrel
 
 ### Map landmark sources
 
-Mirage, Nuke (CT, A, B on the lower floor) and Ancient come from the HLTV demos (median player position per CS2 place name). Dust II, Inferno, Anubis, Cache, Vertigo (T spawn on the lower floor) and Nuke's T spawn come from the zones outlined on the radar images. **Overpass and Train** have neither and were placed from the map layout; check them against a demo.
+Superseded in Phase 6: every landmark that has an outline on its radar is now centred in that outline (see "Radar landmarks" under Phase 6).
+
+## Phase 6
+
+### What was added
+
+- **Team page.** Owners get **Delete team** next to **Edit details**. It opens a dialog that names the team, lists what is deleted (tactics, lineups, calendar, community listings, demos and reviews, invites, Game Mode history) and only enables the final button once the owner types `DELETE`. The server's owner check and the existing deletion flow are unchanged.
+- **Invite Players.** Shorter rank cells: Premier shows the badge and the band (`20,000–22,499`), FACEIT and ESEA show the badge and the platform name. Each badge's accessible label is the full rank ("FACEIT Level 7").
+- **Radar landmarks** (`client/src/lib/landmarks.ts`, used by every radar view). A/B are centred in the orange bombsite outlines and T/CT in the green spawn outlines, measured from the radar PNGs and checked by eye on every layer. Nuke's B is on the lower radar; Vertigo's T spawn is on the lower radar. The Overpass and Train radars have no outlines, so their four landmarks stay placed from the map layout.
+- **Tactic editor.**
+  - Layout: tool rail | square board | draggable divider | right-hand pane. The board takes the largest square that fits the window, and dragging the divider (or arrow keys on it; double-click resets) shrinks it to give Player Instructions more room. Minimum widths are 320 px (board) and 340 px (pane). The split is remembered per browser, and pointer accuracy is unaffected. Below 1101 px the layout stacks.
+  - The Utility and Reference URL text boxes are gone. Values saved by older versions are shown read-only, kept on save, and can be removed.
+  - Utility labels are capitalised (Smoke, Flash, Molotov, HE).
+  - The toolbar has icons for every tool; the grenade tools reuse the supplied utility symbols.
+  - The bomb badge is half its old size, just right of the carrier's marker, and moves and scales with it.
+- **In-game player colours.** Each player (or Player 1–5 slot) can have Orange `#eda338`, Green `#109856`, Blue `#68a3e5`, Yellow `#e6f13d` or Purple `#803ca1`. Each colour is used once; picking a taken colour swaps it, and "Assign in-game colours" fills the rest. Colours are stored on the tactic (`tactics.player_colors`) and used by the editor, viewer, shared listings and Game Mode. They travel through Player 1–5 slots when sharing and importing, and mapping a slot gives its colour to the player. Tactics without colours use the previous derived colours.
+- **Game Mode.**
+  - The IGL's controls and shortcut hints are in a compact left-hand pane, with the radar sized to the window in the middle and the player's call and lineups on the right. At 1920×1080 the pane, a 771 px radar and the lineups are visible together without scrolling.
+  - Teammates get the radar and their call only (read-only).
+- **Desktop app for the IGL** (`desktop/`, Electron, Windows-first). See "Windows desktop app" below.
+- **Demo Review: recorded events.** The parser now extracts smokes (with when they cleared), flashes, HEs, molotovs/incendiaries (with when they burned out), plants, defusals and explosions, with tick, round, thrower and position.
+  - The replay draws them at the right moment with a dashed edge in the thrower's side colour. Manual annotations stay solid yellow, and a legend explains the difference.
+  - The timeline has a second row for utility, and the event feed lists each one.
+  - What's shown is computed from the current tick alone, so seeking, rewinding, switching rounds and live followers always match.
+  - A "Recorded utility" toggle hides the recorded layer.
+- **Development data** (`db/data/demo.js`, `db/lib/demo.js`): 16 teamless recruits, the five-player **Practice Roster** (owner, IGL, three players) and four recruiting teams. See "Development accounts" above.
+
+### What the demo parser supplies
+
+From `spirit-vs-g2-m3-ancient.dem` (demoparser2 0.42.2, CS2 build 14197):
+- **Grenade events.** `smokegrenade_detonate` / `smokegrenade_expired`, `flashbang_detonate`, `hegrenade_detonate` and `inferno_startburn` / `inferno_expire` carry the grenade's own `x/y/z`, the thrower (`user_steamid`, `user_X/Y/Z` at that moment) and an `entityid` that links a smoke or fire to its end.
+- **Molotov vs incendiary.** CS2 only reports an "inferno", so the thrower's side decides the label (T = molotov, CT = incendiary).
+- **Bomb events.** `bomb_planted` and `bomb_defused` give the planter's or defuser's position. `bomb_exploded`'s "user" is just whoever the event names and is not where the bomb was, so the explosion is drawn at the plant position. If there is no plant in the round it shows on the timeline only.
+- **No expiry event.** A smoke or fire with no expiry event (the round ended first) is cut off at the round's end, or after 22 s / 7 s if that comes first.
+- **Counts for the 18 rounds.** 116 smokes, 115 flashes, 69 HEs, 91 fires, 9 plants, 1 defusal and 2 explosions, all with positions.
+
+### Migrations and commands
+
+```sh
+npm install
+npm run db:migrate          # 20261116000100_phase_6_player_colors, 20261116000200_phase_6_replay_version
+npm run db:demo             # new development fixtures (non-destructive)
+npm run demos:reprocess     # optional: upgrade existing demos now instead of in the background
+```
+
+- `tactics.player_colors` (jsonb, default `[]`) is additive.
+- `demos.replay_version` starts at 1 for existing demos. The demo worker re-parses ready demos below version 2 in the background, one at a time, and replaces each round's data in place by round number. Annotations and reviews reference the demo and round number, so they are kept.
+- `npm run demos:reprocess` does the same immediately (`-- --all` forces every demo, `-- 4 7` specific ids). It prints how many annotations each demo kept. The demo file must still be in `DEMO_STORAGE_DIR`.
+- The 253 MB HLTV demo is not in the repository. `DEMO_FIXTURE=/path/to/spirit-vs-g2-m3-ancient.dem npm test` runs the extra regression test against it.
+
+### Windows desktop app
+
+The IGL runs CS Trainer in the desktop app on a second monitor. Teammates keep using a normal browser.
+- **Sign-in.** The app loads the normal web app (`CS_TRAINER_URL`, default `http://localhost:5173`), so sign-in, the API and the Game Mode screen are the same as in a browser.
+- **Hotkeys.** Global hotkeys are registered in the Electron main process with `globalShortcut` and sent to the page. The page runs exactly the same commands as the buttons, including the version check and the server's IGL check. Queuing a tactic (previous/next tactic) never starts a round; only "Start new round" does.
+- **Narrow bridge.** The page can only get, set, enable and disable the six bindings and receive the pressed action (`desktop/src/preload.js`). IPC from any other origin is refused, and navigation away from CS Trainer is blocked.
+- **When hotkeys are active.**
+  - They are registered only while the current IGL has Game Mode open and has pressed **Turn on hotkeys**. The pane shows Active or Off with a one-click **Turn off hotkeys**.
+  - They are removed when the IGL leaves Game Mode, signs out, loses IGL control (seen on the next 2 s poll), when the page reloads or crashes, and when the app exits.
+- **Bindings.**
+  - Separate from the browser shortcuts and stored in the app's user-data folder (`hotkeys.json`).
+  - Defaults: Ctrl+Alt+← / → (phase), Ctrl+Alt+↑ / ↓ (tactic), Ctrl+Alt+Home (new round), Ctrl+Alt+End (switch side).
+  - Lone letters, digits and arrows are refused (they would fire while playing). F-keys and the number pad are allowed alone.
+  - A combination the system refuses (for example one already used by an overlay) is reported next to that action with a prompt to choose another.
+- **No double handling.** While the app holds a key globally, the page ignores the same key, so one press never runs a command twice.
+- **Never activates the window.** A hotkey never focuses or raises the window and sends nothing to CS2. `backgroundThrottling` is off, so the second-monitor view keeps updating while CS2 has focus.
+
+Run and package (on Windows, from `desktop/`, separate from the web app's install):
+
+```sh
+cd desktop
+npm install
+set CS_TRAINER_URL=https://your-cs-trainer-host   # or leave unset for http://localhost:5173
+npm start                                          # run
+npm run dist                                       # NSIS installer + portable .exe in desktop/dist
+```
+
+`npm run pack` builds an unpacked app for a quick check.
+
+### Verification (2026-11-13)
+
+- `npm run check`: lint and type checks clean, **159 passing, 3 pending** (the DEMO_FIXTURE test is pending without the file), build OK. With `DEMO_FIXTURE` set the real-demo test passes.
+- **Browser checks.** Separate signed-in sessions on `owner.`, `sable.` and `blitz.localhost:5173` covered:
+  - **Delete dialog.** The owner sees the dialog; lowercase `delete` keeps it disabled, `DELETE` enables it; it was cancelled, so the roster was kept. The IGL doesn't see the button.
+  - **Invite Players.** The formatting and accessible labels are as described above.
+  - **Editor.** The split fits at 1440×900 (board 633 px, ends at 872 px). Dragging the divider shrank the board to 453 px and a click landed exactly where the marker was drawn.
+  - **Colours and bomb badge.** Assignment, swapping, save, viewer, slot mapping and Game Mode colours all worked. The bomb badge is 9×10 px against an 18×20 px badge before, level with the marker and 1 px overlap.
+  - **Live Game Mode.** Next phase from the IGL pane updated the teammate's browser.
+  - **Live Demo Review.** The IGL leads and the follower sees the same smokes and fires at the same tick. Rewinding cleared them. Round 5 showed plant, then explosion, on both screens.
+- **Desktop app on Linux.** Electron 44 ran under XWayland on this Linux desktop (a stand-in, not Windows) against the dev server:
+  - Sign-in through the normal form worked, and the bridge exposed only its six functions.
+  - **Turn on hotkeys** registered all six with the OS (`globalShortcut.isRegistered` false before, true after).
+  - Sending the hotkey action from the main process (exactly what the shortcut callback does) advanced the IGL's view and the teammate's browser. Previous phase, next tactic (queue only), switch side both ways and new round all worked.
+  - A combination already held by another registration was reported on that action, and rebinding fixed it.
+  - Leaving Game Mode, and then losing IGL control mid-session, both unregistered everything, and a stray hotkey after losing control did nothing.
+  - **Not verified here.** A real key press from the OS: XTest presses on this Wayland desktop don't reach X11 key grabs.
+- **Not run: CS2.** CS2 is not installed in this environment.
+
+**Outstanding Windows test (with CS2 running).** On Windows 10/11, with CS2 in the foreground on monitor 1 and the desktop app (Practice Roster IGL, Sable) in Game Mode on monitor 2, and a teammate (Blitz) in a browser:
+1. Turn on hotkeys.
+2. Press Ctrl+Alt+→ while CS2 has focus. Check that:
+   - the second-monitor view and the teammate's browser move to the next phase;
+   - CS2 keeps focus and receives no input;
+   - the desktop window is not raised.
+3. Repeat for:
+   - Ctrl+Alt+← (previous phase);
+   - Ctrl+Alt+↑ / ↓ (queue changes, round number unchanged);
+   - Ctrl+Alt+End (side switches);
+   - Ctrl+Alt+Home (round number goes up, phase 1).
+4. Bind an action to a combination another app already holds (for example the Steam overlay's Shift+Tab, or a Game Bar shortcut). Check that it's reported and can be rebound.
+5. Leave Game Mode, then press Ctrl+Alt+→. Nothing should happen and CS2 should receive the key.
+6. As the owner, move the IGL role to someone else mid-round. Check that the hotkeys turn Off within about 2 s and a press does nothing.
+
+### Changes left in the development database from verification
+
+- **Background upgrade.** All four existing demos (including your team's demo 3 and demo 2) were upgraded to the recorded-utility data in place, and their annotations are unchanged.
+- **Practice Roster.**
+  - Has imported tactic 25 (*Mirage B fake into A*) with colours, and demo 5 (the Ancient demo).
+  - Has a running Game Mode match (round 2).
+  - The IGL role was moved to Blitz and back to Sable during the hotkey test.
+- **Kestrel Verify.** Tactic 23 now has in-game colours (Kestrel is purple), and a Game Mode match is still running (round 1).
 
 ## Contact
 

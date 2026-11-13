@@ -16,6 +16,16 @@ const TICKRATE = 64;
 // Positions are sampled every STEP ticks (8 per second) and interpolated by the viewer.
 const STEP = 8;
 const POST_ROUND_TICKS = 3 * TICKRATE;
+// Fallback effect lengths when the demo has no matching expiry event (for
+// example the round ended first). CS2: smoke ~22 s, molotov/incendiary ~7 s.
+const SMOKE_TICKS = 22 * TICKRATE;
+const FIRE_TICKS = 7 * TICKRATE;
+// Version of the replay data written to demo_rounds. Ready demos with an older
+// version are re-parsed in the background (see demoJobs.backfillNext) and
+// their round data is replaced in place, so annotations are kept.
+// 1: positions, kills, plants/defusals. 2: recorded utility (smoke, flash,
+// HE, molotov/incendiary) with effect durations, and the explosion position.
+const REPLAY_VERSION = 2;
 const DEMO_MAGIC = 'PBDEMS2\0';
 const CSGO_MAGIC = 'HL2DEMO\0';
 
@@ -158,9 +168,37 @@ function buildReplay({ header, events, ticks }) {
       const p = toRadar(x, e[`${prefix}_Y`], e[`${prefix}_Z`]);
       return { x: p.x, y: p.y, level: p.level };
     };
+    // Grenade events carry the grenade's own position (x/y/z) and the
+    // thrower (user_*); a smoke or fire is linked to its expiry by entityid.
+    const grenadeAt = (e) => {
+      if (e.x == null) return {};
+      const p = toRadar(e.x, e.y, e.z);
+      return { x: p.x, y: p.y, level: p.level };
+    };
+    const sideIn = new Map(roster.map((p) => [p.player, p.side]));
+    const expiry = (name, e, fallback) => {
+      const end = events.find((x) => x.event_name === name && x.entityid === e.entityid && x.tick >= e.tick);
+      return Math.min(end ? end.tick : e.tick + fallback, r.end_tick);
+    };
+    let plantAt = null;
     const timeline = [];
     for (const e of events) {
       if (!inRound(e)) continue;
+      if (e.event_name === 'smokegrenade_detonate') {
+        timeline.push({ tick: e.tick, type: 'smoke', end_tick: expiry('smokegrenade_expired', e, SMOKE_TICKS), player: playerIndex(e.user_steamid), ...grenadeAt(e) });
+        continue;
+      }
+      if (e.event_name === 'flashbang_detonate' || e.event_name === 'hegrenade_detonate') {
+        timeline.push({ tick: e.tick, type: e.event_name === 'flashbang_detonate' ? 'flash' : 'he', player: playerIndex(e.user_steamid), ...grenadeAt(e) });
+        continue;
+      }
+      if (e.event_name === 'inferno_startburn') {
+        const player = playerIndex(e.user_steamid);
+        // CS2 only says "inferno": T sides throw molotovs, CT sides incendiaries.
+        const variant = sideIn.get(player) === 'CT' ? 'incendiary' : 'molotov';
+        timeline.push({ tick: e.tick, type: 'fire', variant, end_tick: expiry('inferno_expire', e, FIRE_TICKS), player, ...grenadeAt(e) });
+        continue;
+      }
       if (e.event_name === 'player_death') {
         timeline.push({
           tick: e.tick, type: 'kill',
@@ -170,11 +208,15 @@ function buildReplay({ header, events, ticks }) {
           ...place(e, 'user'),
         });
       } else if (e.event_name === 'bomb_planted') {
-        timeline.push({ tick: e.tick, type: 'plant', player: playerIndex(e.user_steamid), ...place(e, 'user') });
+        plantAt = place(e, 'user');
+        timeline.push({ tick: e.tick, type: 'plant', player: playerIndex(e.user_steamid), ...plantAt });
       } else if (e.event_name === 'bomb_defused') {
         timeline.push({ tick: e.tick, type: 'defuse', player: playerIndex(e.user_steamid), ...place(e, 'user') });
       } else if (e.event_name === 'bomb_exploded') {
-        timeline.push({ tick: e.tick, type: 'explode' });
+        // The event's "user" is just a player's current position, so the
+        // explosion is placed where the bomb was planted (timeline only if
+        // the plant is not in this round's data).
+        timeline.push({ tick: e.tick, type: 'explode', ...(plantAt || {}) });
       }
     }
     timeline.push({ tick: r.result_tick, type: 'round_end', winner: r.winner, reason: r.reason });
@@ -232,6 +274,7 @@ function buildReplay({ header, events, ticks }) {
       patch_version: header.patch_version || null,
       players: [...players.values()].map((p) => ({ index: p.index, name: p.name })),
       parser: 'demoparser2',
+      replay_version: REPLAY_VERSION,
     },
     rounds: roundData,
   };
@@ -300,6 +343,9 @@ function summarise({ map, events, rounds, roundData, players, teamOf, score }) {
 }
 
 const EVENT_NAMES = ['round_start', 'round_freeze_end', 'round_end', 'player_death', 'player_hurt', 'bomb_planted', 'bomb_defused', 'bomb_exploded'];
+// Utility events are requested only when the demo lists them (round events
+// above are partly synthesised by the parser and are not always listed).
+const UTILITY_EVENT_NAMES = ['smokegrenade_detonate', 'smokegrenade_expired', 'flashbang_detonate', 'hegrenade_detonate', 'inferno_startburn', 'inferno_expire'];
 
 // Version of the native binary actually loaded (package.json overrides pin
 // the platform builds ahead of the wrapper package; see README).
@@ -334,7 +380,11 @@ function parseDemoFile(file) {
     + `(demoparser2 ${parserVersion()}) can't read yet: ${err.message || err}. Update the parser, then retry the demo.`);
   let events;
   try {
-    events = parser.parseEvents(file, EVENT_NAMES, ['X', 'Y', 'Z'], ['is_warmup_period', 'total_rounds_played']);
+    // Only ask for events the demo actually contains.
+    let present = null;
+    try { present = new Set(parser.listGameEvents(file)); } catch { present = null; }
+    const names = [...EVENT_NAMES, ...(present ? UTILITY_EVENT_NAMES.filter((n) => present.has(n)) : UTILITY_EVENT_NAMES)];
+    events = parser.parseEvents(file, names, ['X', 'Y', 'Z'], ['is_warmup_period', 'total_rounds_played']);
   } catch (err) {
     throw incompatible(err);
   }
@@ -352,4 +402,4 @@ function parseDemoFile(file) {
   return buildReplay({ header, events, ticks });
 }
 
-module.exports = { parserVersion, STATS_VERSION, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };
+module.exports = { parserVersion, STATS_VERSION, REPLAY_VERSION, SMOKE_TICKS, FIRE_TICKS, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };

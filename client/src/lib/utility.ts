@@ -7,7 +7,7 @@ export type Grenade = (typeof GRENADES)[number];
 export const BUY_LIMITS: GrenadeCounts = { smoke: 1, flash: 2, molly: 1, he: 1 };
 export const MAX_GRENADES = 4;
 export const GRENADE_LABEL: Record<Grenade, [string, string]> = {
-  smoke: ['smoke', 'smokes'], flash: ['flash', 'flashes'], molly: ['molotov', 'molotovs'], he: ['HE', 'HEs'],
+  smoke: ['Smoke', 'Smokes'], flash: ['Flash', 'Flashes'], molly: ['Molotov', 'Molotovs'], he: ['HE', 'HEs'],
 };
 
 const empty = (): GrenadeCounts => ({ smoke: 0, flash: 0, molly: 0, he: 0 });
