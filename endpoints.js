@@ -142,6 +142,8 @@ exports.endpoints = {
       'GET /api/demos/:demo_id/rounds/:round': { description: 'Replay data for one round (gzip JSON)' },
       'GET, POST /api/demos/:demo_id/annotations': { description: 'Saved drawings and text (?round)' },
       'DELETE /api/demos/:demo_id/annotations/:annotation_id': { description: 'Author, owner or IGL' },
+      'PATCH /api/demos/:demo_id/annotations/:annotation_id': { description: 'Move or change a utility annotation (author, owner or IGL)', body: '{ x?, y?, utility?, level? }' },
+      'POST /api/teams/:team_id/demos/share-code': { description: 'Queue a match from a CS2 share code (needs a replay provider)', body: '{ share_code, title? }' },
     },
     '/reviews': {
       'GET, POST /api/teams/:team_id/review': { description: 'Current live review; the IGL starts one ({ demo_id, round_number? })' },
@@ -149,6 +151,7 @@ exports.endpoints = {
       'POST /api/reviews/:review_id/command': { description: 'IGL. play | pause | seek | round | speed | clear, with expected_version' },
       'POST /api/reviews/:review_id/annotations': { description: 'IGL. Live drawing or text for the current round' },
       'DELETE /api/reviews/:review_id/annotations/:annotation_id': { description: 'IGL' },
+      'PATCH /api/reviews/:review_id/annotations/:annotation_id': { description: 'IGL; move or change a live utility annotation', body: '{ x?, y?, utility?, level? }' },
       'POST /api/reviews/:review_id/end': { description: 'IGL' },
     },
     '/phase-4': {

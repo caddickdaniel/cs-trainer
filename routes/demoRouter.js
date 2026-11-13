@@ -54,6 +54,9 @@ demoRouter.route('/:demo_id/annotations/:annotation_id')
   .delete(asyncHandler(async (req, res) => {
     res.status(200).send(await demos.deleteAnnotation(demoId(req), v.parseId(req.params.annotation_id, 'annotation_id'), me(req)));
   }))
+  .patch(asyncHandler(async (req, res) => {
+    res.status(200).send(await demos.updateAnnotation(demoId(req), v.parseId(req.params.annotation_id, 'annotation_id'), me(req), v.annotationPatch.parse(req.body)));
+  }))
   .all(handle405);
 
 module.exports = demoRouter;

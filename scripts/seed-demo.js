@@ -1,7 +1,7 @@
 // Development only: adds the demo accounts to an existing database without
 // resetting it. Safe to run repeatedly.
 //
-//   npm run db:demo                          # 10 teamless demo players
+//   npm run db:demo                          # 10 teamless demo players + 30 shared tactics
 //   npm run db:demo -- --team "Test Team 1"  # ...and 4 teammates for that team
 const bcrypt = require('bcryptjs');
 const { NODE_ENV } = require('../config/env');
@@ -14,6 +14,7 @@ if (NODE_ENV === 'production') {
 const db = require('../db/connection');
 const { SEED_PASSWORD } = require('../db/seeds');
 const { ensureTeamlessPlayers, ensureTeammates } = require('../db/lib/demo');
+const { ensureSharedTactics } = require('../db/lib/sharedTactics');
 
 const arg = (name) => {
   const i = process.argv.indexOf(name);
@@ -26,6 +27,7 @@ const arg = (name) => {
   const hash = await bcrypt.hash(SEED_PASSWORD, 10);
   await db.transaction(async (trx) => {
     await ensureTeamlessPlayers(trx, hash, (m) => console.log(`  ${m}`));
+    await ensureSharedTactics(trx, hash, (m) => console.log(`  ${m}`));
     const teamName = arg('--team');
     if (teamName) {
       const teams = await trx('teams').where('team_name', teamName).select('team_id');

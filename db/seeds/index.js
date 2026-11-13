@@ -68,5 +68,6 @@ exports.seed = async function (knex) {
   if (NODE_ENV === 'development') {
     await demo.seedTestTeam(knex, passwordHash);
     await demo.ensureTeamlessPlayers(knex, passwordHash);
+    await require('../lib/sharedTactics').ensureSharedTactics(knex, passwordHash);
   }
 };

@@ -4,10 +4,11 @@ import { api, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ECONOMIES, ECONOMY_LABEL, MAPS, mapName, type Level } from '../lib/constants';
 import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
-import type { Marker, SharedListing, SharedTactic, SharePreview } from '../lib/types';
+import type { Marker, Phase, SharedListing, SharedTactic, SharePreview } from '../lib/types';
 import { Alert, Loading, Panel, SideBadge } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBoard, ownerColor } from '../components/MapBoard';
+import { BuyListSummary } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers } from '../components/Lineups';
 
 // Up/down vote with a derived net score. Clicking your current vote removes it.
@@ -27,14 +28,27 @@ export function VoteControl({ listing, onChange }: { listing: SharedListing; onC
       setBusy(false);
     }
   };
+  // Votes from the publishing team are refused by the API (a team can't rate
+  // its own tactic), so the creator sees the score with the reason instead of
+  // arrows that do nothing.
+  if (listing.is_mine) {
+    return (
+      <span className="vote own" title="Your team shared this tactic">
+        <button type="button" className="up" disabled aria-label="Upvote (not available for your own team's tactic)"><Icon name="vote_up" size={16} /></button>
+        <span className="score" aria-label={`Net rating ${listing.score}`}>{listing.score > 0 ? `+${listing.score}` : listing.score}</span>
+        <button type="button" className="down" disabled aria-label="Downvote (not available for your own team's tactic)"><Icon name="vote_down" size={16} /></button>
+        <span className="muted small">Your team shared this, so you can't vote on it.</span>
+      </span>
+    );
+  }
   return (
     <span className="vote" title={`${listing.upvotes} up, ${listing.downvotes} down`}>
-      <button type="button" className={`up${listing.my_vote === 1 ? ' on' : ''}`} disabled={busy || listing.is_mine}
-        aria-pressed={listing.my_vote === 1} aria-label="Upvote" onClick={() => cast(1)}><Icon name="vote_up" size={16} /></button>
-      <span className="score" aria-label={`Net rating ${listing.score}`}>{listing.score > 0 ? `+${listing.score}` : listing.score}</span>
-      <button type="button" className={`down${listing.my_vote === -1 ? ' on' : ''}`} disabled={busy || listing.is_mine}
-        aria-pressed={listing.my_vote === -1} aria-label="Downvote" onClick={() => cast(-1)}><Icon name="vote_down" size={16} /></button>
-      {error ? <span className="error-text">{error}</span> : null}
+      <button type="button" className={`up${listing.my_vote === 1 ? ' on' : ''}`} disabled={busy}
+        aria-pressed={listing.my_vote === 1} aria-label={listing.my_vote === 1 ? 'Remove upvote' : 'Upvote'} onClick={() => cast(1)}><Icon name="vote_up" size={16} /></button>
+      <span className="score" aria-live="polite" aria-label={`Net rating ${listing.score}`}>{listing.score > 0 ? `+${listing.score}` : listing.score}</span>
+      <button type="button" className={`down${listing.my_vote === -1 ? ' on' : ''}`} disabled={busy}
+        aria-pressed={listing.my_vote === -1} aria-label={listing.my_vote === -1 ? 'Remove downvote' : 'Downvote'} onClick={() => cast(-1)}><Icon name="vote_down" size={16} /></button>
+      {error ? <span className="error-text" role="alert">Vote not saved: {error}</span> : null}
     </span>
   );
 }
@@ -157,7 +171,7 @@ export function SharedTacticPage() {
             <div className="stack">
               <LevelSwitch map={t.map} level={level} board={phase.board} onChange={setLevel} />
               <MapBoard board={phase.board} map={t.map} level={level} players={[]} onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })}
-                label={`Shared board for ${phase.name}`} />
+                label={`Shared board for ${phase.name}`} bomb={t.side === 'T' ? t.bomb_carrier : null} />
             </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}
@@ -171,6 +185,9 @@ export function SharedTacticPage() {
                   ))}
                 </ul>
               ) : <p className="muted">No player instructions in this phase.</p>}
+              <h3>Utility</h3>
+              <BuyListSummary loadouts={t.loadouts ?? []} bomb={t.bomb_carrier} phases={t.phases as unknown as Phase[]} phaseIndex={Math.min(index, t.phases.length - 1)} side={t.side}
+                name={(r) => `Player ${r.slot}`} />
               {lineups.length ? <><h3>Lineups</h3><LineupGallery markers={lineups} onOpen={(m, i) => setOpen({ marker: m, index: i })} /></> : null}
             </Panel>
           </div>

@@ -43,6 +43,24 @@ exports.signin = z.object({
   password: z.string().min(1).max(200),
 });
 
+const CAT = require('../domain/catalogue');
+
+// Team recruitment requirements and competitions (catalogue values only).
+const rankRequirements = z.array(z.object({
+  platform: z.enum(CAT.PLATFORM_IDS),
+  min: z.string().max(30),
+  max: z.string().max(30),
+}).strict()).max(CAT.PLATFORM_IDS.length).superRefine((list, ctx) => {
+  const seen = new Set();
+  list.forEach((r, i) => {
+    const problem = CAT.checkRequirement(r);
+    if (problem) ctx.addIssue({ code: 'custom', path: [i], message: problem });
+    if (seen.has(r.platform)) ctx.addIssue({ code: 'custom', path: [i], message: 'Add at most one requirement per platform' });
+    seen.add(r.platform);
+  });
+});
+const competitions = z.array(z.enum(CAT.COMPETITION_IDS)).max(CAT.COMPETITION_IDS.length).transform((l) => [...new Set(l)]);
+
 const teamFields = {
   team_name: trimmed(60).min(2, 'Team name must be at least 2 characters'),
   language: optionalText(40),
@@ -51,8 +69,9 @@ const teamFields = {
   skill_level: optionalText(40),
   description: optionalText(1000),
 };
-exports.createTeam = z.object(teamFields);
-exports.patchTeam = z.object(teamFields).partial();
+const teamExtras = () => ({ rank_requirements: rankRequirements.optional(), competitions: competitions.optional() });
+exports.createTeam = z.object({ ...teamFields, ...teamExtras() });
+exports.patchTeam = z.object({ ...teamFields, ...teamExtras() }).partial();
 
 exports.createInvite = z.object({
   expires_in_hours: z.coerce.number().refine((h) => C.INVITE_TTL_HOURS.includes(h), {
@@ -71,6 +90,8 @@ exports.patchMember = z.object({
 exports.recruiting = z.object({
   is_recruiting: z.boolean().optional(),
   recruiting_leagues: optionalText(300),
+  competitions: competitions.optional(),
+  rank_requirements: rankRequirements.optional(),
   roles_needed: z.array(z.enum(C.PLAYER_ROLES)).max(7)
     .transform((list) => [...new Set(list)]).optional(),
   recruiting_notes: optionalText(1000),
@@ -92,25 +113,21 @@ const profileLink = (field) => z.string().trim().max(300).nullable().optional()
     }
   }, { message: `Must be an https link to ${C.PROFILE_LINK_HOSTS[field][0]}` });
 
-const CAT = require('../domain/catalogue');
+
+const rankFor = (platform) => z.string().max(30).nullable().optional()
+  .refine((v) => v == null || v === '' || CAT.isValidRank(platform, v), { message: `Choose a ${platform} rank from the list` });
 
 exports.profile = z.object({
   language: optionalText(40),
   region: optionalText(40),
-  // Recruitment rank: a platform and a rank from that platform's catalogue.
-  rank_platform: z.enum(CAT.PLATFORM_IDS).nullable().optional(),
-  rank_id: z.string().max(30).nullable().optional(),
+  // Self-reported ranks, one per platform. Omitted platforms are left unchanged.
+  ranks: z.object(Object.fromEntries(CAT.PLATFORM_IDS.map((p) => [p, rankFor(p)]))).strict().optional(),
+  clear_legacy_rank: z.boolean().optional(),
   bio: optionalText(1000),
   steam_url: profileLink('steam_url'),
   faceit_url: profileLink('faceit_url'),
   esea_url: profileLink('esea_url'),
   hltv_url: profileLink('hltv_url'),
-}).superRefine((p, ctx) => {
-  if (p.rank_id && !p.rank_platform) {
-    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'Choose a platform for this rank' });
-  } else if (p.rank_id && !CAT.isValidRank(p.rank_platform, p.rank_id)) {
-    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'That rank does not belong to the chosen platform' });
-  }
 });
 
 exports.statsSettings = z.object({
@@ -121,9 +138,11 @@ exports.statsSettings = z.object({
 exports.playerFilters = z.object({
   language: z.string().max(40).optional(),
   region: z.string().max(40).optional(),
-  platform: z.enum(CAT.PLATFORM_IDS).optional(),
-  rank: z.string().max(30).optional(),
+  ...Object.fromEntries(CAT.PLATFORM_IDS.map((p) => [p, z.string().max(30).optional()])),
 });
+
+exports.rankRequirements = rankRequirements;
+exports.competitions = competitions;
 
 // Key bindings such as "ArrowRight", "N", "Shift+N", "Ctrl+]".
 const binding = z.string().max(40).regex(/^((Ctrl|Alt|Shift|Meta)\+){0,3}([A-Z0-9]|F[1-9]|F1[0-2]|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Backspace|Delete|Home|End|PageUp|PageDown|Insert|[[\]\\;',./`=-])$/,
@@ -203,6 +222,9 @@ const marker = z.object({
   label: trimmed(C.LIMITS.noteChars).optional().default(''),
   // Note font size in board units (notes only).
   size: z.number().int().min(C.NOTE_SIZE.min).max(C.NOTE_SIZE.max).optional(),
+  // Utility markers assigned to a player are planned throws unless they are
+  // only a reference (e.g. showing where a teammate's smoke lands).
+  reference: z.boolean().optional(),
   // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
@@ -271,6 +293,22 @@ const phase = z.object({
 
 const utilityCount = (max) => z.coerce.number().int().min(0).max(max);
 
+// One player's buy list (CS2 carry limits: 1 smoke, 2 flashes, 1 molotov or
+// incendiary, 1 HE, at most 4 grenades; a defuse kit on CT).
+const U = require('../domain/utility');
+const loadout = z.object({
+  user_id: id.nullable().optional().default(null),
+  slot,
+  smoke: z.number().int().min(0).max(U.BUY_LIMITS.smoke).default(0),
+  flash: z.number().int().min(0).max(U.BUY_LIMITS.flash).default(0),
+  molly: z.number().int().min(0).max(U.BUY_LIMITS.molly).default(0),
+  he: z.number().int().min(0).max(U.BUY_LIMITS.he).default(0),
+  kit: z.boolean().default(false),
+}).refine((l) => l.user_id != null || l.slot != null, 'A buy list needs a player or a player slot')
+  .refine((l) => l.smoke + l.flash + l.molly + l.he <= U.MAX_GRENADES, `A player can carry at most ${U.MAX_GRENADES} grenades`);
+const owner = z.object({ user_id: id.nullable().optional().default(null), slot })
+  .refine((o) => o.user_id != null || o.slot != null, 'Choose a player or a player slot');
+
 const tacticDocumentBase = z.object({
   tactic_name: trimmed(60).min(1, 'Name is required'),
   map: z.enum(C.MAPS),
@@ -280,11 +318,19 @@ const tacticDocumentBase = z.object({
   molly: utilityCount(5).default(0),
   flash: utilityCount(10).default(0),
   smoke: utilityCount(5).default(0),
+  loadouts: z.array(loadout).max(10).default([]).superRefine((list, ctx) => {
+    const keys = list.map(U.ownerKey);
+    if (new Set(keys).size !== keys.length) ctx.addIssue({ code: 'custom', message: 'A player can only have one buy list' });
+  }),
+  // T only: who carries the bomb.
+  bomb_carrier: owner.nullable().optional().default(null),
   phases: z.array(phase).min(1, 'Add at least one phase').max(C.LIMITS.phases),
 });
 
 // Board items may only use levels the chosen map has (e.g. lower on Nuke).
 const checkLevels = (doc, ctx) => {
+  if (doc.side !== 'T' && doc.bomb_carrier) ctx.addIssue({ code: 'custom', path: ['bomb_carrier'], message: 'Only T tactics have a bomb carrier' });
+  if (doc.side !== 'CT') doc.loadouts.forEach((l, i) => { if (l.kit) ctx.addIssue({ code: 'custom', path: ['loadouts', i, 'kit'], message: 'Defuse kits are CT only' }); });
   const allowed = C.mapLevels(doc.map);
   doc.phases.forEach((p, pi) => {
     [...p.board.markers, ...p.board.routes].forEach((item) => {
@@ -356,6 +402,10 @@ exports.demoUploadQuery = z.object({
   title: z.string().trim().max(120).optional(),
   file_name: z.string().trim().max(255).optional(),
 });
+exports.shareCodeImport = z.object({
+  share_code: z.string().trim().min(1, 'Paste a match share code').max(200),
+  title: z.string().trim().max(120).optional(),
+});
 exports.demoPatch = z.object({ title: trimmed(120).min(1) });
 const annPoint = z.object({ x: coord, y: coord });
 exports.annotation = z.discriminatedUnion('kind', [
@@ -373,7 +423,22 @@ exports.annotation = z.discriminatedUnion('kind', [
     level: z.enum(C.LEVELS).optional().default('main'),
     data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166') }),
   }),
+  // A smoke, flash, HE or molotov placed on the radar.
+  z.object({
+    kind: z.literal('utility'),
+    round_number: z.number().int().min(1).max(200),
+    tick: z.number().int().min(0),
+    level: z.enum(C.LEVELS).optional().default('main'),
+    data: z.object({ x: coord, y: coord, utility: z.enum(['smoke', 'flash', 'he', 'molly']) }),
+  }),
 ]);
+// Editing a utility annotation: move it, change its type or floor.
+exports.annotationPatch = z.object({
+  x: coord.optional(),
+  y: coord.optional(),
+  utility: z.enum(['smoke', 'flash', 'he', 'molly']).optional(),
+  level: z.enum(C.LEVELS).optional(),
+}).refine((p) => Object.keys(p).length > 0, 'Nothing to update');
 exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
 exports.reviewCommand = z.object({
   action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),

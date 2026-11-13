@@ -64,5 +64,14 @@ module.exports = {
   // Optional: FACEIT Data API (server-side key).
   faceitApiKey: process.env.FACEIT_API_KEY || null,
   faceitApiBase: process.env.FACEIT_API_BASE || 'https://open.faceit.com/data/v4',
+  // Optional: match share code import through a Game Coordinator bridge
+  // (see services/replayProvider.js). Without it share codes are rejected
+  // with a clear message.
+  matchReplayProviderUrl: process.env.MATCH_REPLAY_PROVIDER_URL || null,
+  matchReplayProviderToken: process.env.MATCH_REPLAY_PROVIDER_TOKEN || null,
+  // Hosts replays may be downloaded from (comma-separated, * wildcards).
+  matchReplayHosts: (process.env.MATCH_REPLAY_HOSTS || 'replay*.valve.net')
+    .split(',').map((h) => h.trim()).filter(Boolean)
+    .map((h) => new RegExp(`^${h.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[a-z0-9-]*')}$`, 'i')),
   bcryptRounds: Number(process.env.BCRYPT_ROUNDS) || (NODE_ENV === 'test' ? 4 : 12),
 };

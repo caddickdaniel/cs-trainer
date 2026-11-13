@@ -11,14 +11,23 @@ import { Avatar, Facts, RoleBadge } from '../components/People';
 import { InviteButton } from './PlayerProfile';
 import { Combobox } from '../components/Combobox';
 import { RankBadge } from '../components/RankBadge';
-import { useCatalogue } from '../lib/catalogue';
+import { CompetitionList, CompetitionPicker, PlayerRankList, RankSelect, RequirementList, RequirementsEditor } from '../components/Recruitment';
+import { useCatalogue, type Catalogue } from '../lib/catalogue';
+import type { RankRequirement } from '../lib/types';
 
-const TEAM_FIELDS = [
-  ['language', 'Language'],
-  ['region', 'Region'],
-  ['platform', 'Platform'],
-  ['skill_level', 'Skill level'],
-] as const;
+const PLATFORM_IDS = ['premier', 'faceit', 'esea'] as const;
+
+// Language and region use the same searchable lists as player profiles.
+function TeamOptionFields({ cat, form, setForm }: { cat: Catalogue | null; form: Record<string, string>; setForm: (f: Record<string, string>) => void }) {
+  return (
+    <div className="grid2">
+      <Combobox label="Language" options={cat?.languages ?? []} value={form.language ?? ''} emptyLabel="Not set"
+        onChange={(v) => setForm({ ...form, language: v })} />
+      <Combobox label="Region" options={cat?.regions ?? []} value={form.region ?? ''} emptyLabel="Not set"
+        onChange={(v) => setForm({ ...form, region: v })} />
+    </div>
+  );
+}
 
 // Accepts a full invite link or just the code.
 export function extractInviteToken(value: string) {
@@ -30,7 +39,10 @@ export function extractInviteToken(value: string) {
 function NoTeam() {
   const { refresh } = useAuth();
   const navigate = useNavigate();
+  const cat = useCatalogue();
   const [form, setForm] = useState<Record<string, string>>({ team_name: '' });
+  const [requirements, setRequirements] = useState<RankRequirement[]>([]);
+  const [competitions, setCompetitions] = useState<string[]>([]);
   const [invite, setInvite] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,7 +55,7 @@ function NoTeam() {
     setError(null);
     try {
       const body = Object.fromEntries(Object.entries(form).filter(([, v]) => v.trim() !== ''));
-      await api.post('/teams', body);
+      await api.post('/teams', { ...body, rank_requirements: requirements, competitions });
       await refresh();
     } catch (err) {
       setError(errorMessage(err));
@@ -64,12 +76,9 @@ function NoTeam() {
         <form className="form" onSubmit={create}>
           <label>Team name<input required minLength={2} maxLength={60} value={form.team_name}
             onChange={(e) => setForm({ ...form, team_name: e.target.value })} /></label>
-          <div className="grid2">
-            {TEAM_FIELDS.map(([key, label]) => (
-              <label key={key}>{label}<input maxLength={40} value={form[key] ?? ''}
-                onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
-            ))}
-          </div>
+          <TeamOptionFields cat={cat} form={form} setForm={setForm} />
+          <CompetitionPicker cat={cat} value={competitions} onChange={setCompetitions} />
+          <RequirementsEditor cat={cat} value={requirements} onChange={setRequirements} />
           <label>Description<textarea rows={4} maxLength={1000} value={form.description ?? ''}
             onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <Alert>{error}</Alert>
@@ -180,15 +189,13 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
   const { team, viewer } = roster;
   const { refresh } = useAuth();
   const [editing, setEditing] = useState(false);
+  const cat = useCatalogue();
   const [form, setForm] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const startEdit = () => {
-    setForm({
-      team_name: team.team_name, language: team.language ?? '', region: team.region ?? '',
-      platform: team.platform ?? '', skill_level: team.skill_level ?? '', description: team.description ?? '',
-    });
+    setForm({ team_name: team.team_name, language: team.language ?? '', region: team.region ?? '', description: team.description ?? '' });
     setEditing(true);
   };
 
@@ -244,11 +251,7 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
         {editing ? (
           <form className="form compact" onSubmit={save}>
             <label>Team name<input required minLength={2} maxLength={60} value={form.team_name} onChange={(e) => setForm({ ...form, team_name: e.target.value })} /></label>
-            <div className="grid2">
-              {TEAM_FIELDS.map(([key, label]) => (
-                <label key={key}>{label}<input maxLength={40} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
-              ))}
-            </div>
+            <TeamOptionFields cat={cat} form={form} setForm={setForm} />
             <label>Description<textarea rows={3} maxLength={1000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
             <div className="row">
               <button className="btn primary">Save details</button>
@@ -261,7 +264,9 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
               <h1>{team.team_name}</h1>
               {viewer.is_owner ? <button type="button" className="btn ghost small" onClick={startEdit}><Icon name="edit" /> Edit details</button> : null}
             </div>
-            <Facts items={TEAM_FIELDS.map(([k, label]) => [label, team[k as keyof Team] as string | null])} />
+            <Facts items={[['Language', team.language], ['Region', team.region],
+              ['Plays', team.competitions.length || team.recruiting_leagues ? <CompetitionList cat={cat} ids={team.competitions} legacy={team.recruiting_leagues} /> : null],
+              ['Recruiting', team.rank_requirements.length || team.legacy_requirement ? <RequirementList cat={cat} list={team.rank_requirements} legacy={team.legacy_requirement} /> : null]]} />
             {team.description ? <p>{team.description}</p> : null}
           </>
         )}
@@ -272,18 +277,24 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
 }
 
 function RecruitingSettings({ team, onChange }: { team: Team; onChange: () => Promise<void> }) {
+  const cat = useCatalogue();
   const [form, setForm] = useState({
-    is_recruiting: team.is_recruiting, recruiting_leagues: team.recruiting_leagues ?? '',
-    roles_needed: team.roles_needed, recruiting_notes: team.recruiting_notes ?? '',
+    is_recruiting: team.is_recruiting, roles_needed: team.roles_needed, recruiting_notes: team.recruiting_notes ?? '',
+    competitions: team.competitions, rank_requirements: team.rank_requirements,
   });
+  // Legacy free text is only replaced once the owner touches the list.
+  const [touched, setTouched] = useState({ competitions: false, rank_requirements: false });
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
+      const { competitions, rank_requirements: reqs, ...rest } = form;
       await api.patch(`/teams/${team.team_id}/recruiting`, {
-        ...form, recruiting_leagues: form.recruiting_leagues || null, recruiting_notes: form.recruiting_notes || null,
+        ...rest, recruiting_notes: form.recruiting_notes || null,
+        ...(touched.competitions || !team.recruiting_leagues ? { competitions } : {}),
+        ...(touched.rank_requirements || !team.legacy_requirement ? { rank_requirements: reqs } : {}),
       });
       setMessage(form.is_recruiting ? 'Your team is listed under Recruiting.' : 'Your team is not listed under Recruiting.');
       await onChange();
@@ -298,8 +309,14 @@ function RecruitingSettings({ team, onChange }: { team: Team; onChange: () => Pr
       <form className="form compact" onSubmit={save}>
         <label className="inline-check"><input type="checkbox" checked={form.is_recruiting} onChange={(e) => setForm({ ...form, is_recruiting: e.target.checked })} />
           Show this team in "Teams looking for players"</label>
-        <label>Leagues you plan to play<input maxLength={300} value={form.recruiting_leagues} placeholder="e.g. ESEA Open, FACEIT League"
-          onChange={(e) => setForm({ ...form, recruiting_leagues: e.target.value })} /></label>
+        <CompetitionPicker cat={cat} value={form.competitions} legacy={touched.competitions ? null : team.recruiting_leagues}
+          onChange={(v) => { setForm({ ...form, competitions: v }); setTouched({ ...touched, competitions: true }); }} />
+        <RequirementsEditor cat={cat} value={form.rank_requirements}
+          onChange={(v) => { setForm({ ...form, rank_requirements: v }); setTouched({ ...touched, rank_requirements: true }); }} />
+        {team.legacy_requirement && !touched.rank_requirements ? (
+          <p className="muted small">Previously entered: “{team.legacy_requirement}”. It's kept until you set requirements above.</p>
+        ) : null}
+        <p className="muted small">Leagues and matchmaking say where the team plans to play; rank requirements say who it's recruiting.</p>
         <fieldset className="role-picker">
           <legend>Roles needed</legend>
           {PLAYER_ROLES.map((r) => (
@@ -366,8 +383,8 @@ function JoinRequests({ teamId }: { teamId: number }) {
 
 function RequestRank({ r }: { r: JoinRequest }) {
   const cat = useCatalogue();
-  if (!r.rank_platform && !r.legacy_platform && !r.legacy_skill_level) return null;
-  return <RankBadge cat={cat} platform={r.rank_platform} rankId={r.rank_id} legacyPlatform={r.legacy_platform} legacySkill={r.legacy_skill_level} />;
+  if (!Object.values(r.ranks).some(Boolean) && !r.legacy_platform && !r.legacy_skill_level) return null;
+  return <PlayerRankList cat={cat} ranks={r.ranks} legacyPlatform={r.legacy_platform} legacySkill={r.legacy_skill_level} />;
 }
 
 // Player search filters, using the same options as the profile editor.
@@ -378,18 +395,10 @@ function PlayerFilters({ value, onChange }: { value: Record<string, string>; onC
     <div className="filter-grid">
       <Combobox label="Language" options={cat?.languages ?? []} value={value.language ?? ''} onChange={(v) => set('language', v)} emptyLabel="Any language" />
       <Combobox label="Region" options={cat?.regions ?? []} value={value.region ?? ''} onChange={(v) => set('region', v)} emptyLabel="Any region" />
-      <label>Platform
-        <select value={value.platform ?? ''} onChange={(e) => onChange({ ...value, platform: e.target.value, rank: '' })}>
-          <option value="">Any platform</option>
-          {(cat?.platforms ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-        </select>
-      </label>
-      <label>Skill
-        <select value={value.rank ?? ''} disabled={!value.platform} onChange={(e) => set('rank', e.target.value)}>
-          <option value="">{value.platform ? 'Any rank' : 'Choose a platform first'}</option>
-          {(cat?.ranks ?? []).filter((r) => r.platform === value.platform).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-        </select>
-      </label>
+      {PLATFORM_IDS.map((p) => (
+        <RankSelect key={p} cat={cat} platform={p} label={`${cat?.platforms.find((x) => x.id === p)?.label ?? p} rank`}
+          emptyLabel="Any" value={value[p] ?? ''} onChange={(v) => set(p, v)} />
+      ))}
     </div>
   );
 }
@@ -447,14 +456,16 @@ function Invites({ teamId }: { teamId: number }) {
       <PlayerFilters value={filters} onChange={setFilters} />
       {players.data?.players.length ? (
         <table className="table compact">
-          <thead><tr><th>Player</th><th>Language</th><th>Region</th><th>Rank</th><th /></tr></thead>
+          <thead><tr><th>Player</th><th>Language</th><th>Region</th>
+            {PLATFORM_IDS.map((p) => <th key={p}>{cat?.platforms.find((x) => x.id === p)?.label ?? p}</th>)}<th /></tr></thead>
           <tbody>
             {players.data.players.map((p) => (
               <tr key={p.user_id}>
-                <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><Link to={`/players/${p.user_id}`}>{p.user_name}</Link></div></td>
+                <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><div><Link to={`/players/${p.user_id}`}>{p.user_name}</Link>
+                  {p.legacy_platform || p.legacy_skill_level ? <div><RankBadge cat={cat} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></div> : null}</div></div></td>
                 <td>{p.language ?? <span className="muted">—</span>}</td>
                 <td>{p.region ?? <span className="muted">—</span>}</td>
-                <td><RankBadge cat={cat} platform={p.rank_platform} rankId={p.rank_id} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></td>
+                {PLATFORM_IDS.map((k) => <td key={k}>{p.ranks[k] ? <RankBadge cat={cat} rankId={p.ranks[k]} /> : null}</td>)}
                 <td className="right">
                   <InviteButton teamId={players.data!.inviting_team?.team_id} userId={p.user_id} status={p.invite_status}
                     canInvite={players.data!.can_invite} onDone={refreshAll} />
@@ -463,7 +474,9 @@ function Invites({ teamId }: { teamId: number }) {
             ))}
           </tbody>
         </table>
-      ) : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
+      ) : null}
+      {players.data?.players.length ? <p className="muted small">Ranks are self-reported. A blank cell means the player hasn't entered that rank.</p> : null}
+      {players.data?.players.length ? null : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
 
       <h3>Invite link</h3>
       <div className="row wrap">

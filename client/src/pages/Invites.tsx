@@ -6,11 +6,14 @@ import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
 import type { ReceivedInvite } from '../lib/types';
 import { Alert, Badge, Loading, Panel } from '../components/ui';
 import { Avatar, Facts } from '../components/People';
+import { RequirementList } from '../components/Recruitment';
+import { useCatalogue } from '../lib/catalogue';
 
 interface MyRequest { request_id: number; team_id: number; team_name: string; status: string; created_at: string }
 
 export function InvitesPage() {
   useDocumentTitle('Invites');
+  const cat = useCatalogue();
   const { refresh, active_team: team } = useAuth();
   const invites = useLoad(() => api.get<{ invites: ReceivedInvite[] }>('/me/invites'), []);
   const requests = useLoad(() => api.get<{ requests: MyRequest[] }>('/me/requests'), []);
@@ -43,7 +46,8 @@ export function InvitesPage() {
             <Avatar name={inv.team.team_name} url={inv.team.logo_url} size={48} />
             <div className="stack tight grow">
               <strong>{inv.team.team_name}</strong>
-              <Facts items={[['Players', inv.team.roster_size], ['Region', inv.team.region], ['Language', inv.team.language], ['Platform', inv.team.platform], ['Skill', inv.team.skill_level]]} />
+              <Facts items={[['Players', inv.team.roster_size], ['Region', inv.team.region], ['Language', inv.team.language],
+                ['Recruiting', inv.team.rank_requirements.length || inv.team.legacy_requirement ? <RequirementList cat={cat} list={inv.team.rank_requirements} legacy={inv.team.legacy_requirement} /> : null]]} />
               <span className="muted small">Expires {formatDateTime(inv.expires_at)}</span>
             </div>
             <div className="row">

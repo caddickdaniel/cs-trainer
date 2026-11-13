@@ -122,9 +122,38 @@ function mapLegacyRank(platformText, skillText) {
   return { platform, rank: null };
 }
 
-const catalogue = () => ({ languages: LANGUAGES, regions: REGIONS, platforms: PLATFORMS, ranks: RANKS });
+// Where a team plans to play (grouped for the multi-select). Add entries
+// here; ids are stored on teams, so never reuse or rename an id.
+const COMPETITIONS = [
+  { id: 'esea-league', label: 'ESEA League (on FACEIT)', group: 'Leagues' },
+  { id: 'ukic-league', label: 'UKIC League', group: 'Leagues' },
+  { id: 'premier', label: 'Premier', group: 'Matchmaking' },
+  { id: 'faceit-mm', label: 'FACEIT Matchmaking', group: 'Matchmaking' },
+  { id: 'esea-mm', label: 'ESEA Matchmaking (legacy)', group: 'Matchmaking' },
+];
+const COMPETITION_IDS = COMPETITIONS.map((c) => c.id);
+
+// Per-platform rank columns on users.
+const RANK_COLUMNS = { premier: 'premier_rank', faceit: 'faceit_rank', esea: 'esea_rank' };
+
+// Position of a band within its platform (lowest first).
+const rankIndex = (id) => {
+  const r = findRank(id);
+  return r ? ranksFor(r.platform).indexOf(r) : -1;
+};
+
+// A team requirement: one platform with an exact band (min = max) or a range.
+function checkRequirement(req) {
+  if (!req || !PLATFORMS.some((p) => p.id === req.platform)) return 'Choose a platform for each requirement';
+  if (!isValidRank(req.platform, req.min) || !isValidRank(req.platform, req.max)) return 'Each requirement needs ranks from its own platform';
+  if (rankIndex(req.min) > rankIndex(req.max)) return 'The lowest rank must not be above the highest rank';
+  return null;
+}
+
+const catalogue = () => ({ languages: LANGUAGES, regions: REGIONS, platforms: PLATFORMS, ranks: RANKS, competitions: COMPETITIONS });
 
 module.exports = {
   LANGUAGES, REGIONS, PLATFORMS, RANKS, PLATFORM_IDS: PLATFORMS.map((p) => p.id),
   ranksFor, findRank, isValidRank, rankForValue, mapLegacyRank, matchOption, catalogue,
+  COMPETITIONS, COMPETITION_IDS, RANK_COLUMNS, rankIndex, checkRequirement,
 };

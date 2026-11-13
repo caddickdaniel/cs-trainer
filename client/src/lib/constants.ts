@@ -49,7 +49,7 @@ export const SHORTCUT_LABEL: Record<ShortcutAction, string> = {
   switch_side: 'Switch between T and CT',
 };
 export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
-  phase_prev: 'ArrowLeft', phase_next: 'ArrowRight', tactic_prev: '[', tactic_next: ']', new_round: 'N', switch_side: 'S',
+  phase_prev: 'ArrowLeft', phase_next: 'ArrowRight', tactic_prev: 'ArrowUp', tactic_next: 'ArrowDown', new_round: 'Home', switch_side: 'End',
 };
 export const PROFILE_LINKS = [
   { key: 'steam_url', label: 'Steam', host: 'steamcommunity.com' },

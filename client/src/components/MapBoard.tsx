@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { findMap, LIMITS, NOTE_SIZE, PLAYER_COLORS, SLOT_COLORS, radarUrl, UTILITY_ICON, type Level } from '../lib/constants';
 import type { Board, Hold, Marker, MarkerKind, Point, Route } from '../lib/types';
 import { PracticeYardMap } from './PracticeYardMap';
+import { landmarksFor } from '../lib/landmarks';
 
 export type Tool = 'select' | 'route' | 'hold' | MarkerKind;
 
@@ -46,15 +47,80 @@ export function throwOrigin(board: Board, owner: Owned): { x: number; y: number;
   return marker ? { x: marker.x, y: marker.y, level: levelOf(marker) } : null;
 }
 
+// Keeps a square board within the window height on desktop, so the map and
+// the controls above it fit on one screen without scrolling. Narrow screens
+// stack and scroll instead.
+export function useFitToViewport<T extends HTMLElement>(reserve = 16) {
+  const ref = useRef<T>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const apply = () => {
+      if (window.innerWidth < 900) { el.style.maxWidth = ''; return; }
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      el.style.maxWidth = `${Math.max(360, Math.floor(window.innerHeight - top - reserve))}px`;
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    if (el.parentElement) ro?.observe(el.parentElement);
+    return () => { window.removeEventListener('resize', apply); ro?.disconnect(); };
+  }, [reserve]);
+  return ref;
+}
+
+// Spawn and bombsite landmarks: a fixed background layer drawn with the radar,
+// never interactive, so clicks fall through to the board below.
+export function MapLandmarks({ map, level }: { map: string; level: Level }) {
+  const points = landmarksFor(map, level);
+  if (!points.length) return null;
+  return (
+    <g className="landmarks" pointerEvents="none" aria-hidden="true" data-landmarks={map}>
+      {points.map((p) => {
+        const cx = p.x * SIZE;
+        const cy = p.y * SIZE;
+        if (p.kind === 'ct' || p.kind === 't') {
+          const r = 26;
+          return (
+            <g key={p.kind} transform={`translate(${cx},${cy})`} data-landmark={p.kind} opacity="0.92">
+              <circle r={r + 3} fill="#000" opacity="0.45" />
+              <image href={`/icons/spawn-${p.kind}.png`} x={-r} y={-r} width={r * 2} height={r * 2} />
+            </g>
+          );
+        }
+        const letter = p.kind.toUpperCase();
+        return (
+          <g key={p.kind} transform={`translate(${cx},${cy})`} data-landmark={p.kind} opacity="0.9">
+            <circle r="25" fill="#111" fillOpacity="0.7" stroke="#e5484d" strokeWidth="4" />
+            <text y="12" textAnchor="middle" fontSize="34" fontWeight="800" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{letter}</text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 // Radar image (or the original schematic) for one map level, in the board's
-// 1000x1000 space. All levels of a map share the same coordinate frame.
-export function MapBackground({ map, level }: { map: string; level: Level }) {
+// 1000x1000 space, with the map's landmarks. All levels of a map share the
+// same coordinate frame.
+export function MapBackground({ map, level, landmarks = true }: { map: string; level: Level; landmarks?: boolean }) {
   const def = findMap(map);
   if (!def || !def.radar) return <PracticeYardMap />;
   return (
     <g aria-hidden="true">
       <rect width={SIZE} height={SIZE} fill="#000" />
       <image href={radarUrl(def.id, level)} x="0" y="0" width={SIZE} height={SIZE} preserveAspectRatio="none" />
+      {landmarks ? <MapLandmarks map={def.id} level={level} /> : null}
+    </g>
+  );
+}
+
+// The bomb carrier's badge, beside their player marker.
+function BombBadge() {
+  return (
+    <g transform="translate(20,-40)" pointerEvents="none" data-bomb-badge="">
+      <rect x="-14" y="-16" width="28" height="32" rx="6" fill="#111" stroke="#e5484d" strokeWidth="2.5" />
+      <image href="/icons/bomb.png" x="-10" y="-13" width="20" height="26" />
     </g>
   );
 }
@@ -125,6 +191,10 @@ interface Props {
   label?: string;
   // Extra SVG drawn above the board (e.g. demo annotations).
   overlay?: ReactNode;
+  // T tactics: the player carrying the bomb (shown as a badge on their marker).
+  bomb?: Owned | null;
+  // Space to keep free under the board when fitting it to the window.
+  fitReserve?: number;
 }
 
 type Drag =
@@ -135,9 +205,10 @@ type Drag =
 
 export function MapBoard({
   board, map, level = 'main', onMarkerActivate, players, onChange, tool = 'select', selectedId = null, onSelect,
-  activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay,
+  activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay, bomb = null, fitReserve = 16,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const frameRef = useFitToViewport<HTMLDivElement>(fitReserve);
   const [drag, setDrag] = useState<Drag | null>(null);
   const editable = Boolean(onChange);
   const holds = boardHolds(board);
@@ -268,7 +339,7 @@ export function MapBoard({
 
   // Dotted line from where a player throws (route end or marker) to each of
   // their utility markers. Drawn only when both ends are on the visible floor.
-  const connectors = board.markers.filter((m) => UTILITY_KINDS.includes(m.kind) && ownerKey(m) && levelOf(m) === level)
+  const connectors = board.markers.filter((m) => UTILITY_KINDS.includes(m.kind) && ownerKey(m) && levelOf(m) === level && !m.reference)
     .map((m) => {
       const from = throwOrigin(board, m);
       if (!from || from.level !== level) return null;
@@ -355,7 +426,7 @@ export function MapBoard({
     }
     const holdTarget = editable && tool === 'hold' && m.kind === 'player';
     return (
-      <g key={m.id} transform={`translate(${cx},${cy})`} opacity={dim(m) ? 0.3 : 1}
+      <g key={m.id} transform={`translate(${cx},${cy})`} opacity={dim(m) ? 0.3 : m.reference ? 0.6 : 1}
         style={{ cursor: editable && tool === 'select' ? 'grab' : holdTarget ? 'crosshair' : activatable ? 'pointer' : undefined }} data-marker-id={m.id}
         role={activatable ? 'button' : undefined} tabIndex={activatable ? 0 : undefined}
         aria-label={activatable ? `Show lineup for ${m.label || m.kind}` : undefined}
@@ -378,6 +449,8 @@ export function MapBoard({
         })() : null}
         {selected && m.kind !== 'note' ? <circle r={ring} fill="none" stroke="#fff" strokeWidth="3" strokeDasharray="8 6" /> : null}
         {shape}
+        {m.kind === 'player' && bomb && sameOwner(m, bomb) ? <BombBadge /> : null}
+        {m.reference ? <text y={m.kind === 'smoke' ? -50 : -30} textAnchor="middle" fontSize="15" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">ref</text> : null}
         {hasImages ? (
           <g transform="translate(24,-30)" pointerEvents="none">
             <rect x="-13" y="-10" width="26" height="20" rx="4" fill="#111" stroke="#fff" strokeWidth="2" />
@@ -394,7 +467,7 @@ export function MapBoard({
 
   const areaKinds = ['smoke', 'molly'];
   return (
-    <div className="board-frame">
+    <div className="board-frame" ref={frameRef}>
       <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} preserveAspectRatio="xMidYMid meet" role="img"
         aria-label={label} tabIndex={editable ? 0 : undefined} className={`board${editable ? ' editable' : ''} tool-${tool}`}
         onPointerDown={handleBackgroundDown} onPointerMove={handleMove} onKeyDown={handleKey}
