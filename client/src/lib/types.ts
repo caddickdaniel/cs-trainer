@@ -395,6 +395,12 @@ export interface ReplayEvent {
   end_tick?: number;
   // Fire: molotov (T) or incendiary (CT).
   variant?: 'molotov' | 'incendiary';
+  // Grenades (replay version 3+): when the projectile was thrown, where the
+  // thrower stood then, and the recorded projectile path up to detonation
+  // (ticks with radar x/y and floor, l = 1 for the lower radar).
+  throw_tick?: number;
+  from?: { x: number; y: number; level: Level };
+  trail?: { t: number[]; x: number[]; y: number[]; l: number[] };
   attacker?: number | null;
   victim?: number | null;
   player?: number | null;

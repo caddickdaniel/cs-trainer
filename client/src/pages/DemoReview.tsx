@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { LEVEL_LABEL, mapLevels, mapName, type Level } from '../lib/constants';
 import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
-import { BLAST_SHOW_TICKS, clockTick, FLASH_SHOW_TICKS, frameAt, recordedAt, roundTime, RECORDED_LABEL, type Clock } from '../lib/replay';
+import { BLAST_SHOW_TICKS, clockTick, FLASH_SHOW_TICKS, flightsAt, frameAt, recordedAt, roundTime, RECORDED_LABEL, timelineRows, type Clock } from '../lib/replay';
 import { isTyping } from '../lib/shortcuts';
 import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayEvent, ReplayRound } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
-import { MapBackground, UtilityGlyph, useFitToViewport } from '../components/MapBoard';
+import { MapBackground, UtilityGlyph } from '../components/MapBoard';
 import { UTILITY_ICON } from '../lib/constants';
 
 const SIZE = 1000;
@@ -340,8 +340,102 @@ export function DemoPage() {
   return <Replay demo={demo} teamId={team.team_id} canControlReview={detail.data.can_control_review} />;
 }
 
+// Desktop replay layout: annotation tools | square radar with the round
+// timeline above it | rounds and players. The radar takes the largest square
+// that fits the window height and leaves the right pane its width; the right
+// pane sits directly beside the radar. Below the breakpoint everything stacks.
+const REPLAY_COLS = { tools: 150, side: 320, minSide: 280, gap: 16, stackBelow: 1101 };
+function useReplayColumns() {
+  const [layout, setLayout] = useState<HTMLDivElement | null>(null);
+  const [size, setSize] = useState<{ board: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!layout) return undefined;
+    const measure = () => {
+      if (window.innerWidth < REPLAY_COLS.stackBelow) { setSize(null); return; }
+      const frame = layout.querySelector('.replay-centre .board-frame');
+      const top = (frame ?? layout).getBoundingClientRect().top + window.scrollY;
+      const layoutTop = layout.getBoundingClientRect().top + window.scrollY;
+      const byWidth = layout.clientWidth - REPLAY_COLS.tools - REPLAY_COLS.side - REPLAY_COLS.gap * 2;
+      const board = Math.max(320, Math.floor(Math.min(byWidth, window.innerHeight - top - 16)));
+      // The side panes scroll inside the height of the controls, timeline and radar.
+      const height = Math.max(320, Math.floor(top - layoutTop + board));
+      setSize((s) => (s && s.board === board && s.height === height ? s : { board, height }));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    // The timeline grows when a round's events load: watch everything above the radar too.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(layout);
+    layout.querySelectorAll('.replay-centre > :not(.board-frame)').forEach((el) => ro?.observe(el));
+    return () => { window.removeEventListener('resize', measure); ro?.disconnect(); };
+  }, [layout]);
+  const style = size == null ? undefined : {
+    gridTemplateColumns: `${REPLAY_COLS.tools}px ${size.board}px minmax(${REPLAY_COLS.minSide}px, ${REPLAY_COLS.side}px)`,
+    ['--replay-height' as string]: `${size.height}px`,
+  };
+  return { setLayout, style };
+}
+
+function TimelineGlyph({ ev }: { ev: ReplayEvent }) {
+  if (ev.type === 'kill') return <span className="tl-glyph kill"><Icon name="skull" size={14} /></span>;
+  if (ev.type === 'plant') return <span className="tl-glyph plant"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
+  if (ev.type === 'explode') return <span className="tl-glyph explode"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
+  if (ev.type === 'defuse') return <span className="tl-glyph defuse"><Icon name="defuse" size={13} /></span>;
+  const kind = ev.type === 'fire' ? 'molly' : ev.type;
+  return <span className={`tl-glyph util ${ev.type}`}><img src={UTILITY_ICON[kind]} alt="" width="13" height="13" /></span>;
+}
+
+// Round timeline across the centre pane, from the end of freeze time (the
+// round clock's 0:00) to the end of the round: an icon above each event's
+// moment (proportional to elapsed round time), stacked in rows where events are
+// close, details on hover or keyboard focus, and the playback slider below.
+const TL_ICON = 18;
+function EventTimeline({ info, events, annotations, tick, canControl, describe, onSeek, onJump }: {
+  info: { start_tick: number; end_tick: number }; events: ReplayEvent[]; annotations: Annotation[]; tick: number; canControl: boolean;
+  describe: (ev: ReplayEvent) => string; onSeek: (t: number) => void; onJump: (ev: ReplayEvent) => void;
+}) {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(800);
+  useLayoutEffect(() => {
+    if (!el) return undefined;
+    const measure = () => setWidth(el.clientWidth || 800);
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [el]);
+  const span = info.end_tick - info.start_tick || 1;
+  const frac = (t: number) => Math.min(1, Math.max(0, (t - info.start_tick) / span));
+  const rows = timelineRows(events.map((ev) => frac(ev.tick) * width), TL_ICON + 2);
+  const rowCount = Math.max(1, ...rows.map((r) => r + 1));
+  return (
+    <div className="event-timeline" ref={setEl}>
+      <div className="tl-icons" style={{ height: rowCount * (TL_ICON + 2) }} role="list" aria-label="Round events">
+        {events.map((ev, i) => {
+          const f = frac(ev.tick);
+          const text = describe(ev);
+          return (
+            <button key={`${ev.type}${ev.tick}-${i}`} type="button" role="listitem" className={`tl-ev ${ev.type}${ev.tick <= tick ? ' past' : ''}`}
+              style={{ left: `${f * 100}%`, top: rows[i] * (TL_ICON + 2) }} aria-label={text} aria-disabled={!canControl || undefined}
+              data-event={ev.type} onClick={() => { if (canControl) onJump(ev); }}>
+              <TimelineGlyph ev={ev} />
+              <span className={`tl-tip${f < 0.2 ? ' from-left' : f > 0.8 ? ' from-right' : ''}`} aria-hidden="true">{text}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="tl-track">
+        {annotations.map((a) => <span key={a.annotation_id} className="tl-note" style={{ left: `${frac(a.tick) * 100}%` }} title="Team annotation" />)}
+        <input type="range" aria-label="Playback position" min={info.start_tick} max={info.end_tick} step={1} value={Math.round(tick)} disabled={!canControl}
+          style={{ ['--progress' as string]: `${frac(tick) * 100}%` }} onChange={(e) => onSeek(Number(e.target.value))} />
+      </div>
+    </div>
+  );
+}
+
 type Mode = 'solo' | 'control' | 'follow';
-type Tool = 'none' | 'draw' | 'text' | 'utility';
+type Tool = 'none' | 'draw' | 'text' | UtilityKind;
+const isUtilityTool = (t: Tool): t is UtilityKind => UTILITY_KINDS.some(([k]) => k === t);
 
 function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: number; canControlReview: boolean }) {
   const { user } = useAuth();
@@ -374,8 +468,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const levels = mapLevels(demo.map);
   const [level, setLevel] = useState<Level>('main');
   const [tool, setTool] = useState<Tool>('none');
-  // Utility tool: which grenade to place; moving: the utility marker that the next map click moves.
-  const [utilityKind, setUtilityKind] = useState<UtilityKind>('smoke');
+  // moving: the utility marker that the next map click moves.
   // Recorded utility from the demo (each viewer can hide it; it is derived
   // from the shared playback position, so everyone in a live review sees the same).
   const [showRecorded, setShowRecorded] = useState(true);
@@ -385,8 +478,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
-  // Leaves room for the annotation toolbar under the board.
-  const frameRef = useFitToViewport<HTMLDivElement>(64);
+  const { setLayout, style: layoutStyle } = useReplayColumns();
 
   // Personal/team annotations outside a live review.
   const notes = useLoad(
@@ -529,8 +621,8 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     if (tool === 'none') return;
     const p = toPoint(e);
     if (!p) return;
-    if (tool === 'utility') {
-      saveAnnotation({ kind: 'utility', data: { x: p.x, y: p.y, utility: utilityKind } });
+    if (isUtilityTool(tool)) {
+      saveAnnotation({ kind: 'utility', data: { x: p.x, y: p.y, utility: tool } });
       return;
     }
     if (tool === 'text') {
@@ -564,11 +656,33 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const onLevel = (ev: ReplayEvent) => ev.x != null && ev.y != null && (ev.level ?? 'main') === level;
   const who = (ev: ReplayEvent) => (ev.player != null ? players.get(ev.player) ?? `Player ${ev.player + 1}` : null);
   const secs = (ticks: number) => Math.max(0, Math.round(ticks / tickrate));
-  const span = info.end_tick - info.start_tick || 1;
-  const pct = (t: number) => `${((t - info.start_tick) / span) * 100}%`;
+  const flights = round && showRecorded ? flightsAt(round.events, tick) : [];
+  const utilityName = (ev: ReplayEvent) => (ev.type === 'fire' ? (ev.variant === 'incendiary' ? 'Incendiary' : 'Molotov') : RECORDED_LABEL[ev.type] ?? ev.type);
+  // Event details for the timeline (hover / focus) and screen readers.
+  const describe = (ev: ReplayEvent) => {
+    const at = roundTime(info, ev.tick, tickrate);
+    if (ev.type === 'kill') {
+      return `${at} Kill: ${ev.attacker != null ? players.get(ev.attacker) ?? '?' : 'World'} killed ${ev.victim != null ? players.get(ev.victim) ?? '?' : '?'}${ev.weapon ? ` (${ev.weapon}${ev.headshot ? ', headshot' : ''})` : ''}`;
+    }
+    if (ev.type === 'plant' || ev.type === 'defuse') return `${at} ${RECORDED_LABEL[ev.type]}${who(ev) ? ` by ${who(ev)}` : ''}`;
+    if (ev.type === 'explode') return `${at} Bomb exploded`;
+    const parts = [`${at} ${utilityName(ev)}${who(ev) ? ` thrown by ${who(ev)}` : ''}`];
+    if (ev.throw_tick != null) parts.push(`thrown at ${roundTime(info, ev.throw_tick, tickrate)}, ${(Math.max(0, ev.tick - ev.throw_tick) / tickrate).toFixed(1)} s in the air`);
+    if (ev.end_tick != null) parts.push(`lasts ${secs(ev.end_tick - ev.tick)} s`);
+    if (ev.x == null) parts.push('no position recorded');
+    return parts.join(', ');
+  };
+  const timelineEvents = round ? round.events.filter((ev) => ev.type !== 'round_end' && (showRecorded || !RECORDED_UTILITY.includes(ev.type))) : [];
+  const jump = (ev: ReplayEvent) => control.seek(Math.max(info.start_tick, Math.min(ev.throw_tick ?? ev.tick, ev.tick - 2 * tickrate)));
+  const annotationTools: { id: Tool; label: string; icon: ReactNode }[] = [
+    { id: 'none', label: 'View', icon: <Icon name="select" /> },
+    { id: 'draw', label: 'Draw', icon: <Icon name="pen" /> },
+    { id: 'text', label: 'Text', icon: <Icon name="text" /> },
+    ...UTILITY_KINDS.map(([k, label]) => ({ id: k as Tool, label, icon: <img src={UTILITY_ICON[k]} alt="" width="18" height="18" /> })),
+  ];
 
   return (
-    <div className="stack">
+    <div className="stack replay-page">
       <div className="page-head">
         <div>
           <p className="eyebrow"><Link to="/demos">Demo Review</Link></p>
@@ -599,41 +713,58 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
       ) : null}
       <Alert>{error ?? roundError}</Alert>
 
-      <div className="replay-layout">
-        <div className="stack">
-          <div className="row wrap space">
-            <div className="replay-controls">
-              <button type="button" className="btn primary" disabled={!canControl || busy} onClick={toggle} aria-label={clock.playing && !atEnd ? 'Pause' : 'Play'}>
-                <Icon name={clock.playing && !atEnd ? 'pause' : 'play'} /> {clock.playing && !atEnd ? 'Pause' : atEnd ? 'Replay' : 'Play'}
-              </button>
-              <span className="big" aria-live="off">{roundTime(info, tick, tickrate)}</span>
-              <label className="inline">Speed
-                <select value={clock.speed} disabled={!canControl || busy} onChange={(e) => control.speed(Number(e.target.value))}>
-                  {SPEEDS.map((s) => <option key={s} value={s}>{s}×</option>)}
-                </select>
-              </label>
-            </div>
-            <label className="inline-check small" title="Smokes, flashes, HEs, molotovs, plants and defusals recorded in the demo">
-              <input type="checkbox" checked={showRecorded} onChange={(e) => setShowRecorded(e.target.checked)} /> Recorded utility
-            </label>
-            {levels.length > 1 ? (
-              <div className="segmented" role="group" aria-label="Radar floor">
-                {levels.map((l) => <button key={l} type="button" className={level === l ? 'on' : ''} aria-pressed={level === l} onClick={() => setLevel(l)}>{LEVEL_LABEL[l]}</button>)}
+      <div className={`replay-layout${layoutStyle ? '' : ' stacked'}`} ref={setLayout} style={layoutStyle}>
+        <aside className="tool-rail replay-tools" aria-label="Annotation tools and view options">
+          {canAnnotate ? (
+            <>
+              <div className="toolbar vertical" role="toolbar" aria-label="Annotation tools" aria-orientation="vertical">
+                {annotationTools.map((t) => (
+                  <button key={t.id} type="button" className={tool === t.id ? 'on' : ''} aria-pressed={tool === t.id} data-tool={t.id}
+                    onClick={() => setTool(t.id)} title={t.id === 'none' ? 'View only (no annotation)' : `${t.label}: click the map to add it at the current moment`}>
+                    <span className="tool-icon" aria-hidden="true">{t.icon}</span>{t.label}
+                  </button>
+                ))}
               </div>
-            ) : null}
+              {tool === 'text' ? <input aria-label="Annotation text" maxLength={200} placeholder="Type, then click the map" value={text} onChange={(e) => setText(e.target.value)} /> : null}
+              {moving != null ? <span className="muted small">Click the map to move the marker. <button type="button" className="btn ghost small" onClick={() => setMoving(null)}>Cancel</button></span> : null}
+              <p className="muted small hint">{tool === 'none' ? 'Choose a tool to annotate.' : 'Click the map.'} Annotations are saved at {roundTime(info, tick, tickrate)} and appear from then on.</p>
+              {mode === 'control' ? (
+                <button type="button" className="btn ghost small danger" disabled={busy || !annotations.length}
+                  onClick={() => { if (window.confirm('Clear the live drawings for this round?')) sendLive({ action: 'clear' }); }}>Clear round</button>
+              ) : null}
+            </>
+          ) : <p className="muted small hint">Following the IGL: annotation tools are with them.</p>}
+          {levels.length > 1 ? (
+            <div className="segmented" role="group" aria-label="Radar floor">
+              {levels.map((l) => <button key={l} type="button" className={level === l ? 'on' : ''} aria-pressed={level === l} onClick={() => setLevel(l)}>{LEVEL_LABEL[l]}</button>)}
+            </div>
+          ) : null}
+          <label className="inline-check small" title="Smokes, flashes, HEs, molotovs, plants and defusals recorded in the demo">
+            <input type="checkbox" checked={showRecorded} onChange={(e) => setShowRecorded(e.target.checked)} /> Recorded utility
+          </label>
+          <div className="replay-legend small muted">
+            <span><span className="legend-swatch recorded" aria-hidden="true" /> Recorded in the demo (dashed, thrower's side colour)</span>
+            <span><span className="legend-swatch flight" aria-hidden="true" /> Grenade in the air (recorded path)</span>
+            <span><span className="legend-swatch annotation" aria-hidden="true" /> Team annotations (solid yellow)</span>
           </div>
-          <div className="timeline">
-            {round ? round.events.filter((ev) => ev.type !== 'round_end' && (showRecorded || !RECORDED_UTILITY.includes(ev.type))).map((ev, i) => (
-              <button key={i} type="button" className={`tl-mark ${ev.type}`} style={{ left: pct(ev.tick) }} disabled={!canControl}
-                title={`${roundTime(info, ev.tick, tickrate)} ${RECORDED_LABEL[ev.type] ?? ev.type}${who(ev) ? ` · ${who(ev)}` : ''}`}
-                aria-label={`Jump to ${RECORDED_LABEL[ev.type] ?? ev.type} at ${roundTime(info, ev.tick, tickrate)}`}
-                onClick={() => control.seek(Math.max(info.start_tick, ev.tick - 2 * tickrate))} />
-            )) : null}
-            {annotations.map((a) => <span key={a.annotation_id} className="tl-mark annotation" style={{ left: pct(a.tick) }} />)}
-            <input type="range" aria-label="Playback position" min={info.start_tick} max={info.end_tick} step={1} value={Math.round(tick)} disabled={!canControl}
-              onChange={(e) => control.seek(Number(e.target.value))} />
+        </aside>
+
+        <div className="replay-centre">
+          <div className="replay-controls">
+            <button type="button" className="btn primary" disabled={!canControl || busy} onClick={toggle} aria-label={clock.playing && !atEnd ? 'Pause' : 'Play'}>
+              <Icon name={clock.playing && !atEnd ? 'pause' : 'play'} /> {clock.playing && !atEnd ? 'Pause' : atEnd ? 'Replay' : 'Play'}
+            </button>
+            <span className="big" aria-live="off">{roundTime(info, tick, tickrate)}</span>
+            <label className="inline">Speed
+              <select value={clock.speed} disabled={!canControl || busy} onChange={(e) => control.speed(Number(e.target.value))}>
+                {SPEEDS.map((s) => <option key={s} value={s}>{s}×</option>)}
+              </select>
+            </label>
+            <span className="muted small">Round {roundNumber}</span>
           </div>
-          <div className="board-frame" ref={frameRef}>
+          <EventTimeline info={{ start_tick: info.freeze_end_tick ?? info.start_tick, end_tick: info.end_tick }} events={timelineEvents} annotations={annotations} tick={tick} canControl={canControl}
+            describe={describe} onSeek={control.seek} onJump={jump} />
+          <div className="board-frame">
             <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} className={`board${tool !== 'none' && canAnnotate ? ' editable' : ''}`} role="img"
               aria-label={`Replay of round ${roundNumber}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
               style={{ cursor: canAnnotate && tool !== 'none' ? 'crosshair' : undefined, touchAction: tool !== 'none' ? 'none' : undefined }}
@@ -688,6 +819,28 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                       </g>
                     );
                   })() : null}
+                  {/* Grenades in the air: recorded path (dotted, thrower's side colour), where the thrower stood, and the projectile now. */}
+                  {flights.map((fl) => {
+                    const c = recColor(fl.event);
+                    const from = fl.event.from;
+                    const head = fl.head;
+                    return (
+                      <g key={`air${fl.event.type}${fl.event.tick}-${fl.event.throw_tick}`} data-recorded="flight" data-flight={fl.event.type}>
+                        {from && from.level === level ? (
+                          <circle cx={from.x * SIZE} cy={from.y * SIZE} r="13" fill="none" stroke={c} strokeWidth="2" strokeDasharray="2 3" data-thrown-from="" />
+                        ) : null}
+                        {fl.runs.map((run, i) => (
+                          <polyline key={i} points={run.points.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')} fill="none" stroke={c}
+                            strokeWidth="3" strokeDasharray="0.5 7" strokeLinecap="round" opacity={run.level === level ? 1 : 0.25} />
+                        ))}
+                        <g transform={`translate(${head.x * SIZE},${head.y * SIZE})`} opacity={head.level === level ? 1 : 0.3}>
+                          <circle r="6" fill={c} stroke="#111" strokeWidth="2" />
+                          <text y="-10" textAnchor="middle" fontSize="11" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">
+                            {utilityName(fl.event)}{who(fl.event) ? ` · ${who(fl.event)}` : ''}</text>
+                        </g>
+                      </g>
+                    );
+                  })}
                 </g>
               ) : null}
               {round ? round.roster.map((p, i) => {
@@ -728,37 +881,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             </svg>
           </div>
           {!round && !roundError ? <p className="muted small">Loading round…</p> : null}
-          <p className="replay-legend small muted">
-            <span><span className="legend-swatch recorded" aria-hidden="true" /> Recorded in the demo (dashed, thrower's side colour)</span>
-            <span><span className="legend-swatch annotation" aria-hidden="true" /> Team annotations (solid yellow)</span>
-          </p>
-          {canAnnotate ? (
-            <div className="toolbar" role="toolbar" aria-label="Annotation tools">
-              <button type="button" className={tool === 'none' ? 'on' : ''} aria-pressed={tool === 'none'} onClick={() => setTool('none')}><Icon name="select" /> View</button>
-              <button type="button" className={tool === 'draw' ? 'on' : ''} aria-pressed={tool === 'draw'} onClick={() => setTool('draw')}><Icon name="pen" /> Draw</button>
-              <button type="button" className={tool === 'text' ? 'on' : ''} aria-pressed={tool === 'text'} onClick={() => setTool('text')}><Icon name="text" /> Text</button>
-              <button type="button" className={tool === 'utility' ? 'on' : ''} aria-pressed={tool === 'utility'} onClick={() => setTool('utility')}>
-                <img src={UTILITY_ICON.smoke} alt="" width="16" height="16" /> Utility</button>
-              {tool === 'utility' ? (
-                <span className="segmented" role="group" aria-label="Utility type">
-                  {UTILITY_KINDS.map(([k, label]) => (
-                    <button key={k} type="button" className={utilityKind === k ? 'on' : ''} aria-pressed={utilityKind === k} onClick={() => setUtilityKind(k)}>
-                      <img src={UTILITY_ICON[k]} alt="" width="14" height="14" /> {label}</button>
-                  ))}
-                </span>
-              ) : null}
-              {moving != null ? <span className="muted small">Click the map to move the marker. <button type="button" className="btn ghost small" onClick={() => setMoving(null)}>Cancel</button></span> : null}
-              {tool === 'text' ? <input aria-label="Annotation text" maxLength={200} placeholder="Type, then click the map" value={text} onChange={(e) => setText(e.target.value)} /> : null}
-              {mode === 'control' ? (
-                <button type="button" className="btn ghost small danger" disabled={busy || !annotations.length}
-                  onClick={() => { if (window.confirm('Clear the live drawings for this round?')) sendLive({ action: 'clear' }); }}>Clear round</button>
-              ) : null}
-              <span className="muted small">Annotations are saved at the current playback position ({roundTime(info, tick, tickrate)}) and appear from then on.</span>
-            </div>
-          ) : null}
         </div>
 
-        <div className="stack">
+        <aside className="replay-side" aria-label="Rounds, players and events">
           <Panel title="Rounds">
             <div className="round-strip">
               {demo.rounds.map((r) => (
@@ -784,22 +909,22 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               </div>
             </Panel>
           ) : null}
-          <Panel title="Timeline">
+          <Panel title="Events">
             {round ? (
               <ul className="event-feed">
                 {round.events.filter((ev) => showRecorded || !RECORDED_UTILITY.includes(ev.type)).map((ev, i) => (
                   <li key={i}>
-                    <button type="button" className={ev.tick <= tick ? 'past' : ''} disabled={!canControl}
-                      onClick={() => control.seek(Math.max(info.start_tick, ev.tick - 2 * tickrate))}>
+                    <button type="button" className={ev.tick <= tick ? 'past' : ''} disabled={!canControl} onClick={() => jump(ev)}>
                       <span className="muted">{roundTime(info, ev.tick, tickrate)}</span>{' '}
                       {ev.type === 'kill' ? <>{ev.attacker != null ? players.get(ev.attacker) : 'World'} ✕ {ev.victim != null ? players.get(ev.victim) : '?'} <span className="muted">({ev.weapon}{ev.headshot ? ', HS' : ''})</span></>
                         : ev.type === 'plant' ? <>Bomb planted{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
                           : ev.type === 'defuse' ? <>Bomb defused{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
                             : ev.type === 'explode' ? <>Bomb exploded{ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
                               : RECORDED_UTILITY.includes(ev.type) ? (
-                                <><span className={`rec-dot ${ev.type}`} aria-hidden="true" />{ev.type === 'fire' ? (ev.variant === 'incendiary' ? 'Incendiary' : 'Molotov') : RECORDED_LABEL[ev.type]}
-                                  {who(ev) ? ` · ${who(ev)}` : ''}
-                                  {ev.end_tick != null ? <span className="muted"> ({secs(ev.end_tick - ev.tick)} s)</span> : null}
+                                <><span className={`rec-dot ${ev.type}`} aria-hidden="true" />{utilityName(ev)}
+                                  {who(ev) ? <> · <strong>{who(ev)}</strong></> : ''}
+                                  {ev.throw_tick != null ? <span className="muted"> (thrown {roundTime(info, ev.throw_tick, tickrate)}{ev.end_tick != null ? `, ${secs(ev.end_tick - ev.tick)} s` : ''})</span>
+                                    : ev.end_tick != null ? <span className="muted"> ({secs(ev.end_tick - ev.tick)} s)</span> : null}
                                   {ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
                               )
                               : <>Round end: {ev.winner} win{ev.reason ? ` (${ev.reason.replace(/_/g, ' ')})` : ''}</>}
@@ -832,9 +957,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   </li>
                 ))}
               </ul>
-            ) : <p className="muted small">None yet.{canAnnotate ? ' Use Draw or Text to add one at the current moment.' : ''}</p>}
+            ) : <p className="muted small">None yet.{canAnnotate ? ' Choose a tool on the left to add one at the current moment.' : ''}</p>}
           </Panel>
-        </div>
+        </aside>
       </div>
     </div>
   );

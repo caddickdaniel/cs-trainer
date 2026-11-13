@@ -660,7 +660,7 @@ Superseded in Phase 6: every landmark that has an outline on its radar is now ce
 
 - **Team page.** Owners get **Delete team** next to **Edit details**. It opens a dialog that names the team, lists what is deleted (tactics, lineups, calendar, community listings, demos and reviews, invites, Game Mode history) and only enables the final button once the owner types `DELETE`. The server's owner check and the existing deletion flow are unchanged.
 - **Invite Players.** Shorter rank cells: Premier shows the badge and the band (`20,000–22,499`), FACEIT and ESEA show the badge and the platform name. Each badge's accessible label is the full rank ("FACEIT Level 7").
-- **Radar landmarks** (`client/src/lib/landmarks.ts`, used by every radar view). A/B are centred in the orange bombsite outlines and T/CT in the green spawn outlines, measured from the radar PNGs and checked by eye on every layer. Nuke's B is on the lower radar; Vertigo's T spawn is on the lower radar. The Overpass and Train radars have no outlines, so their four landmarks stay placed from the map layout.
+- **Radar landmarks** (`client/src/lib/landmarks.ts`, used by every radar view). A/B are centred in the orange bombsite outlines and T/CT in the green spawn outlines, measured from the radar PNGs and checked by eye on every layer. Nuke's B is on the lower radar; Vertigo's T spawn is on the lower radar. The Overpass and Train radars have no outlines, so their four landmarks stay placed from the map layout (superseded in Phase 7 by supplied coordinates for Overpass A/B/T/CT and Train A/B/CT).
 - **Tactic editor.**
   - Layout: tool rail | square board | draggable divider | right-hand pane. The board takes the largest square that fits the window, and dragging the divider (or arrow keys on it; double-click resets) shrinks it to give Player Instructions more room. Minimum widths are 320 px (board) and 340 px (pane). The split is remembered per browser, and pointer accuracy is unaffected. Below 1101 px the layout stacks.
   - The Utility and Reference URL text boxes are gone. Values saved by older versions are shown read-only, kept on save, and can be removed.
@@ -773,6 +773,33 @@ npm run dist                                       # NSIS installer + portable .
   - Has a running Game Mode match (round 2).
   - The IGL role was moved to Blitz and back to Sable during the hotkey test.
 - **Kestrel Verify.** Tactic 23 now has in-game colours (Kestrel is purple), and a Game Mode match is still running (round 1).
+
+## Phase 7
+
+### What was added
+
+- **Rank requirements read as one range** (`client/src/lib/rankRange.ts`, used by `RequirementBadge`). A requirement spanning several bands shows its badge once (two badges only when the ends look different, e.g. Level 7 – Level 10), the platform name once and one range from the first band's minimum to the last band's maximum: FACEIT Level 10 (2,001–2,250) to Level 10 (2,251–2,500) reads **[10] FACEIT (2,001–2,500)**. Open-ended bands read `3,001+`; FACEIT Challenger is named and never given numbers. The stored requirement still holds the original band ids, so editing and filtering are unchanged. The team form shows "Shown to players as …" under each requirement row.
+- **Teams Looking for Players.** Each card has the picture, name and roster size at the top, then labelled groups (Rank requirements, Roles needed, Language, Region, Plans to play) that wrap long values and badges, and **Details / Request invite** pinned to the bottom of the card.
+- **Create Tactic keeps a draft per map** (`client/src/lib/mapDrafts.ts`). The first visit to a map opens a clean board with one phase; switching back restores that map's phases, positions, routes, holds, notes, instructions and utility (with floors). Name, side, economy, buy lists, bomb carrier and colours carry over. A note in the editor bar names the maps with kept drafts. **Save tactic** sends only the selected map; the other drafts are dropped once the save succeeds and kept if it fails. Editing a saved tactic works as before (the board moves with a map change).
+- **Defuse kit icon** (`/icons/defuse-kit.png`, `KitIcon`) next to the "Defuse kit" / "Kit" labels in the editor's CT buy list, the viewer's buy lists and Game Mode's "Your buy" and team utility. The image hides itself if the file is missing, leaving the label.
+- **Radar landmarks.** The supplied percentages (top-left origin, divided by 100) for Mirage A/B, Inferno A/B, Overpass A/B/T/CT and Train A/B/CT, source `supplied` in `landmarks.ts`. All stay on the main radar. Other landmarks are unchanged (Train T is still placed from the layout).
+- **Demo Review layout.** Annotation tools on the left (View, Draw, Text, Smoke, Flash, HE, Molotov, plus floor, recorded-utility toggle and legend); the playback controls, round timeline and square radar in the centre; Rounds, Players, Events and annotations directly beside the radar. The radar is sized to the window; the side panes scroll inside the radar's height. Below 1101 px the areas stack (radar first).
+- **Round timeline.** Spans the centre pane from the end of freeze time (0:00) to the end of the round. Each event has an icon above its moment: skull for kills, the utility symbols for grenades, the C4 for plants (orange for explosions) and wire cutters for defusals. Close events stack in up to three rows. Hover or focus shows the details (time, player, thrown at, flight time, duration); clicking jumps there (to the throw for grenades). Team annotations are yellow ticks under the slider.
+- **Grenade flights** (replay version 3). Each grenade records its throw tick, where the thrower stood at the throw, and the projectile path up to detonation. While it is in the air the replay draws a dotted line in the thrower's side colour, a ring where it was thrown from and the projectile with "Smoke · HeavyGod". At detonation the path clears and the smoke or fire (with its countdown) takes over. Floors are handled like players: path segments on the other floor are faded. All of it is derived from the playback tick, so seeking, rewinding, switching rounds, following a live review and reconnecting show the same state.
+
+### What the demo parser supplies (trajectories)
+
+From `spirit-vs-g2-m3-ancient.dem` (demoparser2 0.42.2), using `parseGrenades(file, null, false)` (projectiles only):
+- **Samples.** Every tick, for every smoke, flash, HE and molotov/incendiary projectile, with position and thrower. The replay keeps every 4th tick plus the detonation point (15,866 points for the match).
+- **Linking.** Smokes, flashes and HEs detonate as the same entity as their projectile. A fire starts as a new entity, so it is matched to the thrower's molotov whose flight ends as the fire starts (within 8 ticks). Entity ids are reused during a match, so a gap in ticks starts a new flight.
+- **Coverage.** All 391 grenades (116 smokes, 115 flashes, 69 HEs, 91 fires) have a path, a throw tick and the thrower's position. Flight times: flashes and HEs 1.63 s (fuse), fires 0.6–2.0 s, smokes 0.4–7.6 s (until they stop rolling). No path crosses to Ancient's lower floor (it has none).
+- **Effect timings.** Smokes last 22.06 s (8.9 s minimum where the round ended first), fires 7.02 s (0.8 s minimum), from the recorded expiry events.
+- **Limitations.** Projectile samples exist only in CS2 demos the parser can read this way; a demo without them keeps thrower, position and duration and simply has no path (no estimated line is drawn). The thrower position is the nearest 8-tick player sample at or before the throw. Decoys are not shown.
+- **Cost.** Parsing the Ancient demo takes 2.3 s instead of 1.4 s, peaks at 1.05 GB instead of 0.78 GB and stores 4.5 MB of round data instead of 4.2 MB.
+
+### Upgrading existing demos
+
+No migration. `REPLAY_VERSION` is 3, so the demo worker re-parses ready demos in the background (or `npm run demos:reprocess`), replacing round data in place by round number. Annotations and reviews are kept.
 
 ## Contact
 

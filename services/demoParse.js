@@ -25,7 +25,14 @@ const FIRE_TICKS = 7 * TICKRATE;
 // their round data is replaced in place, so annotations are kept.
 // 1: positions, kills, plants/defusals. 2: recorded utility (smoke, flash,
 // HE, molotov/incendiary) with effect durations, and the explosion position.
-const REPLAY_VERSION = 2;
+// 3: grenade flights (throw tick, thrower position, projectile trail).
+const REPLAY_VERSION = 3;
+// Projectile trail samples are kept every TRAIL_STEP ticks (16 per second),
+// plus the exact detonation point.
+const TRAIL_STEP = 4;
+const PROJECTILE_TYPE = {
+  CSmokeGrenadeProjectile: 'smoke', CFlashbangProjectile: 'flash', CHEGrenadeProjectile: 'he', CMolotovProjectile: 'fire',
+};
 const DEMO_MAGIC = 'PBDEMS2\0';
 const CSGO_MAGIC = 'HL2DEMO\0';
 
@@ -98,10 +105,31 @@ function findRounds(events) {
   }));
 }
 
+// Groups parseGrenades(..., grenades=false) rows (one per projectile per
+// tick) into flights. Entity ids are reused during a match, so a gap in ticks
+// starts a new flight. Each flight keeps every sample until the projectile
+// entity is removed (smokes and HEs outlive their detonation).
+function groupFlights(rows) {
+  const sorted = rows.filter((r) => PROJECTILE_TYPE[r.grenade_type] && r.x != null)
+    .sort((a, b) => a.grenade_entity_id - b.grenade_entity_id || a.tick - b.tick);
+  const flights = [];
+  let cur = null;
+  for (const r of sorted) {
+    const type = PROJECTILE_TYPE[r.grenade_type];
+    if (!cur || cur.entity !== r.grenade_entity_id || cur.type !== type || r.tick - cur.ticks[cur.ticks.length - 1] > 2) {
+      cur = { entity: r.grenade_entity_id, type, steamid: r.steamid || null, ticks: [], x: [], y: [], z: [] };
+      flights.push(cur);
+    }
+    cur.ticks.push(r.tick); cur.x.push(r.x); cur.y.push(r.y); cur.z.push(r.z);
+  }
+  return flights.sort((a, b) => a.ticks[0] - b.ticks[0]);
+}
+
 // Pure: builds the demo summary and per-round replay data.
 // header: { map_name, server_name }, events: parseEvents output,
 // ticks: parseTicks output rows ({ tick, steamid, name, X, Y, Z, yaw, is_alive, health, team_num }).
-function buildReplay({ header, events, ticks }) {
+// flights (optional): groupFlights output; without it grenades have no trail.
+function buildReplay({ header, events, ticks, flights = [] }) {
   const map = header.map_name;
   const toRadar = radarTransform(map);
   if (!toRadar) {
@@ -176,6 +204,43 @@ function buildReplay({ header, events, ticks }) {
       return { x: p.x, y: p.y, level: p.level };
     };
     const sideIn = new Map(roster.map((p) => [p.player, p.side]));
+    // Grenade flights: smokes, flashes and HEs detonate as the same entity;
+    // a fire starts as a new (inferno) entity, so it is matched to the
+    // thrower's molotov whose flight ends as the fire starts.
+    const roundFlights = flights.filter((f) => f.ticks[0] <= r.end_tick && f.ticks[f.ticks.length - 1] >= r.start_tick);
+    const used = new Set();
+    const flightFor = (type, e) => {
+      const cands = roundFlights.filter((f) => !used.has(f) && f.type === type && f.ticks[0] <= e.tick + 2 && (type === 'fire'
+        ? f.steamid === e.user_steamid && Math.abs(f.ticks[f.ticks.length - 1] - e.tick) <= 8
+        : f.entity === e.entityid && e.tick <= f.ticks[f.ticks.length - 1] + 2));
+      const f = cands.sort((a, b) => b.ticks[0] - a.ticks[0])[0];
+      if (f) used.add(f);
+      return f || null;
+    };
+    const sampleAt = (steamid, tick) => {
+      // The thrower's sampled position at (or just before) the throw.
+      for (let t = Math.floor(tick / STEP) * STEP; t >= tick - STEP * 2; t -= STEP) {
+        const row = (byTick.get(t) || []).find((x) => x.steamid === steamid);
+        if (row) return toRadar(row.X, row.Y, row.Z);
+      }
+      return null;
+    };
+    const flightData = (type, e) => {
+      const f = flightFor(type, e);
+      if (!f) return {};
+      const trail = { t: [], x: [], y: [], l: [] };
+      const add = (tick, x, y, z) => {
+        const p = toRadar(x, y, z);
+        trail.t.push(tick); trail.x.push(p.x); trail.y.push(p.y); trail.l.push(p.level === 'lower' ? 1 : 0);
+      };
+      const throwTick = f.ticks[0];
+      for (let i = 0; i < f.ticks.length && f.ticks[i] < e.tick; i += 1) {
+        if ((f.ticks[i] - throwTick) % TRAIL_STEP === 0) add(f.ticks[i], f.x[i], f.y[i], f.z[i]);
+      }
+      if (e.x != null) add(e.tick, e.x, e.y, e.z);
+      const from = sampleAt(f.steamid, throwTick);
+      return { throw_tick: throwTick, ...(from ? { from } : {}), trail };
+    };
     const expiry = (name, e, fallback) => {
       const end = events.find((x) => x.event_name === name && x.entityid === e.entityid && x.tick >= e.tick);
       return Math.min(end ? end.tick : e.tick + fallback, r.end_tick);
@@ -185,18 +250,19 @@ function buildReplay({ header, events, ticks }) {
     for (const e of events) {
       if (!inRound(e)) continue;
       if (e.event_name === 'smokegrenade_detonate') {
-        timeline.push({ tick: e.tick, type: 'smoke', end_tick: expiry('smokegrenade_expired', e, SMOKE_TICKS), player: playerIndex(e.user_steamid), ...grenadeAt(e) });
+        timeline.push({ tick: e.tick, type: 'smoke', end_tick: expiry('smokegrenade_expired', e, SMOKE_TICKS), player: playerIndex(e.user_steamid), ...grenadeAt(e), ...flightData('smoke', e) });
         continue;
       }
       if (e.event_name === 'flashbang_detonate' || e.event_name === 'hegrenade_detonate') {
-        timeline.push({ tick: e.tick, type: e.event_name === 'flashbang_detonate' ? 'flash' : 'he', player: playerIndex(e.user_steamid), ...grenadeAt(e) });
+        const type = e.event_name === 'flashbang_detonate' ? 'flash' : 'he';
+        timeline.push({ tick: e.tick, type, player: playerIndex(e.user_steamid), ...grenadeAt(e), ...flightData(type, e) });
         continue;
       }
       if (e.event_name === 'inferno_startburn') {
         const player = playerIndex(e.user_steamid);
         // CS2 only says "inferno": T sides throw molotovs, CT sides incendiaries.
         const variant = sideIn.get(player) === 'CT' ? 'incendiary' : 'molotov';
-        timeline.push({ tick: e.tick, type: 'fire', variant, end_tick: expiry('inferno_expire', e, FIRE_TICKS), player, ...grenadeAt(e) });
+        timeline.push({ tick: e.tick, type: 'fire', variant, end_tick: expiry('inferno_expire', e, FIRE_TICKS), player, ...grenadeAt(e), ...flightData('fire', e) });
         continue;
       }
       if (e.event_name === 'player_death') {
@@ -399,7 +465,11 @@ function parseDemoFile(file) {
   } catch (err) {
     throw incompatible(err);
   }
-  return buildReplay({ header, events, ticks });
+  // Projectile positions for grenade trails. Optional: a demo the parser
+  // can't read them from still gets thrower and detonation data.
+  let flights = [];
+  try { flights = groupFlights(parser.parseGrenades(file, null, false)); } catch { flights = []; }
+  return buildReplay({ header, events, ticks, flights });
 }
 
-module.exports = { parserVersion, STATS_VERSION, REPLAY_VERSION, SMOKE_TICKS, FIRE_TICKS, buildReplay, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };
+module.exports = { parserVersion, STATS_VERSION, REPLAY_VERSION, SMOKE_TICKS, FIRE_TICKS, TRAIL_STEP, buildReplay, groupFlights, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };

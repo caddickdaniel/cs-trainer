@@ -1,6 +1,12 @@
-import { UTILITY_ICON } from '../lib/constants';
+import { KIT_ICON, UTILITY_ICON } from '../lib/constants';
 import type { GrenadeCounts, Loadout, Phase, PlayerRef, PlayerUtility } from '../lib/types';
 import { GRENADES, GRENADE_LABEL, describeCounts, refKey, utilityPlan } from '../lib/utility';
+
+// The CT defuse kit (a loadout item, never drawn on the radar). The text
+// label always goes with it so it reads at small sizes.
+export function KitIcon({ size = 16 }: { size?: number }) {
+  return <img className="kit-icon" src={KIT_ICON} alt="" width={size} height={size} onError={(e) => { e.currentTarget.hidden = true; }} />;
+}
 
 function Counts({ counts, label }: { counts: GrenadeCounts; label: string }) {
   return (
@@ -20,7 +26,7 @@ export function UtilityCard({ u, phaseIndex }: { u: PlayerUtility; phaseIndex: n
   const extras = (
     <>
       {u.bomb ? <p className="call-utility"><img src="/icons/bomb.png" alt="" width="14" height="18" /> <strong>You carry the bomb.</strong></p> : null}
-      {u.kit ? <p className="call-utility"><strong>Buy a defuse kit.</strong></p> : null}
+      {u.kit ? <p className="call-utility"><KitIcon size={18} /> <strong>Buy a defuse kit.</strong></p> : null}
     </>
   );
   return (
@@ -59,7 +65,7 @@ export function TeamUtility({ list, name }: { list: PlayerUtility[]; name: (u: P
           <tr key={`${u.user_id ?? 's'}${u.slot ?? ''}`} className={u.over.length ? 'over' : ''}>
             <td>{name(u)}</td>
             {GRENADES.map((g) => <td key={g}>{u.available[g]}{u.planned[g] ? <span className="muted"> (−{u.planned[g]})</span> : null}</td>)}
-            <td>{u.bomb ? <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /> : null}{u.kit ? ' Kit' : ''}{u.over.length ? <span className="error-text"> over plan</span> : null}</td>
+            <td>{u.bomb ? <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /> : null}{u.kit ? <span className="kit-label" title="Buys a defuse kit"><KitIcon /> Kit</span> : null}{u.over.length ? <span className="error-text"> over plan</span> : null}</td>
           </tr>
         ))}
       </tbody>
@@ -89,7 +95,7 @@ export function BuyListSummary({ loadouts, bomb, phases, phaseIndex, side, name 
           return (
             <tr key={p.key} className={over.length ? 'over' : ''}>
               <td>{name(refOf(p.key))}{bombKey === p.key ? <> <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /></> : null}</td>
-              <td>{describeCounts(p.buy) || '—'}{side === 'CT' && p.kit ? ', kit' : ''}</td>
+              <td>{describeCounts(p.buy) || '—'}{side === 'CT' && p.kit ? <span className="kit-label">, <KitIcon /> defuse kit</span> : null}</td>
               <td>{at ? (phaseIndex === 0 ? describeCounts(at.used) : describeCounts(at.start)) || '—' : '—'}
                 {over.length ? <span className="error-text"> · plans more than they have</span> : null}</td>
             </tr>
