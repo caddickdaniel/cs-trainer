@@ -1,6 +1,7 @@
 // Tactic documents: metadata + ordered phases, each with per-player
 // assignments and board annotations.
 const db = require('../db/connection');
+const { applyTeamColors } = require('./teamColors');
 const { notFound, conflict, httpError } = require('../errors');
 const { requireMember, requireLead } = require('./access');
 const { assertTeamImages } = require('./images');
@@ -68,7 +69,7 @@ async function teamRoster(teamId, trx = db) {
     .join('users as u', 'u.user_id', 'm.user_id')
     .where('m.team_id', teamId)
     .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
-    .select('u.user_id', 'u.user_name', 'm.player_role');
+    .select('u.user_id', 'u.user_name', 'm.player_role', 'm.game_color');
 }
 
 async function getDocument(tacticId, userId) {
@@ -82,7 +83,10 @@ async function getDocument(tacticId, userId) {
   for (const phase of phases) {
     for (const a of phase.assignments) a.is_member = a.user_id != null && memberIds.has(a.user_id);
   }
-  return { tactic: { ...tactic, phases }, roster, can_edit: access.canLead };
+  // Members' team colours (Team tab) win over colours stored in the tactic.
+  const assigned = new Map(roster.filter((r) => r.game_color).map((r) => [r.user_id, r.game_color]));
+  const playerColors = applyTeamColors(tactic.player_colors, assigned);
+  return { tactic: { ...tactic, player_colors: playerColors, phases }, roster, can_edit: access.canLead };
 }
 
 // Every player referenced by an assignment or board item must be on the team.

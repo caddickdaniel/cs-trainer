@@ -229,10 +229,11 @@ describe('phase 5', () => {
       await owner.put(`/api/tactics/${tactic.tactic_id}/document`).send({ ...buyDoc(p1, p2, { loadouts: [] }), revision: doc.revision }).expect(200);
       const fresh = (await owner.get(`/api/teams/${teamId}/game-session`).expect(200)).body.session;
       expect(fresh.my_utility.available).to.include({ flash: 1 });
-      // The teammate sees their own (bomb) responsibility only, not everyone's.
+      // The teammate sees their own (bomb) responsibility, and (Phase 10) can view everyone's, read-only.
       const theirs = (await member.get(`/api/teams/${teamId}/game-session`).expect(200)).body.session;
       expect(theirs.my_utility).to.include({ bomb: true });
-      expect(theirs.utility).to.equal(undefined);
+      expect(theirs.utility).to.have.length(2);
+      expect(theirs.can_control).to.equal(false);
     });
 
     it('flags plans that throw more than the player buys and counts a repeated marker once', () => {

@@ -5,8 +5,8 @@
 // (lib/replay); a field the demo doesn't carry shows "—". If the CS2 asset set
 // hasn't been built, icons fall back to text or the app's own icons.
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { UTILITY_ICON } from '../lib/constants';
-import { cs2, inventoryIcon, KILLFEED_INDICATOR, killfeedIcon, UTILITY_ASSET, weaponIdFromName, weaponLabel } from '../lib/cs2Assets';
+import { cs2, inventoryIcon, KILLFEED_INDICATOR, killfeedIcon, weaponIdFromName, weaponLabel } from '../lib/cs2Assets';
+import { UtilityIcon } from './UtilityIcon';
 import { bombAt, equipmentAt, flashAmount, frameAt, headshotPct, hudClock, hudScore, scoreboardOrder, totalsAt, type KillFeedEntry } from '../lib/replay';
 import type { EquipmentEntry, ReplayEvent, ReplayRound } from '../lib/types';
 import { Icon } from './Icons';
@@ -34,14 +34,8 @@ function rosterBySide(round: ReplayRound, name: (player: number) => string): Rec
 
 function Grenades({ eq }: { eq: EquipmentEntry }) {
   if (!eq.utility) return <span className="cs2-na" title="Not in this demo's data">—</span>;
-  return (
-    <>
-      {eq.utility.map((u) => (
-        <CsImg key={u} className="cs2-nade" src={cs2(`utility/${UTILITY_ASSET[u]}.svg`)} alt={UTILITY_LABEL[u]}
-          fallback={UTILITY_ICON[u === 'inc' ? 'molly' : u] ? <img className="cs2-nade fallback" src={UTILITY_ICON[u === 'inc' ? 'molly' : u]} alt={UTILITY_LABEL[u]} /> : null} />
-      ))}
-    </>
-  );
+  // Same shared icon mapping as Tactics and Game Mode (inc = incendiary, molly = molotov).
+  return <>{eq.utility.map((u) => <UtilityIcon key={u} kind={u === 'molly' ? 'molotov' : u} size={14} className="cs2-nade" label={UTILITY_LABEL[u]} />)}</>;
 }
 
 // One player in the team counter (CS2 "AvatarLargeSnippet" with equipment info).

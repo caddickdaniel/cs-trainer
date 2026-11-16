@@ -91,7 +91,8 @@ describe('phase 2', () => {
       for (const viewer of [owner, third]) {
         const view = (await viewer.get(url).expect(200)).body.session;
         expect(view).to.include({ current_phase: 2, can_control: false });
-        expect(view).to.not.have.property('assignments');
+        // Phase 10: instructions are viewable by everyone; control stays with the IGL.
+        expect(view.assignments).to.be.an('array');
         expect(view).to.not.have.property('side_tactics');
       }
       const thirdView = (await third.get(url).expect(200)).body.session;

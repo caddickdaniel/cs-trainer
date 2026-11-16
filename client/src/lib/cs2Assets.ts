@@ -84,3 +84,41 @@ export const KILLFEED_INDICATOR = {
   smoke: cs2('killfeed/indicators/smoke_kill.svg'), blind: cs2('killfeed/indicators/blind_kill.svg'), suicide: cs2('killfeed/indicators/suicide.svg'),
   inair: cs2('killfeed/indicators/inairkill.svg'), flashAssist: cs2('killfeed/indicators/flashbang_assist.svg'),
 };
+
+// ---- Shared utility / equipment icons (Phase 10) --------------------------------
+// One mapping for every utility identifier used in the app (tactic markers
+// 'smoke' | 'flash' | 'he' | 'molly', replay events 'fire' with a variant,
+// carried-grenade codes 'inc' | 'decoy', game ids 'smokegrenade' …), so the
+// same utility shows the same CS2 icon in Demo Review, Game Mode and Tactics.
+// `molly` follows the side: T throw molotovs, CT throw incendiaries.
+export type UtilityId = 'smokegrenade' | 'flashbang' | 'hegrenade' | 'molotov' | 'incgrenade' | 'decoy' | 'c4' | 'defuser' | 'kevlar' | 'helmet' | 'assaultsuit';
+const UTILITY_ALIAS: Record<string, UtilityId> = {
+  smoke: 'smokegrenade', smokegrenade: 'smokegrenade', flash: 'flashbang', flashbang: 'flashbang', he: 'hegrenade', hegrenade: 'hegrenade', grenade: 'hegrenade',
+  molotov: 'molotov', inc: 'incgrenade', incgrenade: 'incgrenade', incendiary: 'incgrenade', decoy: 'decoy',
+  c4: 'c4', bomb: 'c4', kit: 'defuser', defuser: 'defuser', armor: 'kevlar', kevlar: 'kevlar', helmet: 'helmet', armor_helmet: 'assaultsuit', assaultsuit: 'assaultsuit',
+};
+export function utilityId(kind: string | null | undefined, opts: { side?: string | null; variant?: string | null } = {}): UtilityId | null {
+  if (!kind) return null;
+  const k = kind.toLowerCase().replace(/^weapon_/, '');
+  if (k === 'molly' || k === 'fire' || k === 'inferno') {
+    if (opts.variant) return opts.variant === 'incendiary' ? 'incgrenade' : 'molotov';
+    return opts.side === 'CT' ? 'incgrenade' : 'molotov';
+  }
+  return UTILITY_ALIAS[k] ?? null;
+}
+const UTILITY_FOLDER: Record<UtilityId, string> = {
+  smokegrenade: 'utility', flashbang: 'utility', hegrenade: 'utility', molotov: 'utility', incgrenade: 'utility', decoy: 'utility',
+  c4: 'equipment', defuser: 'equipment', kevlar: 'equipment', helmet: 'equipment', assaultsuit: 'equipment',
+};
+export const UTILITY_NAME: Record<UtilityId, string> = {
+  smokegrenade: 'Smoke grenade', flashbang: 'Flashbang', hegrenade: 'HE grenade', molotov: 'Molotov', incgrenade: 'Incendiary grenade', decoy: 'Decoy grenade',
+  c4: 'C4', defuser: 'Defuse kit', kevlar: 'Kevlar', helmet: 'Helmet', assaultsuit: 'Kevlar and helmet',
+};
+// The extracted CS2 icon (white, transparent); null if unmapped.
+export const utilityIconSrc = (id: UtilityId | null) => (id ? `${CS2_ASSET_ROOT}/${UTILITY_FOLDER[id]}/${id}.svg` : null);
+// The app's own (black) icons, used when the CS2 set isn't built.
+const LEGACY: Partial<Record<UtilityId, string>> = {
+  smokegrenade: '/icons/utility/smoke.png', flashbang: '/icons/utility/flash.png', hegrenade: '/icons/utility/he.png',
+  molotov: '/icons/utility/molly.png', incgrenade: '/icons/utility/molly.png', c4: '/icons/bomb.png', defuser: '/icons/defuse-kit.png',
+};
+export const utilityLegacySrc = (id: UtilityId | null) => (id ? LEGACY[id] ?? null : null);

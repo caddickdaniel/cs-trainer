@@ -38,6 +38,8 @@ teamRouter.route('/:team_id/requests').get(c.sendJoinRequests).all(handle405);
 teamRouter.route('/:team_id/requests/:request_id/invite').post(c.approveJoinRequest).all(handle405);
 teamRouter.route('/:team_id/requests/:request_id/decline').post(c.declineJoinRequest).all(handle405);
 teamRouter.route('/:team_id/events').get(c.sendEvents).post(c.createEvent).all(handle405);
+teamRouter.route('/:team_id/availability').get(c.sendAvailability).post(c.createAvailability).all(handle405);
+teamRouter.route('/:team_id/availability/:availability_id').patch(c.patchAvailability).delete(c.deleteAvailability).all(handle405);
 teamRouter.route('/:team_id/events/next').get(c.sendNextEvent).all(handle405);
 teamRouter.route('/:team_id/events/:event_id').get(c.sendEvent).patch(c.patchEvent).delete(c.deleteEvent).all(handle405);
 

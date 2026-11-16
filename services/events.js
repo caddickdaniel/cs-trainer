@@ -2,10 +2,10 @@
 // instants (timestamptz); time_zone records where the event was entered.
 const db = require('../db/connection');
 const { notFound, badRequest } = require('../errors');
-const { requireMember, requireOwner } = require('./access');
+const { requireMember, requireLead } = require('./access');
 const { notify, teamMemberIds } = require('./notifications');
 
-const FIELDS = ['kind', 'title', 'starts_at', 'time_zone', 'opponent', 'notes', 'demo_id'];
+const FIELDS = ['kind', 'title', 'starts_at', 'ends_at', 'time_zone', 'opponent', 'notes', 'demo_id'];
 const pick = (obj) => Object.fromEntries(FIELDS.filter((k) => obj[k] !== undefined).map((k) => [k, obj[k]]));
 
 const present = (e) => ({
@@ -14,6 +14,7 @@ const present = (e) => ({
   kind: e.kind,
   title: e.title,
   starts_at: e.starts_at,
+  ends_at: e.ends_at ?? null,
   time_zone: e.time_zone,
   opponent: e.opponent,
   notes: e.notes,
@@ -47,7 +48,8 @@ async function listEvents(teamId, userId, { from, to } = {}) {
   let q = eventsQuery().where('e.team_id', teamId).orderBy([{ column: 'e.starts_at' }, { column: 'e.event_id' }]);
   if (from) q = q.where('e.starts_at', '>=', from);
   if (to) q = q.where('e.starts_at', '<', to);
-  return { events: (await q.limit(500)).map(present), can_manage: access.isOwner };
+  // The owner and the IGL schedule team events (Phase 10; before, the owner only).
+  return { events: (await q.limit(500)).map(present), can_manage: access.canLead };
 }
 
 async function nextEvent(teamId, userId) {
@@ -61,7 +63,7 @@ async function getEvent(teamId, userId, eventId) {
   const access = await requireMember(teamId, userId);
   const e = await eventsQuery().where({ 'e.team_id': teamId, 'e.event_id': eventId }).first();
   if (!e) throw notFound('Event not found');
-  return { event: present(e), can_manage: access.isOwner };
+  return { event: present(e), can_manage: access.canLead };
 }
 
 async function announce(trx, kind, e, actorId, key) {
@@ -81,7 +83,7 @@ async function announce(trx, kind, e, actorId, key) {
 }
 
 async function createEvent(teamId, userId, fields) {
-  await requireOwner(teamId, userId);
+  await requireLead(teamId, userId);
   return db.transaction(async (trx) => {
     const values = pick(fields);
     await checkDemo(trx, teamId, values, null);
@@ -94,12 +96,15 @@ async function createEvent(teamId, userId, fields) {
 }
 
 async function updateEvent(teamId, userId, eventId, fields) {
-  await requireOwner(teamId, userId);
+  await requireLead(teamId, userId);
   return db.transaction(async (trx) => {
     const existing = await trx('team_events').where({ team_id: teamId, event_id: eventId }).forUpdate().first();
     if (!existing) throw notFound('Event not found');
     const values = pick(fields);
     await checkDemo(trx, teamId, values, existing);
+    const start = values.starts_at ?? existing.starts_at;
+    const end = values.ends_at !== undefined ? values.ends_at : existing.ends_at;
+    if (end != null && new Date(end) <= new Date(start)) throw badRequest('The end time must be after the start time', 'bad_range');
     const [e] = await trx('team_events').where({ team_id: teamId, event_id: eventId })
       .update({ ...values, updated_by: userId, updated_at: trx.fn.now() })
       .returning('*');
@@ -109,7 +114,7 @@ async function updateEvent(teamId, userId, eventId, fields) {
 }
 
 async function deleteEvent(teamId, userId, eventId) {
-  await requireOwner(teamId, userId);
+  await requireLead(teamId, userId);
   await db.transaction(async (trx) => {
     const [e] = await trx('team_events').where({ team_id: teamId, event_id: eventId }).del().returning('*');
     if (!e) throw notFound('Event not found');

@@ -142,11 +142,15 @@ async function getRoster(teamId, userId) {
     .join('users as u', 'u.user_id', 'm.user_id')
     .where('m.team_id', teamId)
     .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
-    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'm.player_role', 'm.joined_at');
+    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'm.player_role', 'm.joined_at', 'm.game_color',
+      'u.premier_rank', 'u.faceit_rank', 'u.esea_rank');
+  const { rankFields } = require('./profiles');
   return {
     team: presentTeam(team),
-    members: members.map(({ avatar_image_id, ...m }) => ({
+    members: members.map(({ avatar_image_id, premier_rank, faceit_rank, esea_rank, ...m }) => ({
       ...m,
+      // Self-reported profile ranks (Premier, FACEIT, ESEA); null when not set.
+      ranks: rankFields({ premier_rank, faceit_rank, esea_rank }).ranks,
       avatar_url: pictureUrl(avatar_image_id),
       is_igl: m.player_role === 'igl',
       is_owner: m.user_id === team.owner,
@@ -171,6 +175,18 @@ async function updateMember(teamId, actorId, targetId, changes) {
     await trx('teams').where('team_id', teamId).forUpdate().first('team_id');
     const membership = await trx('team_memberships').where({ team_id: teamId, user_id: targetId }).first();
     if (!membership) throw notFound('That player is not on this team');
+
+    // CS2 teammate colour: the owner or the IGL assigns them (as with roles).
+    if (changes.game_color !== undefined && changes.game_color !== membership.game_color) {
+      if (!access.canLead) throw forbidden('Only the owner or the IGL can assign player colours', 'lead_only');
+      if (changes.game_color) {
+        const holder = await trx('team_memberships as m').join('users as u', 'u.user_id', 'm.user_id')
+          .where({ 'm.team_id': teamId, 'm.game_color': changes.game_color }).whereNot('m.user_id', targetId).first('u.user_name');
+        if (holder) throw conflict(`${holder.user_name} already has ${changes.game_color}. Clear or change their colour first.`, 'color_taken');
+      }
+      await trx('team_memberships').where({ team_id: teamId, user_id: targetId }).update({ game_color: changes.game_color });
+      await touchActiveSession(trx, teamId);
+    }
 
     let role = changes.player_role;
     if (changes.is_igl === true) role = 'igl';

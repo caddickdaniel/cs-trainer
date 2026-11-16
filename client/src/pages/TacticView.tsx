@@ -72,7 +72,7 @@ export function TacticViewPage() {
             <div className="stack">
               <LevelSwitch map={map} level={level} board={phase.board} onChange={(l) => setLevelChoice({ phase: phaseIndex, level: l })} />
               <MapBoard board={phase.board} map={map} level={level} players={roster} highlightUserId={null}
-                onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} bomb={tactic.side === 'T' ? tactic.bomb_carrier : null} />
+                onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} bomb={tactic.side === 'T' ? tactic.bomb_carrier : null} side={tactic.side} />
             </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}

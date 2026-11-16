@@ -18,6 +18,18 @@ router.route('/read-all')
     res.send(await notifications.list(me(req)));
   }))
   .all(handle405);
+router.route('/clear-all')
+  .post(asyncHandler(async (req, res) => {
+    await notifications.clearAll(me(req));
+    res.send(await notifications.list(me(req)));
+  }))
+  .all(handle405);
+router.route('/history')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.send(await notifications.history(me(req)));
+  }))
+  .all(handle405);
 router.route('/:notification_id/dismiss')
   .post(asyncHandler(async (req, res) => {
     await notifications.dismiss(me(req), id(req));

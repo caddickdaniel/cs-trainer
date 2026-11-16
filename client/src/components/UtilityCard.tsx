@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { KIT_ICON, UTILITY_ICON } from '../lib/constants';
+import { KIT_ICON } from '../lib/constants';
+import { UtilityIcon } from './UtilityIcon';
 import type { GrenadeCounts, Loadout, Phase, PlayerRef, PlayerUtility } from '../lib/types';
 import { GRENADES, GRENADE_LABEL, describeCounts, refKey, utilityPlan } from '../lib/utility';
 
@@ -22,12 +23,12 @@ export function KitIcon({ size = 16 }: { size?: number }) {
   return <img className="kit-icon" src={KIT_SOURCES[attempt]} alt="" width={size} height={size} onError={() => setAttempt((n) => n + 1)} />;
 }
 
-function Counts({ counts, label }: { counts: GrenadeCounts; label: string }) {
+function Counts({ counts, label, side }: { counts: GrenadeCounts; label: string; side?: string | null }) {
   return (
     <div className="my-buy" aria-label={label}>
       {GRENADES.map((g) => (
         <span key={g} className={`count${counts[g] ? '' : ' none'}`} title={`${counts[g]} ${GRENADE_LABEL[g][counts[g] === 1 ? 0 : 1]}`}>
-          <img src={UTILITY_ICON[g]} alt="" width="18" height="18" /> {counts[g]}
+          <UtilityIcon kind={g} side={side} size={18} label="" /> {counts[g]}
         </span>
       ))}
     </div>
@@ -36,10 +37,10 @@ function Counts({ counts, label }: { counts: GrenadeCounts; label: string }) {
 
 // A player's buy list (at round start) or the utility they have at the start
 // of the current phase, plus the bomb / defuse kit.
-export function UtilityCard({ u, phaseIndex }: { u: PlayerUtility; phaseIndex: number }) {
+export function UtilityCard({ u, phaseIndex, side }: { u: PlayerUtility; phaseIndex: number; side?: string | null }) {
   const extras = (
     <>
-      {u.bomb ? <p className="call-utility"><img src="/icons/bomb.png" alt="" width="14" height="18" /> <strong>You carry the bomb.</strong></p> : null}
+      {u.bomb ? <p className="call-utility"><UtilityIcon kind="c4" size={18} label="" /> <strong>You carry the bomb.</strong></p> : null}
       {u.kit ? <p className="call-utility"><KitIcon size={18} /> <strong>Buy a defuse kit.</strong></p> : null}
     </>
   );
@@ -48,13 +49,13 @@ export function UtilityCard({ u, phaseIndex }: { u: PlayerUtility; phaseIndex: n
       {phaseIndex === 0 ? (
         <>
           <h2 className="lineup-heading">Your buy</h2>
-          <Counts counts={u.buy} label="Buy list" />
+          <Counts counts={u.buy} label="Buy list" side={side} />
           {!describeCounts(u.buy) ? <p className="muted small">No grenades to buy.</p> : null}
         </>
       ) : (
         <>
           <h2 className="lineup-heading">Your utility now</h2>
-          <Counts counts={u.available} label="Utility available at the start of this phase" />
+          <Counts counts={u.available} label="Utility available at the start of this phase" side={side} />
           <p className="muted small">Bought {describeCounts(u.buy) || 'no grenades'}
             {GRENADES.some((g) => u.available[g] < u.buy[g]) ? `; earlier phases used ${describeCounts(Object.fromEntries(GRENADES.map((g) => [g, Math.max(0, u.buy[g] - u.available[g])])) as GrenadeCounts)}` : ''}.</p>
         </>
@@ -68,22 +69,28 @@ export function UtilityCard({ u, phaseIndex }: { u: PlayerUtility; phaseIndex: n
   );
 }
 
-// IGL overview: everyone's utility at the start of the current phase.
-export function TeamUtility({ list, name }: { list: PlayerUtility[]; name: (u: PlayerUtility) => string }) {
+// Team buy: everyone's utility at the start of the current phase, with the
+// CS2 icons. Fire is a molotov for T and an incendiary for CT; the C4 column
+// is T only and the defuse kit column CT only.
+export function TeamUtility({ list, name, side }: { list: PlayerUtility[]; name: (u: PlayerUtility) => string; side?: string | null }) {
   if (!list.length) return <p className="muted small">This tactic has no buy lists.</p>;
-  // Kits are CT only, so the kit column appears for CT tactics with a kit.
-  const anyKit = list.some((u) => u.kit);
+  const isT = side === 'T';
+  const isCT = side === 'CT';
+  const showKit = !isT && list.some((u) => u.kit);
+  const showBomb = !isCT && list.some((u) => u.bomb);
   return (
     <table className="table compact utility-table team-utility">
-      <thead><tr><th>Player</th>{GRENADES.map((g) => <th key={g} title={GRENADE_LABEL[g][1]}><img className="util-icon" src={UTILITY_ICON[g]} alt={GRENADE_LABEL[g][1]} width="16" height="16" /></th>)}
-        {anyKit ? <th title="Defuse kit (CT)"><KitIcon size={16} /><span className="sr-only">Defuse kit</span></th> : null}<th /></tr></thead>
+      <thead><tr><th>Player</th>{GRENADES.map((g) => <th key={g} title={GRENADE_LABEL[g][1]}><UtilityIcon kind={g} side={side} size={18} /></th>)}
+        {showBomb ? <th title="C4 (T)"><UtilityIcon kind="c4" size={18} /></th> : null}
+        {showKit ? <th title="Defuse kit (CT)"><KitIcon size={18} /><span className="sr-only">Defuse kit</span></th> : null}<th /></tr></thead>
       <tbody>
         {list.map((u) => (
           <tr key={`${u.user_id ?? 's'}${u.slot ?? ''}`} className={u.over.length ? 'over' : ''}>
             <td>{name(u)}</td>
             {GRENADES.map((g) => <td key={g}>{u.available[g]}{u.planned[g] ? <span className="muted"> (−{u.planned[g]})</span> : null}</td>)}
-            {anyKit ? <td>{u.kit ? <span className="kit-label" title="Buys a defuse kit"><KitIcon size={16} /> Kit</span> : null}</td> : null}
-            <td>{u.bomb ? <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /> : null}{u.over.length ? <span className="error-text"> over plan</span> : null}</td>
+            {showBomb ? <td>{u.bomb ? <span className="kit-label" title="Carries the bomb"><UtilityIcon kind="c4" size={16} label="" /> Bomb</span> : null}</td> : null}
+            {showKit ? <td>{u.kit ? <span className="kit-label" title="Buys a defuse kit"><KitIcon size={16} /> Kit</span> : null}</td> : null}
+            <td>{u.over.length ? <span className="error-text">over plan</span> : null}</td>
           </tr>
         ))}
       </tbody>

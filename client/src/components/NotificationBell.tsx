@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import { useNavigate } from 'react-router-dom';
 import { api, errorMessage } from '../lib/api';
 import type { AppNotification } from '../lib/types';
+import { formatDMY } from '../lib/time';
 import { Icon } from './Icons';
 
 const POLL_MS = 30000;
@@ -22,6 +23,10 @@ export function NotificationBell() {
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // Active notifications, or the history of cleared ones.
+  const [view, setView] = useState<'active' | 'history'>('active');
+  const [history, setHistory] = useState<AppNotification[] | null>(null);
+  const [busy, setBusy] = useState(false);
   const [place, setPlace] = useState<{ panel: CSSProperties; caret: CSSProperties }>({ panel: {}, caret: {} });
 
   // Anchors the panel directly below the bell, kept inside the viewport
@@ -77,6 +82,7 @@ export function NotificationBell() {
   const show = async () => {
     if (open) { setOpen(false); return; }
     setNotice(null);
+    setView('active');
     setOpen(true);
     await load();
     if (unread) {
@@ -102,6 +108,31 @@ export function NotificationBell() {
     }
   };
 
+  // Clear All: every active notification moves to history (kept, not deleted).
+  const clearAll = async () => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await api.post<{ notifications: AppNotification[]; unread_count: number }>('/notifications/clear-all');
+      setItems(r.notifications);
+      setUnread(r.unread_count);
+      setHistory(null);
+    } catch (err) {
+      setNotice(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const showHistory = async () => {
+    setView('history');
+    setNotice(null);
+    try {
+      setHistory((await api.get<{ notifications: AppNotification[] }>('/notifications/history')).notifications);
+    } catch (err) {
+      setNotice(errorMessage(err));
+    }
+  };
+
   const dismiss = async (n: AppNotification) => {
     setItems((list) => list.filter((x) => x.notification_id !== n.notification_id));
     try { await api.post(`/notifications/${n.notification_id}/dismiss`); } catch { load(); }
@@ -118,12 +149,36 @@ export function NotificationBell() {
       {open ? (
         // Anchored under the bell; on narrow screens it spans the viewport width.
         <div id="notifications-panel" className="notifications-panel" role="region" aria-labelledby="notifications-title" style={place.panel}>
-          <div className="row space">
-            <h2 id="notifications-title">Notifications</h2>
-            <button type="button" className="btn ghost small" onClick={close}>Close</button>
+          <div className="row space notifications-head">
+            <h2 id="notifications-title">{view === 'history' ? 'Notification history' : 'Notifications'}</h2>
+            {view === 'history' ? (
+              <button type="button" className="btn ghost small" onClick={() => setView('active')}><Icon name="left" size={14} /> Back to notifications</button>
+            ) : (
+              <span className="row tight">
+                <button type="button" className="btn ghost small" disabled={busy || !items.length} onClick={clearAll}>Clear all</button>
+                <button type="button" className="btn ghost small" onClick={showHistory}>History</button>
+              </span>
+            )}
           </div>
           {notice ? <div className="alert info" role="status">{notice}</div> : null}
-          {items.length ? (
+          {view === 'history' ? (
+            history == null ? <p className="muted">Loading…</p> : history.length ? (
+              <ul className="notification-list history">
+                {history.map((n) => (
+                  <li key={n.notification_id}>
+                    <button type="button" className="notification-main" onClick={() => follow(n)}>
+                      <strong className="small">{n.title ?? 'Notification'}</strong>
+                      <span>{n.message}</span>
+                      <span className="muted small">
+                        <time dateTime={n.created_at}>{formatDMY(new Date(n.created_at))} {new Date(n.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>
+                        {n.cleared_at ? <> · cleared <time dateTime={n.cleared_at}>{timeAgo(n.cleared_at)}</time></> : null}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="muted">No cleared notifications yet.</p>
+          ) : items.length ? (
             <ul className="notification-list">
               {items.map((n) => (
                 <li key={n.notification_id} className={n.read ? '' : 'unread'}>
