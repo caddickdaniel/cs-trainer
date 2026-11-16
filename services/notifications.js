@@ -42,12 +42,20 @@ function describe(n) {
   }
 }
 
+// Short titles per kind (shown in history).
+const TITLES = {
+  team_invite: 'Team invite', join_request: 'Join request', event_created: 'New calendar event', event_updated: 'Calendar event changed',
+  event_deleted: 'Calendar event removed', tactic_updated: 'Tactic updated', review_started: 'Live demo review',
+};
 const present = (n) => ({
   notification_id: n.notification_id,
   kind: n.kind,
+  title: TITLES[n.kind] || 'Notification',
   message: describe(n),
   created_at: n.created_at,
   read: Boolean(n.read_at),
+  // When the user cleared it (history only).
+  cleared_at: n.dismissed_at ?? null,
   payload: n.payload,
 });
 
@@ -60,6 +68,21 @@ async function list(userId) {
   const unread = await db('notifications').where('user_id', userId).whereNull('dismissed_at').whereNull('read_at')
     .count('* as n').first();
   return { notifications: rows.map(present), unread_count: Number(unread.n) };
+}
+
+// Clear All: soft-clears every active notification (dismissed_at), which
+// removes them from the list and the unread count; they stay in history.
+async function clearAll(userId) {
+  await db('notifications').where('user_id', userId).whereNull('dismissed_at')
+    .update({ dismissed_at: db.fn.now(), read_at: db.raw('coalesce(read_at, now())') });
+}
+
+// Cleared notifications, most recently cleared first (this user's only).
+async function history(userId, { before } = {}) {
+  let q = db('notifications').where('user_id', userId).whereNotNull('dismissed_at')
+    .orderBy([{ column: 'dismissed_at', order: 'desc' }, { column: 'notification_id', order: 'desc' }]).limit(100);
+  if (before) q = q.where('dismissed_at', '<', before);
+  return { notifications: (await q).map(present) };
 }
 
 async function markAllRead(userId) {
@@ -128,4 +151,4 @@ async function open(userId, id) {
   }
 }
 
-module.exports = { KINDS, notify, teamMemberIds, list, markAllRead, dismiss, open };
+module.exports = { KINDS, notify, teamMemberIds, list, markAllRead, clearAll, history, dismiss, open };

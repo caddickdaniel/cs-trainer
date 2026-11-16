@@ -13,6 +13,8 @@ import { Combobox } from '../components/Combobox';
 import { RankBadge } from '../components/RankBadge';
 import { CompetitionList, CompetitionPicker, PlayerRankList, RankSelect, RequirementList, RequirementsEditor } from '../components/Recruitment';
 import { useCatalogue, type Catalogue } from '../lib/catalogue';
+import { PLAYER_PALETTE, paletteHex } from '../lib/playerColors';
+import type { PlayerColorId } from '../lib/types';
 import type { RankRequirement } from '../lib/types';
 
 const PLATFORM_IDS = ['premier', 'faceit', 'esea'] as const;
@@ -132,7 +134,40 @@ function RoleSelect({ member, roster, me, onChange }: { member: Member; roster: 
   );
 }
 
-function MemberRow({ member, roster, me, onChange }: { member: Member; roster: RosterResponse; me: number; onChange: () => Promise<void> }) {
+// A player's CS2 teammate colour: a swatch, and for the owner / IGL a picker
+// where colours other players already have are disabled and name the holder.
+export function ColorSwatch({ color, size = 14 }: { color: PlayerColorId | null | undefined; size?: number }) {
+  if (!color) return <span className="color-swatch none" style={{ width: size, height: size }} title="No colour" aria-hidden="true" />;
+  return <span className="color-swatch" style={{ width: size, height: size, background: paletteHex(color) }} title={`CS2 colour: ${color}`} aria-hidden="true" />;
+}
+function ColorSelect({ member, roster, onChange }: { member: Member; roster: RosterResponse; onChange: (c: PlayerColorId | null) => void }) {
+  const label = PLAYER_PALETTE.find((c) => c.id === member.game_color)?.label;
+  if (!roster.viewer.can_lead) {
+    return <span className="row tight"><ColorSwatch color={member.game_color} /> {label ?? <span className="muted">Not set</span>}</span>;
+  }
+  const holder = (id: PlayerColorId) => roster.members.find((m) => m.game_color === id && m.user_id !== member.user_id);
+  return (
+    <span className="row tight color-select">
+      <ColorSwatch color={member.game_color} />
+      <select aria-label={`CS2 colour for ${member.user_name}`} value={member.game_color ?? ''}
+        style={member.game_color ? { boxShadow: `inset 4px 0 0 ${paletteHex(member.game_color)}` } : undefined}
+        onChange={(e) => onChange((e.target.value || null) as PlayerColorId | null)}>
+        <option value="">Not set</option>
+        {PLAYER_PALETTE.map((c) => {
+          const h = holder(c.id);
+          return <option key={c.id} value={c.id} disabled={Boolean(h)}>{c.label}{h ? ` (${h.user_name})` : ''}</option>;
+        })}
+      </select>
+    </span>
+  );
+}
+
+// Premier / FACEIT / ESEA ranks from the player's profile (self-reported).
+function RankCell({ cat, rank }: { cat: Catalogue | null; rank: string | null | undefined }) {
+  return rank ? <RankBadge cat={cat} rankId={rank} compact /> : <span className="muted small">Not set</span>;
+}
+
+function MemberRow({ member, roster, me, onChange, cat }: { member: Member; roster: RosterResponse; me: number; onChange: () => Promise<void>; cat: Catalogue | null }) {
   const [error, setError] = useState<string | null>(null);
   const teamId = roster.team.team_id;
 
@@ -140,6 +175,16 @@ function MemberRow({ member, roster, me, onChange }: { member: Member; roster: R
     setError(null);
     try {
       await api.patch(`/teams/${teamId}/members/${member.user_id}`, { player_role: role });
+      await onChange();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const setColor = async (game_color: PlayerColorId | null) => {
+    setError(null);
+    try {
+      await api.patch(`/teams/${teamId}/members/${member.user_id}`, { game_color });
       await onChange();
     } catch (err) {
       setError(errorMessage(err));
@@ -161,21 +206,20 @@ function MemberRow({ member, roster, me, onChange }: { member: Member; roster: R
     <tr>
       <td>
         <div className="row">
-          <Avatar name={member.user_name} url={member.avatar_url} size={32} />
+          <span className="avatar-ring" style={member.game_color ? { boxShadow: `0 0 0 2px ${paletteHex(member.game_color)}` } : undefined}>
+            <Avatar name={member.user_name} url={member.avatar_url} size={32} />
+          </span>
           <div>
             <Link to={`/players/${member.user_id}`}><strong>{member.user_name}</strong></Link>
             {member.user_id === me ? <span className="muted"> (you)</span> : null}
+            {member.is_owner ? <> <Badge tone="gold">Owner</Badge></> : null}
             {error ? <div className="error-text">{error}</div> : null}
           </div>
         </div>
       </td>
+      <td><ColorSelect member={member} roster={roster} onChange={setColor} /></td>
+      {PLATFORM_IDS.map((p) => <td key={p} className="rank-cell"><RankCell cat={cat} rank={member.ranks?.[p]} /></td>)}
       <td><RoleSelect member={member} roster={roster} me={me} onChange={setRole} /></td>
-      <td>
-        <span className="row wrap tight-row">
-          {member.is_owner ? <Badge tone="gold">Owner</Badge> : null}
-          {member.is_igl ? <Badge tone="red">Controls Game Mode</Badge> : null}
-        </span>
-      </td>
       <td className="right">
         {roster.viewer.is_owner && !member.is_owner ? (
           <button type="button" className="btn ghost small danger" onClick={remove}>Remove</button>
@@ -461,16 +505,16 @@ function Invites({ teamId }: { teamId: number }) {
       <PlayerFilters value={filters} onChange={setFilters} />
       {players.data?.players.length ? (
         <table className="table compact">
-          <thead><tr><th>Player</th><th>Language</th><th>Region</th>
-            {PLATFORM_IDS.map((p) => <th key={p}>{cat?.platforms.find((x) => x.id === p)?.label ?? p}</th>)}<th /></tr></thead>
+          <thead><tr><th>Player</th>{PLATFORM_IDS.map((p) => <th key={p}>{cat?.platforms.find((x) => x.id === p)?.label ?? p}</th>)}
+            <th>Language</th><th>Region</th><th /></tr></thead>
           <tbody>
             {players.data.players.map((p) => (
               <tr key={p.user_id}>
                 <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><div><Link to={`/players/${p.user_id}`}>{p.user_name}</Link>
                   {p.legacy_platform || p.legacy_skill_level ? <div><RankBadge cat={cat} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></div> : null}</div></div></td>
-                <td>{p.language ?? <span className="muted">—</span>}</td>
-                <td>{p.region ?? <span className="muted">—</span>}</td>
-                {PLATFORM_IDS.map((k) => <td key={k}>{p.ranks[k] ? <RankBadge cat={cat} rankId={p.ranks[k]} compact /> : null}</td>)}
+                {PLATFORM_IDS.map((k) => <td key={k} className="rank-cell"><RankCell cat={cat} rank={p.ranks[k]} /></td>)}
+                <td>{p.language ?? <span className="muted small">Not set</span>}</td>
+                <td>{p.region ?? <span className="muted small">Not set</span>}</td>
                 <td className="right">
                   <InviteButton teamId={players.data!.inviting_team?.team_id} userId={p.user_id} status={p.invite_status}
                     canInvite={players.data!.can_invite} onDone={refreshAll} />
@@ -480,7 +524,7 @@ function Invites({ teamId }: { teamId: number }) {
           </tbody>
         </table>
       ) : null}
-      {players.data?.players.length ? <p className="muted small">Ranks are self-reported. A blank cell means the player hasn't entered that rank.</p> : null}
+      {players.data?.players.length ? <p className="muted small">Ranks are self-reported on each player's profile. Colours are assigned once a player joins.</p> : null}
       {players.data?.players.length ? null : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
 
       <h3>Invite link</h3>
@@ -586,6 +630,7 @@ function DeleteTeamButton({ roster }: { roster: RosterResponse }) {
 
 function TeamView({ teamId }: { teamId: number }) {
   const { user, teams, refresh } = useAuth();
+  const cat = useCatalogue();
   const location = useLocation();
   const roster = useLoad(() => api.get<RosterResponse>(`/teams/${teamId}/roster`), [teamId]);
   const [error, setError] = useState<string | null>(null);
@@ -599,6 +644,7 @@ function TeamView({ teamId }: { teamId: number }) {
   if (!roster.data) return <Alert>{roster.error}</Alert>;
   const { team, members, viewer } = roster.data;
   const me = user?.user_id ?? 0;
+  const unassigned = members.filter((m) => !m.game_color).length;
   const igl = members.find((m) => m.is_igl);
   const reload = async () => { await roster.reload(); await refresh(); };
 
@@ -627,12 +673,20 @@ function TeamView({ teamId }: { teamId: number }) {
         ) : null}>
           <TeamDetails roster={roster.data} onChange={reload} />
           <h3>Roster ({members.length})</h3>
-          <table className="table">
-            <thead><tr><th>Player</th><th>Role</th><th>Access</th><th /></tr></thead>
-            <tbody>
-              {members.map((m) => <MemberRow key={m.user_id} member={m} roster={roster.data!} me={me} onChange={reload} />)}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="table roster-table">
+              <thead><tr><th>Player</th><th>CS2 colour</th><th>Premier</th><th>FACEIT</th><th>ESEA</th><th>Role</th><th /></tr></thead>
+              <tbody>
+                {members.map((m) => <MemberRow key={m.user_id} member={m} roster={roster.data!} me={me} onChange={reload} cat={cat} />)}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted small">
+            CS2 colours are used for each player in Tactics and Game Mode; each colour goes to one player.
+            {viewer.can_lead ? ' The owner and the IGL assign them.' : ' The owner or the IGL assigns them.'}
+            {unassigned && members.length > 1 ? ` ${unassigned} player${unassigned === 1 ? ' has' : 's have'} no colour yet${members.length > 5 ? ' (there are five colours)' : ''}.` : ''}
+            {' '}Ranks are self-reported on each player's profile.
+          </p>
           <p className="muted small">
             The IGL controls live Game Mode{igl ? ` (currently ${igl.user_name})` : ''}. Only the owner can assign the IGL, and assigning it to
             another player moves control to them immediately. The owner and the IGL can edit tactics and send invites.

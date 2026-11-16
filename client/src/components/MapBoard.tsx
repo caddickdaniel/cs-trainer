@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { findMap, LIMITS, NOTE_SIZE, radarUrl, UTILITY_ICON, type Level } from '../lib/constants';
+import { BOUNCE_POINTS, findMap, LIMITS, NOTE_SIZE, radarUrl, type Level } from '../lib/constants';
+import { isTyping } from '../lib/shortcuts';
+import { useUtilityGlyph } from './UtilityIcon';
 import { fallbackColor, textOn, usePlayerColors } from '../lib/playerColors';
 import type { Board, Hold, Marker, MarkerKind, Point, Route } from '../lib/types';
 import { PracticeYardMap } from './PracticeYardMap';
@@ -138,15 +140,17 @@ export function conePath(cx: number, cy: number, hold: Pick<Hold, 'angle' | 'spr
   return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`;
 }
 
-// Utility icon on a light disc with a ring in the player's colour, so it stays
-// legible over light and dark parts of the radar.
-export function UtilityGlyph({ kind, color, r = 20 }: { kind: string; color: string; r?: number }) {
-  const href = UTILITY_ICON[kind];
+// Utility icon on a disc with a ring in the player's colour, so it stays
+// legible over light and dark parts of the radar: the CS2 icon (white) on a
+// dark disc, or the app's own (black) icon on a light one. `side` picks
+// molotov (T) or incendiary (CT) for fire; `variant` overrides it.
+export function UtilityGlyph({ kind, color, r = 20, side, variant }: { kind: string; color: string; r?: number; side?: string | null; variant?: string | null }) {
+  const { href, dark, onError } = useUtilityGlyph(kind, side, variant);
   return (
-    <g>
+    <g data-utility-icon={dark ? 'cs2' : 'legacy'}>
       <circle r={r + 3} fill="#000" opacity="0.35" />
-      <circle r={r} fill="#f4f6f8" stroke={color} strokeWidth="4" />
-      {href ? <image href={href} x={-r * 0.72} y={-r * 0.72} width={r * 1.44} height={r * 1.44} /> : null}
+      <circle r={r} fill={dark ? '#1a1d22' : '#f4f6f8'} stroke={color} strokeWidth="4" />
+      {href ? <image href={href} x={-r * 0.7} y={-r * 0.7} width={r * 1.4} height={r * 1.4} preserveAspectRatio="xMidYMid meet" onError={onError} /> : null}
     </g>
   );
 }
@@ -195,22 +199,40 @@ interface Props {
   bomb?: Owned | null;
   // Space to keep free under the board when fitting it to the window.
   fitReserve?: number;
+  // The tactic's side: fire markers show a molotov (T) or an incendiary (CT).
+  side?: string | null;
 }
 
 type Drag =
   | { kind: 'marker'; id: string }
   | { kind: 'point'; id: string; index: number }
   | { kind: 'hold-tip'; id: string }
-  | { kind: 'hold-edge'; id: string };
+  | { kind: 'hold-edge'; id: string }
+  | { kind: 'bounce'; id: string; index: number };
+
+// The points a utility throw is drawn through: the thrower (route end or
+// player marker, when on this floor), each bounce point, then the marker.
+export function throwPath(board: Board, m: Marker, level: Level) {
+  const from = throwOrigin(board, m);
+  const pts = [...(from && from.level === level ? [{ x: from.x, y: from.y }] : []), ...(m.path ?? []), { x: m.x, y: m.y }];
+  return { points: pts, hasOrigin: Boolean(from && from.level === level) };
+}
 
 export function MapBoard({
   board, map, level = 'main', onMarkerActivate, players, onChange, tool = 'select', selectedId = null, onSelect,
-  activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay, bomb = null, fitReserve = 16,
+  activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay, bomb = null, fitReserve = 16, side = null,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const frameRef = useFitToViewport<HTMLDivElement>(fitReserve);
   const [drag, setDrag] = useState<Drag | null>(null);
   const editable = Boolean(onChange);
+  // A utility throw being placed: each click adds a point; Enter makes the last
+  // point the landing spot (the others are bounces); Backspace removes the
+  // latest point; Escape cancels. Kept per tool, so switching tools drops it.
+  const [throwDraft, setThrowDraft] = useState<{ kind: MarkerKind; level: Level; points: Point[] } | null>(null);
+  const [cursor, setCursor] = useState<Point | null>(null);
+  const activeThrow = throwDraft && throwDraft.kind === tool && throwDraft.level === level && editable ? throwDraft : null;
+  const isUtilityTool = UTILITY_KINDS.includes(tool);
   const colorOf = usePlayerColors();
   const holds = boardHolds(board);
   const initials = (item: Owned) => {
@@ -239,6 +261,13 @@ export function MapBoard({
       onSelect?.(null);
     } else if (tool === 'route') {
       if (draftRoute.length < LIMITS.routePoints) onDraftRoute?.([...draftRoute, p]);
+    } else if (isUtilityTool) {
+      if (board.markers.length >= LIMITS.markers) return;
+      const points = activeThrow ? activeThrow.points : [];
+      if (points.length > BOUNCE_POINTS) return;
+      setThrowDraft({ kind: tool as MarkerKind, level, points: [...points, p] });
+      setCursor(p);
+      svgRef.current?.focus({ preventScroll: true });
     } else if (board.markers.length < LIMITS.markers) {
       const marker: Marker = {
         id: newId('m'), kind: tool, x: p.x, y: p.y, level, user_id: activePlayer, slot: activePlayer == null ? activeSlot : null,
@@ -257,10 +286,49 @@ export function MapBoard({
     setDrag(next);
   };
 
+  // Places the utility: the last point is where it lands, the rest are bounces.
+  const finishThrow = useCallback(() => {
+    if (!activeThrow || !activeThrow.points.length || !onChange) return;
+    const pts = activeThrow.points;
+    const end = pts[pts.length - 1];
+    const marker: Marker = {
+      id: newId('m'), kind: activeThrow.kind, x: end.x, y: end.y, level, user_id: activePlayer, slot: activePlayer == null ? activeSlot : null,
+      label: '', images: [], ...(pts.length > 1 ? { path: pts.slice(0, -1) } : {}),
+    };
+    onChange({ ...board, holds: boardHolds(board), markers: [...board.markers, marker] });
+    onSelect?.(marker.id);
+    setThrowDraft(null);
+  }, [activeThrow, onChange, board, level, activePlayer, activeSlot, onSelect]);
+
+  // Throw keys while placing (not while typing in a field): Enter finishes,
+  // Backspace removes the latest point, Escape cancels. Other keys untouched.
+  useEffect(() => {
+    if (!activeThrow) return undefined;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (isTyping(e.target)) return;
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finishThrow(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setThrowDraft(null); }
+      else if (e.key === 'Backspace') {
+        e.preventDefault(); e.stopPropagation();
+        setThrowDraft((d) => (d && d.points.length > 1 ? { ...d, points: d.points.slice(0, -1) } : null));
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [activeThrow, finishThrow]);
+
   const handleMove = (e: PointerEvent<SVGSVGElement>) => {
+    if (activeThrow) {
+      const c = toPoint(e);
+      if (c) setCursor(c);
+    }
     if (!drag) return;
     const p = toPoint(e);
     if (!p) return;
+    if (drag.kind === 'bounce') {
+      update({ markers: board.markers.map((m) => (m.id === drag.id && m.path ? { ...m, path: m.path.map((pt, i) => (i === drag.index ? p : pt)) } : m)) });
+      return;
+    }
     if (drag.kind === 'marker') {
       update({ markers: board.markers.map((m) => (m.id === drag.id ? { ...m, x: p.x, y: p.y } : m)) });
     } else if (drag.kind === 'point') {
@@ -338,22 +406,53 @@ export function MapBoard({
     );
   };
 
-  // Dotted line from where a player throws (route end or marker) to each of
-  // their utility markers. Drawn only when both ends are on the visible floor.
-  const connectors = board.markers.filter((m) => UTILITY_KINDS.includes(m.kind) && ownerKey(m) && levelOf(m) === level && !m.reference)
+  // Dotted throw line from where a player throws (route end or marker),
+  // through any bounce points, to each utility marker. Bounce points get a
+  // small ring; when the marker is selected they can be dragged.
+  const connectors = board.markers.filter((m) => UTILITY_KINDS.includes(m.kind) && levelOf(m) === level && !m.reference && (ownerKey(m) || m.path?.length))
     .map((m) => {
-      const from = throwOrigin(board, m);
-      if (!from || from.level !== level) return null;
-      // Round dots (zero-length dashes) with a dark outline: visible on any
-      // part of the radar and unlike the solid, arrowed movement routes.
-      const line = { x1: from.x * SIZE, y1: from.y * SIZE, x2: m.x * SIZE, y2: m.y * SIZE };
+      const { points } = throwPath(board, m, level);
+      if (points.length < 2) return null;
+      const pts = points.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ');
+      const color = colorOf(m);
+      const selected = m.id === selectedId;
+      const bounces = m.path ?? [];
       return (
-        <g key={`c-${m.id}`} opacity={dim(m) ? 0.25 : 1} pointerEvents="none" data-connector-for={m.id}>
-          <line {...line} stroke="#000" strokeOpacity="0.7" strokeWidth="9" strokeDasharray="0 14" strokeLinecap="round" />
-          <line {...line} stroke={colorOf(m)} strokeWidth="6" strokeDasharray="0 14" strokeLinecap="round" />
+        <g key={`c-${m.id}`} opacity={dim(m) ? 0.25 : 1} data-connector-for={m.id} data-bounces={bounces.length}>
+          {/* Round dots (zero-length dashes) with a dark outline: visible on any
+              part of the radar and unlike the solid, arrowed movement routes. */}
+          <polyline points={pts} fill="none" stroke="#000" strokeOpacity="0.7" strokeWidth="9" strokeDasharray="0 14" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
+          <polyline points={pts} fill="none" stroke={color} strokeWidth="6" strokeDasharray="0 14" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
+          {bounces.map((b, i) => (
+            <g key={i} transform={`translate(${b.x * SIZE},${b.y * SIZE})`} data-bounce-index={i}
+              style={{ cursor: editable && selected && tool === 'select' ? 'grab' : undefined }}
+              pointerEvents={editable && selected && tool === 'select' ? 'all' : 'none'}
+              onPointerDown={(e) => { if (editable && selected && tool === 'select') startDrag(e, { kind: 'bounce', id: m.id, index: i }, m.id); }}>
+              {editable && selected ? <circle r="20" fill="transparent" /> : null}
+              <circle r={selected && editable ? 9 : 6} fill="#111" stroke={color} strokeWidth={selected && editable ? 4 : 3} />
+            </g>
+          ))}
         </g>
       );
     });
+
+  // The throw being placed: points so far, a dashed preview to the cursor and
+  // the utility where it would land if Enter were pressed now.
+  const throwPreview = activeThrow ? (() => {
+    const from = throwOrigin(board, { user_id: activePlayer, slot: activePlayer == null ? activeSlot : null });
+    const start = from && from.level === level ? [{ x: from.x, y: from.y }] : [];
+    const fixed = [...start, ...activeThrow.points];
+    const last = fixed[fixed.length - 1];
+    const color = activePlayer != null || activeSlot ? colorOf({ user_id: activePlayer, slot: activePlayer == null ? activeSlot : null }) : '#ffffff';
+    return (
+      <g pointerEvents="none" data-throw-draft={activeThrow.points.length}>
+        {fixed.length > 1 ? <polyline points={fixed.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')} fill="none" stroke={color} strokeWidth="5" strokeDasharray="2 10" strokeLinecap="round" /> : null}
+        {cursor && last ? <line x1={last.x * SIZE} y1={last.y * SIZE} x2={cursor.x * SIZE} y2={cursor.y * SIZE} stroke="#fff" strokeWidth="3" strokeDasharray="8 8" opacity="0.8" /> : null}
+        {activeThrow.points.slice(0, -1).map((p, i) => <circle key={i} cx={p.x * SIZE} cy={p.y * SIZE} r="8" fill="#111" stroke={color} strokeWidth="3" />)}
+        <g transform={`translate(${last.x * SIZE},${last.y * SIZE})`} opacity="0.85"><UtilityGlyph kind={activeThrow.kind} color={color} side={side} /></g>
+      </g>
+    );
+  })() : null;
 
   const renderHold = (h: Hold) => {
     const anchor = board.markers.find((m) => m.id === h.marker_id);
@@ -399,14 +498,14 @@ export function MapBoard({
     let ring = 50;
     switch (m.kind) {
       case 'smoke':
-        shape = <><circle r="44" fill="#c9d0d8" opacity="0.4" /><circle r="44" fill="none" stroke={color} strokeWidth="3" /><UtilityGlyph kind="smoke" color={color} /></>;
+        shape = <><circle r="44" fill="#c9d0d8" opacity="0.4" /><circle r="44" fill="none" stroke={color} strokeWidth="3" /><UtilityGlyph kind="smoke" color={color} side={side} /></>;
         break;
       case 'molly':
-        shape = <><circle r="34" fill="#e8833a" opacity="0.4" /><UtilityGlyph kind="molly" color={color} /></>;
+        shape = <><circle r="34" fill="#e8833a" opacity="0.4" /><UtilityGlyph kind="molly" color={color} side={side} /></>;
         break;
       case 'flash':
       case 'he':
-        shape = <UtilityGlyph kind={m.kind} color={color} />;
+        shape = <UtilityGlyph kind={m.kind} color={color} side={side} />;
         ring = 32;
         break;
       case 'note': {
@@ -468,7 +567,16 @@ export function MapBoard({
 
   const areaKinds = ['smoke', 'molly'];
   return (
-    <div className="board-frame" ref={frameRef}>
+    <div className={`board-frame${activeThrow ? ' placing-throw' : ''}`} ref={frameRef}>
+      {activeThrow ? (
+        <div className="throw-hint" role="status">
+          <span>Click to add bounce points • Enter to finish • Backspace to undo point • Esc to cancel</span>
+          <span className="row tight">
+            <button type="button" className="btn primary small" onClick={finishThrow}>Finish ({activeThrow.points.length - 1} bounce{activeThrow.points.length === 2 ? '' : 's'})</button>
+            <button type="button" className="btn ghost small" onClick={() => setThrowDraft(null)}>Cancel</button>
+          </span>
+        </div>
+      ) : null}
       <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} preserveAspectRatio="xMidYMid meet" role="img"
         aria-label={label} tabIndex={editable ? 0 : undefined} className={`board${editable ? ' editable' : ''} tool-${tool}`}
         onPointerDown={handleBackgroundDown} onPointerMove={handleMove} onKeyDown={handleKey}
@@ -478,6 +586,7 @@ export function MapBoard({
         {routes.map((r) => renderRoute(r))}
         {draftRoute.length ? renderRoute({ id: 'draft', user_id: activePlayer, slot: activeSlot, color: '#ffffff', points: draftRoute }, true) : null}
         {connectors}
+        {throwPreview}
         {markers.filter((m) => areaKinds.includes(m.kind)).map(renderMarker)}
         {markers.filter((m) => !areaKinds.includes(m.kind) && m.kind !== 'player').map(renderMarker)}
         {markers.filter((m) => m.kind === 'player').map(renderMarker)}

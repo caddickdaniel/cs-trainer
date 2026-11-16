@@ -24,6 +24,7 @@ exports.mapLevels = (id) => (exports.MAP_DEFS.find((m) => m.id === id) || { leve
 // role that controls live Game Mode.
 exports.PLAYER_ROLES = ['entry', 'support', 'lurker', 'awper', 'anchor', 'rifler', 'igl'];
 exports.EVENT_KINDS = ['training', 'game', 'demo_review'];
+exports.AVAILABILITY_STATUSES = ['available', 'unavailable'];
 exports.SHORTCUT_ACTIONS = ['phase_prev', 'phase_next', 'tactic_prev', 'tactic_next', 'new_round', 'switch_side'];
 exports.DEFAULT_SHORTCUTS = {
   phase_prev: 'ArrowLeft',
@@ -52,6 +53,8 @@ exports.LIMITS = {
   markers: 60,
   routes: 30,
   routePoints: 100,
+  // Intermediate bounce points on one utility throw (Phase 10).
+  bouncePoints: 8,
   imagesPerMarker: 4,
   imageBytes: 8 * 1024 * 1024,
   imageMaxSide: 8192,
@@ -89,13 +92,15 @@ exports.RADAR_TRANSFORMS = {
 exports.RADAR_SIZE = 1024;
 exports.DEMO_STATUSES = ['queued', 'processing', 'ready', 'failed'];
 
-// CS2 in-game teammate colours. A tactic can give each player (or Player 1-5
-// slot) one of these; each colour is used once per tactic.
+// CS2 in-game teammate colours, in CS2's order, with the values from the
+// game's Panorama styles (csgostyles.vcss: color-player-yellow etc.). A team
+// gives each member one (Team tab); a tactic can also colour its Player 1-5
+// slots. Each colour is used once per team / tactic.
 exports.PLAYER_PALETTE = [
-  { id: 'orange', label: 'Orange', hex: '#eda338' },
-  { id: 'green', label: 'Green', hex: '#109856' },
-  { id: 'blue', label: 'Blue', hex: '#68a3e5' },
-  { id: 'yellow', label: 'Yellow', hex: '#e6f13d' },
-  { id: 'purple', label: 'Purple', hex: '#803ca1' },
+  { id: 'yellow', label: 'Yellow', hex: '#f8f62d' },
+  { id: 'purple', label: 'Purple', hex: '#c03699' },
+  { id: 'green', label: 'Green', hex: '#1da284' },
+  { id: 'blue', label: 'Blue', hex: '#88cef5' },
+  { id: 'orange', label: 'Orange', hex: '#ff9b25' },
 ];
 exports.PLAYER_COLOR_IDS = exports.PLAYER_PALETTE.map((c) => c.id);

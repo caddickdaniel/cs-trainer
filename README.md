@@ -867,6 +867,43 @@ From the extracted Panorama styles and layouts (`hudteamcounter`, `hudteamcounte
 
 `REPLAY_VERSION` is 5: kills carry the assister and flash assist, wallbang, no-scope, through smoke, attacker blind and in air (only when the event has them) and the raw weapon id; rounds carry the bomb damage actually done (`player_hurt` with `planted_c4`), each player's best weapon and in-game score, and the radar width in game units. Demos are re-parsed in the background as before; annotations and notes are kept.
 
+## Phase 10
+
+### Team
+- **CS2 colours per player** (`team_memberships.game_color`): yellow, purple, green, blue, orange, with CS2's own values from the game's Panorama styles (`color-player-*`: #f8f62d, #c03699, #1da284, #88cef5, #ff9b25; the earlier approximations were replaced). One colour per player, unique on the team (database index); the picker disables colours other players have and names them. The owner and the IGL assign them (as with roles); leaving the team frees the colour; a sixth player stays unassigned. Shown as a swatch and a ring round the avatar.
+- **One source of truth for colours:** a member's team colour replaces any colour stored in a tactic or Game Mode round when they're shown (`services/teamColors.js`, mirrored in the client), so Team, Tactics, Game Mode and the board agree. Tactic editor colour pickers are read-only for players with a team colour; Player 1–5 slots in shared tactics keep their own colours.
+- **Rank columns** Premier, FACEIT and ESEA from each player's profile (self-reported, the existing Phase 5 catalogue), "Not set" when missing. Invite players uses the same rank cells and order; pending invites show only what's known (no colours until a player joins).
+- **Access column removed** (presentation only); the owner badge sits beside the name and the permissions note below the table is unchanged.
+
+### Calendar
+- **Availability** (`team_availability`): every member adds, edits and deletes their **own** Available / Unavailable entries (date dd/mm/yyyy, All day or From–Until, optional note); everyone sees them; nobody else can change them (enforced on the server). Stored as instants; all-day = local midnight to midnight; no notifications.
+- **Events:** the owner **and the IGL** now create, edit and delete Training, Game and Demo Review events (was owner only), with an optional end time. One Add calendar entry form: members see only Available / Unavailable; the owner and IGL also see the event types.
+- **Display:** events (coloured by type) and availability (✓ green / ✕ striped red, with the player's colour dot) are styled differently; up to three entries per day then "+N more"; clicking a day lists everything and a **Team availability** table: per player Available / Unavailable / Not specified (no entry is never treated as available) with times.
+- **Conflicts:** the event form warns, live, when players marked themselves unavailable during the session ("1 player has marked themselves unavailable during this session: Blitz"); events without an end time are checked for 2 hours. It warns, it doesn't block.
+- **Sample data:** `npm run db:sample-calendar` fills the existing **Practice Roster** team (only) with 11 events and 30 availability entries over two weeks from the current week: all-day, partial and evening entries, overlaps, conflicts and several days with three or more entries. Idempotent; titles end in "(sample)", availability notes say "Sample entry"; inserted directly, so no notifications.
+
+### Notifications
+- **Clear all** (replaces Close) moves every active notification to history (`dismissed_at`, the existing soft-dismiss column; nothing is deleted) and resets the unread count. **History** lists cleared notifications, most recently cleared first, with title, message, type, when it was created and when it was cleared; **Back to notifications** returns. Per user; persists across refreshes and sign-ins. New endpoints: `POST /api/notifications/clear-all`, `GET /api/notifications/history`.
+
+### Demo Review
+- The **scoreboard is centred on the radar** (positioned from the radar's own frame, both ways), so it stays centred whatever the side panes or window do; it may extend past a small radar's sides but stays inside the window.
+- **Timeline utility icons** are the extracted CS2 icons (smoke, flashbang, HE, molotov or incendiary as recorded for each fire).
+
+### Shared utility icons
+- `utilityId()` / `UtilityIcon` (`lib/cs2Assets.ts`, `components/UtilityIcon.tsx`) map every identifier used in the app (`smoke`, `flash`, `he`, `molly`, `fire` + variant, `inc`, `decoy`, `smokegrenade`, `c4`, `kit`, armour…) to one CS2 icon. `molly` follows the side: molotov for T, incendiary for CT. Used in Demo Review (timeline, HUD, tools), Game Mode (Your buy, Team buy) and Tactics (toolbar, buy lists, board markers, which put the white CS2 icon on a dark disc). Without the CS2 asset set the app's own icons are used.
+
+### Game Mode
+- **Team buy** uses the CS2 icons (molotov or incendiary by side), a C4 column for T and a defuse kit column for CT, and is shown to everyone.
+- **Team roles this round:** every member can pick a teammate (pills in their CS2 colours, default: you) to see their roster role, this phase's instruction, the utility they throw and have, and where they're placed; the board highlights them. Viewing only: control stays with the IGL (the server now sends every instruction to all members, read-only).
+
+### Tactics: utility throw paths
+- Placing a smoke, flash, molotov or HE: **click** to add points, **Enter** (or Finish) to place it at the last point, **Backspace** removes the latest point, **Esc** cancels; a dashed preview follows the cursor and a hint bar shows the keys. The throw is drawn from the thrower (route end or player marker) through each bounce point (small rings) to the utility icon. Selected utility: drag its bounce points, **Add bounce point**, **Remove last bounce** or **Straight line**; moving or deleting the marker works as before. Up to 8 bounce points.
+- Stored as an optional `path` of bounce points on the utility marker (board coordinates); saved tactics without one still draw a straight line, so nothing is migrated. Paths are hand-drawn illustrations, labelled as such, not simulated CS2 grenade physics.
+- The editor has no undo/redo; Backspace during placement and the buttons above are the ways back.
+
+### Migrations
+`20261118000100_phase_10_colours_availability.js`: `team_memberships.game_color` (+ unique per team), `team_events.ends_at`, `team_availability`.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

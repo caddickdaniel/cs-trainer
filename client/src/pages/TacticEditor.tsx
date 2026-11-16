@@ -3,7 +3,7 @@ import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, errorMessage, imageUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import {
-  DEFAULT_MAP, ECONOMIES, ECONOMY_LABEL, LEVEL_LABEL, LIMITS, LINEUP_KINDS, MAPS, MARKER_KINDS, MARKER_LABEL, NOTE_SIZE, UTILITY_ICON, mapLevels, roleLabel,
+  DEFAULT_MAP, ECONOMIES, ECONOMY_LABEL, LEVEL_LABEL, LIMITS, LINEUP_KINDS, MAPS, MARKER_KINDS, MARKER_LABEL, NOTE_SIZE, BOUNCE_POINTS, mapLevels, roleLabel,
   type Level,
 } from '../lib/constants';
 import { useDocumentTitle } from '../lib/hooks';
@@ -12,8 +12,9 @@ import { BUY_LIMITS, GRENADES, GRENADE_LABEL, MAX_GRENADES, describeCounts, empt
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { KitIcon } from '../components/UtilityCard';
-import { MapBoard, boardHolds, newId, ownerKey, sameOwner, type Tool } from '../components/MapBoard';
-import { PLAYER_PALETTE, PlayerColorsProvider, assignColor, autoAssign, colorFor, colorKey } from '../lib/playerColors';
+import { MapBoard, boardHolds, newId, ownerKey, sameOwner, throwOrigin, type Tool } from '../components/MapBoard';
+import { UtilityIcon } from '../components/UtilityIcon';
+import { PLAYER_PALETTE, PlayerColorsProvider, applyTeamColors, assignColor, autoAssign, colorFor, colorKey } from '../lib/playerColors';
 import { useEditorSplit } from '../lib/useEditorSplit';
 import { draftHasWork, otherDrafts, switchMapDraft, type MapDrafts } from '../lib/mapDrafts';
 import { LevelSwitch } from '../components/Lineups';
@@ -98,7 +99,7 @@ function BuyList({ who, side, loadout, plan, phaseIndex, bomb, onChange, onBomb 
       <div className="buy-grid">
         {GRENADES.map((g) => (
           <label key={g} className="buy-item">
-            <img src={UTILITY_ICON[g]} alt="" width="18" height="18" />
+            <UtilityIcon kind={g} side={side} size={18} label="" />
             <span>{GRENADE_LABEL[g][1]}</span>
             <select aria-label={`${GRENADE_LABEL[g][1]} to buy`} value={l[g]}
               onChange={(e) => onChange({ ...l, [g]: Number(e.target.value) })}>
@@ -313,6 +314,29 @@ function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId,
           <label>X (%)<input type="number" min={0} max={100} step={0.5} value={pct(marker.x)} onChange={(e) => set({ x: fromPct(e.target.value) })} /></label>
           <label>Y (%)<input type="number" min={0} max={100} step={0.5} value={pct(marker.y)} onChange={(e) => set({ y: fromPct(e.target.value) })} /></label>
         </div>
+        {(['smoke', 'flash', 'molly', 'he'] as string[]).includes(marker.kind) ? (
+          <div className="bounce-editor">
+            <span className="field-label">Throw path</span>
+            <p className="muted small">
+              {marker.path?.length ? `${marker.path.length} bounce point${marker.path.length === 1 ? '' : 's'} (drag them on the board).` : 'Straight from the thrower.'}
+              {' '}A drawn illustration of where the grenade goes, not a simulated CS2 trajectory.</p>
+            <div className="row wrap tight">
+              <button type="button" className="btn ghost small" disabled={(marker.path?.length ?? 0) >= BOUNCE_POINTS} onClick={() => {
+                // New bounce halfway between the previous point (last bounce, else
+                // the thrower, else just off the marker) and where it lands.
+                const prev = marker.path?.length ? marker.path[marker.path.length - 1] : throwOrigin(phase.board, marker) ?? { x: Math.max(0, marker.x - 0.05), y: marker.y };
+                const mid = { x: Math.round(((prev.x + marker.x) / 2) * 10000) / 10000, y: Math.round(((prev.y + marker.y) / 2) * 10000) / 10000 };
+                set({ path: [...(marker.path ?? []), mid] });
+              }}>Add bounce point</button>
+              {marker.path?.length ? (
+                <>
+                  <button type="button" className="btn ghost small" onClick={() => set({ path: marker.path!.length > 1 ? marker.path!.slice(0, -1) : undefined })}>Remove last bounce</button>
+                  <button type="button" className="btn ghost small" onClick={() => set({ path: undefined })}>Straight line</button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         {(LINEUP_KINDS as readonly string[]).includes(marker.kind)
           ? <LineupEditor teamId={teamId} images={marker.images ?? []} onChange={(images) => set({ images })} />
           : <p className="muted small">Change the type to a grenade or note to attach lineup screenshots.</p>}
@@ -347,8 +371,18 @@ function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId,
 
 // The five in-game colours as a radio group; picking a colour another player
 // has swaps it with them, so every colour stays unique.
-function ColorPicker({ who, name, colors, onChange }: { who: Who; name: string; colors: PlayerColor[]; onChange: (c: PlayerColor[]) => void }) {
+function ColorPicker({ who, name, colors, onChange, teamColor }: { who: Who; name: string; colors: PlayerColor[]; onChange: (c: PlayerColor[]) => void; teamColor?: PlayerColorId | null }) {
   const mine = colors.find((c) => colorKey(c) === whoValue(who))?.color ?? null;
+  // A colour given on the Team tab applies to every tactic (read-only here).
+  if (teamColor) {
+    const c = PLAYER_PALETTE.find((x) => x.id === teamColor);
+    return (
+      <div className="color-picker">
+        <span className="field-label">In-game colour</span>
+        <span className="row tight-row small"><span className="swatch on static" style={{ background: c?.hex }} aria-hidden="true" /> {c?.label} <span className="muted">(set on the Team tab)</span></span>
+      </div>
+    );
+  }
   const holderName = (id: PlayerColorId) => {
     const h = colors.find((c) => c.color === id && colorKey(c) !== whoValue(who));
     return h ? ` (swap with ${h.user_id != null ? 'another player' : `Player ${h.slot}`})` : '';
@@ -403,7 +437,8 @@ function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, lo
             <button type="button" className="btn ghost small" onClick={() => set(who, { utility: '', reference_url: null })}>Remove old entry</button>
           </div>
         ) : null}
-        <ColorPicker who={who} name={title} colors={colors} onChange={onColors} />
+        <ColorPicker who={who} name={title} colors={colors} onChange={onColors}
+          teamColor={who.user_id != null ? roster.find((r) => r.user_id === who.user_id)?.game_color : null} />
         <BuyList who={who} side={side} loadout={loadouts.find((l) => refKey(l) === whoValue(who))} plan={plan.get(whoValue(who))}
           phaseIndex={phaseIndex} bomb={refKey(bomb) === whoValue(who)}
           onChange={(l) => onLoadouts([...loadouts.filter((x) => refKey(x) !== whoValue(who)), l])}
@@ -520,7 +555,7 @@ export function TacticEditorPage() {
           if (!team) return;
           const r = await api.get<RosterResponse>(`/teams/${team.team_id}/roster`);
           if (cancelled) return;
-          setRoster(r.members.map((m) => ({ user_id: m.user_id, user_name: m.user_name, player_role: m.player_role })));
+          setRoster(r.members.map((m) => ({ user_id: m.user_id, user_name: m.user_name, player_role: m.player_role, game_color: m.game_color ?? null })));
           setTeamId(team.team_id);
           setCanEdit(r.viewer.can_lead);
         } else {
@@ -611,7 +646,8 @@ export function TacticEditorPage() {
   const bomb = fields.side === 'T' ? fields.bomb_carrier ?? null : null;
   const slots = useMemo(() => unmappedSlots(phases, [...loadouts, bomb]), [phases, loadouts, bomb]);
   const plan = useMemo(() => utilityPlan(loadouts, phases), [loadouts, phases]);
-  const colors = useMemo(() => fields.player_colors ?? [], [fields.player_colors]);
+  // Team colours (Team tab) over the tactic's own, for new tactics too.
+  const colors = useMemo(() => applyTeamColors(fields.player_colors ?? [], roster), [fields.player_colors, roster]);
   const { setLayout, stacked, style: splitStyle, dividerProps } = useEditorSplit();
   const keptDrafts = isNew ? otherDrafts(mapDrafts, fields.map, draftHasWork) : [];
   const overPlans = [...plan.values()].reduce((n, p) => n + p.over.length, 0);
@@ -820,7 +856,7 @@ export function TacticEditorPage() {
             {tools.map((t) => (
               <button key={t.id} type="button" className={tool === t.id ? 'on' : ''} aria-pressed={tool === t.id} onClick={() => chooseTool(t.id)} title={t.label}>
                 <span className="tool-icon" aria-hidden="true">
-                  {UTILITY_ICON[t.id] ? <img src={UTILITY_ICON[t.id]} alt="" width="18" height="18" /> : <Icon name={TOOL_ICON[t.id]} />}
+                  {['smoke', 'flash', 'molly', 'he'].includes(t.id) ? <UtilityIcon kind={t.id} side={fields.side} size={18} label="" /> : <Icon name={TOOL_ICON[t.id]} />}
                 </span>
                 {t.label}
               </button>
@@ -853,7 +889,7 @@ export function TacticEditorPage() {
           </div>
         </div>
         <div className="board-cell">
-          <MapBoard board={phase.board} map={fields.map} level={level} players={roster} onChange={(b) => setPhase({ board: b })} tool={tool}
+          <MapBoard board={phase.board} map={fields.map} level={level} players={roster} onChange={(b) => setPhase({ board: b })} tool={tool} side={fields.side}
             selectedId={selectedId} onSelect={setSelectedId} activePlayer={active.user_id} activeSlot={active.slot} draftRoute={draft} onDraftRoute={setDraft}
             label={`Editable board for ${phase.name}`} bomb={bomb} />
         </div>

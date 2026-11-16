@@ -18,6 +18,7 @@
     "db:reset": "node scripts/db-reset.js",
     "db:review": "node scripts/db-review.js",
     "db:demo": "node scripts/seed-demo.js",
+    "db:sample-calendar": "node scripts/seed-practice-calendar.js",
     "demos:reprocess": "node scripts/reprocess-demos.js",
     "cs2:assets": "tools/cs2-asset-extraction/work/venv/bin/python tools/cs2-asset-extraction/build_assets.py",
     "migrate:make": "knex migrate:make",

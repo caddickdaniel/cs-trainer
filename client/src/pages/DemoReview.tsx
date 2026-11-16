@@ -12,7 +12,7 @@ import { Icon } from '../components/Icons';
 import { MapBackground, UtilityGlyph } from '../components/MapBoard';
 import { KillFeed, ReplayHud, ReplayScoreboard } from '../components/ReplayHud';
 import { weaponLabel } from '../lib/cs2Assets';
-import { UTILITY_ICON } from '../lib/constants';
+import { UtilityIcon } from '../components/UtilityIcon';
 
 const SIZE = 1000;
 type UtilityKind = 'smoke' | 'flash' | 'he' | 'molly';
@@ -393,8 +393,8 @@ function TimelineGlyph({ ev }: { ev: ReplayEvent }) {
   if (ev.type === 'plant') return <span className="tl-glyph plant"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
   if (ev.type === 'explode') return <span className="tl-glyph explode"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
   if (ev.type === 'defuse') return <span className="tl-glyph defuse"><Icon name="defuse" size={13} /></span>;
-  const kind = ev.type === 'fire' ? 'molly' : ev.type;
-  return <span className={`tl-glyph util ${ev.type}`}><img src={UTILITY_ICON[kind]} alt="" width="13" height="13" /></span>;
+  // The same CS2 icon as the kill feed for that utility (fire: molotov or incendiary, as recorded).
+  return <span className={`tl-glyph util ${ev.type}`}><UtilityIcon kind={ev.type} variant={ev.variant} size={12} label="" /></span>;
 }
 
 // Round timeline across the centre pane, from the end of freeze time (the
@@ -818,7 +818,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     { id: 'none', label: 'View', icon: <Icon name="select" /> },
     { id: 'draw', label: 'Draw', icon: <Icon name="pen" /> },
     { id: 'text', label: 'Text', icon: <Icon name="text" /> },
-    ...UTILITY_KINDS.map(([k, label]) => ({ id: k as Tool, label, icon: <img src={UTILITY_ICON[k]} alt="" width="18" height="18" /> })),
+    ...UTILITY_KINDS.map(([k, label]) => ({ id: k as Tool, label, icon: <UtilityIcon kind={k} size={18} label="" /> })),
   ];
   const playing = clock.playing && !atEnd;
   // ---- Kill feed, kill highlight and bomb detonation (all from the tick) ----
@@ -1167,6 +1167,10 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               {draft ? <polyline points={draft.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')} fill="none" stroke="#ffd166" strokeWidth="5"
                 strokeDasharray="10 6" strokeLinecap="round" pointerEvents="none" /> : null}
             </svg>
+            {/* Centred on the radar itself (not the window), over the map; never changes playback. */}
+            {showScoreboard && round ? (
+              <div id="replay-scoreboard" className="cs2-scoreboard-layer"><ReplayScoreboard round={round} tick={tick} name={nameOf} onClose={() => setShowScoreboard(false)} /></div>
+            ) : null}
             {round && killFeed.length ? (
               <KillFeed entries={killFeed} side={sideOfPlayer} name={nameOf} describe={describe} onSelect={pickKill} selected={selectedKill} />
             ) : null}
@@ -1181,9 +1185,6 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           ) : !roundError ? <p className="muted small">Loading round…</p> : null}
         </div>
 
-        {showScoreboard && round ? (
-          <div id="replay-scoreboard" className="cs2-scoreboard-layer"><ReplayScoreboard round={round} tick={tick} name={nameOf} onClose={() => setShowScoreboard(false)} /></div>
-        ) : null}
         <aside className="replay-side" aria-label="Rounds, notes and annotations">
           <Panel title="Rounds">
             <div className="round-strip">
@@ -1221,7 +1222,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   <li key={a.annotation_id} className="row space">
                     <button type="button" disabled={!canControl} onClick={() => control.seek(a.tick)}>
                       <span className="muted">{roundTime(info, a.tick, tickrate)}</span> {a.kind === 'text' ? `“${a.data.text}”`
-                        : a.kind === 'utility' ? <><img src={UTILITY_ICON[a.data.utility ?? 'smoke']} alt="" width="14" height="14" /> {UTILITY_KINDS.find(([k]) => k === a.data.utility)?.[1] ?? 'Utility'}</> : 'Drawing'}
+                        : a.kind === 'utility' ? <><UtilityIcon kind={a.data.utility ?? 'smoke'} size={14} label="" /> {UTILITY_KINDS.find(([k]) => k === a.data.utility)?.[1] ?? 'Utility'}</> : 'Drawing'}
                       {a.level === 'lower' ? ' (lower)' : ''}
                       {a.author ? <span className="muted"> · {a.author.user_name}</span> : null}
                       {!a.saved ? <span className="unsaved-tag">{a.review_id != null ? 'live' : 'unsaved'}</span> : null}

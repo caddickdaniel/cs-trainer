@@ -23,6 +23,9 @@ export interface Marker {
   size?: number;
   // Utility only: a reference, not one of the player's planned throws.
   reference?: boolean;
+  // Utility only: intermediate bounce points from the thrower to this marker
+  // (drawn by hand; not a simulated trajectory). Absent = straight line.
+  path?: Point[];
   images?: (LineupImage & { url?: string })[];
 }
 export interface Route { id: string; level?: Level; user_id: number | null; slot?: number | null; color: string; points: Point[] }
@@ -100,7 +103,7 @@ export interface TacticSummary {
   imported_from_share_id?: number | null;
 }
 
-export interface RosterEntry { user_id: number; user_name: string; player_role: PlayerRole | null }
+export interface RosterEntry { user_id: number; user_name: string; player_role: PlayerRole | null; game_color?: PlayerColorId | null }
 
 export interface User { user_id: number; user_name: string; email: string }
 
@@ -130,6 +133,9 @@ export interface Member {
   can_lead: boolean;
   player_role: PlayerRole | null;
   joined_at: string;
+  // CS2 teammate colour on this team (Team tab), and self-reported profile ranks.
+  game_color?: PlayerColorId | null;
+  ranks?: PlayerRanks;
 }
 
 export type PlayerRanks = { premier: string | null; faceit: string | null; esea: string | null };
@@ -197,6 +203,8 @@ export interface GameSession {
   bomb_carrier?: PlayerRef | null;
   player_colors?: PlayerColor[];
   utility?: PlayerUtility[];
+  // Team members and their roster roles (Phase 10), for viewing others' roles.
+  members?: { user_id: number; user_name: string; player_role: PlayerRole | null }[];
   can_control: boolean;
   round_number: number;
   map: string | null;
@@ -298,18 +306,38 @@ export interface TeamEvent {
   demo: { demo_id: number; title: string; status: DemoStatus } | null;
   title: string;
   starts_at: string;
+  // Optional end time (Phase 10).
+  ends_at?: string | null;
   time_zone: string;
   opponent: string | null;
   notes: string;
+  updated_at: string;
+}
+// A player's own availability entry on the team calendar (Phase 10).
+export interface Availability {
+  availability_id: number;
+  team_id: number;
+  user: { user_id: number; user_name: string | null };
+  status: 'available' | 'unavailable';
+  all_day: boolean;
+  day: string;
+  starts_at: string;
+  ends_at: string;
+  time_zone: string;
+  note: string;
+  sample: boolean;
   updated_at: string;
 }
 
 export interface AppNotification {
   notification_id: number;
   kind: string;
+  title?: string;
   message: string;
   created_at: string;
   read: boolean;
+  // When the user cleared it (history).
+  cleared_at?: string | null;
 }
 
 // ---- Shared tactics -----------------------------------------------------------

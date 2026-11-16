@@ -24,7 +24,9 @@ describe('Game Mode', () => {
     expect(seen.tactic.tactic_name).to.equal('Test Split');
     expect(seen.phase.name).to.equal('Setup');
     expect(seen.my_assignment).to.include({ user_id: member.user.user_id, instruction: 'Lurk B' });
-    expect(seen).to.not.have.property('assignments');
+    // Phase 10: every member can view everyone's instructions (read-only), not control the round.
+    expect(seen.assignments.map((a) => a.instruction).sort()).to.deep.equal(['Hold mid', 'Lurk B']);
+    expect(seen.can_control).to.equal(false);
     const ownerView = (await owner.get(url).expect(200)).body.session;
     expect(ownerView.my_assignment.instruction).to.equal('Hold mid');
 

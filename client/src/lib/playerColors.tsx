@@ -2,13 +2,14 @@ import { createContext, useCallback, useContext, type ReactNode } from 'react';
 import { PLAYER_COLORS, SLOT_COLORS } from './constants';
 import type { PlayerColor, PlayerColorId } from './types';
 
-// CS2 in-game teammate colours (mirrors PLAYER_PALETTE in domain/constants.js).
+// CS2 in-game teammate colours in CS2's order, values from the game's
+// Panorama styles (color-player-*). Mirrors PLAYER_PALETTE in domain/constants.js.
 export const PLAYER_PALETTE: { id: PlayerColorId; label: string; hex: string }[] = [
-  { id: 'orange', label: 'Orange', hex: '#eda338' },
-  { id: 'green', label: 'Green', hex: '#109856' },
-  { id: 'blue', label: 'Blue', hex: '#68a3e5' },
-  { id: 'yellow', label: 'Yellow', hex: '#e6f13d' },
-  { id: 'purple', label: 'Purple', hex: '#803ca1' },
+  { id: 'yellow', label: 'Yellow', hex: '#f8f62d' },
+  { id: 'purple', label: 'Purple', hex: '#c03699' },
+  { id: 'green', label: 'Green', hex: '#1da284' },
+  { id: 'blue', label: 'Blue', hex: '#88cef5' },
+  { id: 'orange', label: 'Orange', hex: '#ff9b25' },
 ];
 export const paletteHex = (id: PlayerColorId) => PLAYER_PALETTE.find((c) => c.id === id)?.hex ?? '#d7dde4';
 
@@ -39,6 +40,18 @@ export function PlayerColorsProvider({ colors, children }: { colors: PlayerColor
 export function usePlayerColors() {
   const colors = useContext(Ctx);
   return useCallback((item: Owned) => colorFor(item, colors), [colors]);
+}
+
+// Team colours (Team tab) win over a tactic's stored colours for those
+// players; any other entry holding one of those colours loses it, so each
+// colour stays unique. Mirrors services/teamColors.js.
+export function applyTeamColors(list: PlayerColor[], roster: { user_id: number; game_color?: PlayerColorId | null }[]): PlayerColor[] {
+  const assigned = roster.filter((r) => r.game_color);
+  if (!assigned.length) return list;
+  const taken = new Set(assigned.map((r) => r.game_color));
+  const ids = new Set(assigned.map((r) => r.user_id));
+  return [...list.filter((c) => !(c.user_id != null && ids.has(c.user_id)) && !taken.has(c.color)),
+    ...assigned.map((r) => ({ user_id: r.user_id, slot: null, color: r.game_color as PlayerColorId }))];
 }
 
 // Gives `color` to `who`; if another player had it, they get `who`'s old colour

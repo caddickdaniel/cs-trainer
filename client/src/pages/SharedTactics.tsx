@@ -173,7 +173,7 @@ export function SharedTacticPage() {
             <div className="stack">
               <LevelSwitch map={t.map} level={level} board={phase.board} onChange={setLevel} />
               <MapBoard board={phase.board} map={t.map} level={level} players={[]} onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })}
-                label={`Shared board for ${phase.name}`} bomb={t.side === 'T' ? t.bomb_carrier : null} />
+                label={`Shared board for ${phase.name}`} bomb={t.side === 'T' ? t.bomb_carrier : null} side={t.side} />
             </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}

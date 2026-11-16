@@ -85,7 +85,9 @@ exports.inviteToken = z.string().regex(/^[A-Za-z0-9_-]{20,100}$/, 'Invalid invit
 exports.patchMember = z.object({
   is_igl: z.boolean().optional(),
   player_role: z.enum(C.PLAYER_ROLES).nullable().optional(),
-}).refine((v) => v.is_igl !== undefined || v.player_role !== undefined, 'Nothing to update');
+  // CS2 teammate colour on this team (null clears it).
+  game_color: z.enum(C.PLAYER_COLOR_IDS).nullable().optional(),
+}).refine((v) => v.is_igl !== undefined || v.player_role !== undefined || v.game_color !== undefined, 'Nothing to update');
 
 exports.recruiting = z.object({
   is_recruiting: z.boolean().optional(),
@@ -170,7 +172,7 @@ const timeZone = z.string().max(64).refine((tz) => {
     return false;
   }
 }, 'Unknown time zone');
-exports.event = z.object({
+const eventBase = z.object({
   kind: z.enum(C.EVENT_KINDS),
   // Demo Review events may link a demo from the team's library.
   demo_id: id.nullable().optional(),
@@ -179,8 +181,24 @@ exports.event = z.object({
   time_zone: timeZone,
   opponent: optionalText(80),
   notes: trimmed(2000).optional().default(''),
+  // Optional end time (used to warn about players marked unavailable).
+  ends_at: isoInstant.nullable().optional(),
 });
-exports.eventPatch = exports.event.partial();
+const endsAfterStart = (v) => v.ends_at == null || v.starts_at == null || Date.parse(v.ends_at) > Date.parse(v.starts_at);
+exports.event = eventBase.refine(endsAfterStart, { message: 'The end time must be after the start time', path: ['ends_at'] });
+exports.eventPatch = eventBase.partial().refine(endsAfterStart, { message: 'The end time must be after the start time', path: ['ends_at'] });
+// A player's own availability: a date, Available / Unavailable, all day or a
+// time range (the client sends local midnight-to-midnight for all-day entries).
+exports.availability = z.object({
+  status: z.enum(C.AVAILABILITY_STATUSES),
+  all_day: z.boolean(),
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+  starts_at: isoInstant,
+  ends_at: isoInstant,
+  time_zone: timeZone,
+  note: trimmed(200).optional().default(''),
+}).refine((v) => Date.parse(v.ends_at) > Date.parse(v.starts_at), { message: 'The end time must be after the start time', path: ['ends_at'] })
+  .refine((v) => Date.parse(v.ends_at) - Date.parse(v.starts_at) <= 25 * 3600 * 1000, { message: 'An entry covers one day at most', path: ['ends_at'] });
 exports.eventRange = z.object({ from: isoInstant.optional(), to: isoInstant.optional() });
 
 exports.gameCommand = z.object({
@@ -225,11 +243,18 @@ const marker = z.object({
   // Utility markers assigned to a player are planned throws unless they are
   // only a reference (e.g. showing where a teammate's smoke lands).
   reference: z.boolean().optional(),
+  // Utility only (Phase 10): intermediate points the throw passes through
+  // (bounces), from the thrower to this marker, in board coordinates. A
+  // drawn illustration, not a simulated trajectory. Absent = straight line.
+  path: z.array(z.object({ x: coord, y: coord })).max(C.LIMITS.bouncePoints).optional(),
   // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
   message: 'Only utility and note markers can have lineup screenshots',
   path: ['images'],
+}).refine((m) => !m.path || ['smoke', 'flash', 'molly', 'he'].includes(m.kind), {
+  message: 'Only utility markers have a throw path',
+  path: ['path'],
 }).refine((m) => m.kind === 'note' || m.label.length <= 40, {
   message: 'Labels can be at most 40 characters',
   path: ['label'],

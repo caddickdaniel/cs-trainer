@@ -58,6 +58,7 @@ export const PROFILE_LINKS = [
   { key: 'hltv_url', label: 'HLTV', host: 'hltv.org' },
 ] as const;
 export const MARKER_KINDS = ['player', 'smoke', 'flash', 'molly', 'he', 'note'] as const;
+export const BOUNCE_POINTS = 8;
 export const INVITE_TTL_HOURS = [1, 24, 72, 168] as const;
 export const LIMITS = {
   phases: 20, markers: 60, routes: 30, routePoints: 100, holds: 20, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024,
