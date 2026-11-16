@@ -69,6 +69,47 @@ x11.XSetErrorHandler(_on_error)
 root = x11.XDefaultRootWindow(dpy)
 
 
+x11.XQueryPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+                              ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                              ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_uint)]
+x11.XTranslateCoordinates.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+                                      ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ulong)]
+x11.XDisplayWidth.argtypes = [ctypes.c_void_p, ctypes.c_int]
+x11.XDisplayHeight.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+
+def screen_size():
+    return x11.XDisplayWidth(dpy, 0), x11.XDisplayHeight(dpy, 0)
+
+
+def window_rect(win):
+    """(x, y, w, h) of a window in root (desktop) coordinates."""
+    class WA(ctypes.Structure):
+        _fields_ = [('x', ctypes.c_int), ('y', ctypes.c_int), ('width', ctypes.c_int), ('height', ctypes.c_int), ('pad', ctypes.c_byte * 200)]
+    a = WA()
+    x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+    if not x11.XGetWindowAttributes(dpy, win, ctypes.byref(a)):
+        return None
+    rx, ry, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+    x11.XTranslateCoordinates(dpy, win, root, 0, 0, ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(child))
+    return rx.value, ry.value, a.width, a.height
+
+
+def pointer():
+    """(x, y, deepest window under the pointer) as XWayland sees it. Over a
+    Wayland-native surface XWayland has no pointer, so the window is 0."""
+    r, c, rx, ry, wx, wy, mask = (ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_uint())
+    if not x11.XQueryPointer(dpy, root, ctypes.byref(r), ctypes.byref(c), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)):
+        return None
+    win = c.value
+    while win:
+        r2, c2 = ctypes.c_ulong(), ctypes.c_ulong()
+        if not x11.XQueryPointer(dpy, win, ctypes.byref(r2), ctypes.byref(c2), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)) or not c2.value:
+            break
+        win = c2.value
+    return rx.value, ry.value, win
+
+
 def descendants(win):
     out = []
     for c in children(win):

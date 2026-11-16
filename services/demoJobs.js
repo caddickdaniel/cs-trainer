@@ -157,6 +157,8 @@ async function processNext({ parse = parseInChild, locate = (ids) => require('./
     const file = await ensureFile(demo, { locate, download });
     const result = await parse(file);
     await saveResult(demo.demo_id, result);
+    // Upload option: queue the selected recorded events for CS2 capture.
+    await require('./captures').onDemoReady(demo.demo_id).catch((e) => console.error('capture queue:', e.message));
     return { demo_id: demo.demo_id, status: 'ready' };
   } catch (err) {
     await markFailed(demo.demo_id, err.code || 'parse_failed', err.message || String(err));

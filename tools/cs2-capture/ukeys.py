@@ -65,6 +65,85 @@ class Keyboard:
         os.close(self.fd)
 
 
+UI_ABS_SETUP = 0x401C5504
+EV_ABS, ABS_X, ABS_Y, BTN_LEFT = 3, 0, 1, 0x110
+UI_SET_ABSBIT = 0x40045567
+
+
+class Pointer:
+    """A virtual absolute pointer (like a VM tablet) spanning the desktop."""
+
+    def __init__(self, width, height):
+        self.w, self.h = width, height
+        self.fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+        fcntl.ioctl(self.fd, UI_SET_KEYBIT, BTN_LEFT)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_ABS)
+        for axis, size in ((ABS_X, width), (ABS_Y, height)):
+            fcntl.ioctl(self.fd, UI_SET_ABSBIT, axis)
+            # struct uinput_abs_setup { u16 code; (pad) ; input_absinfo { value, min, max, fuzz, flat, resolution } }
+            fcntl.ioctl(self.fd, UI_ABS_SETUP, struct.pack('HxxIiiiii', axis, 0, 0, size - 1, 0, 0, 0))
+        fcntl.ioctl(self.fd, UI_DEV_SETUP, struct.pack('HHHH80sI', 0x03, 0x1209, 0xC521, 1, b'cs-trainer capture pointer', 0))
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        time.sleep(1.0)
+
+    def _emit(self, typ, code, value):
+        os.write(self.fd, struct.pack('llHHi', 0, 0, typ, code, value))
+
+    def move(self, x, y):
+        self._emit(EV_ABS, ABS_X, int(x))
+        self._emit(EV_ABS, ABS_Y, int(y))
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def click(self):
+        self._emit(EV_KEY, BTN_LEFT, 1)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+        time.sleep(0.05)
+        self._emit(EV_KEY, BTN_LEFT, 0)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def close(self):
+        fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        os.close(self.fd)
+
+
+def focus_window(win, attempts=3):
+    """Gives CS2 keyboard focus without the user: _NET_ACTIVE_WINDOW, then a
+    pointer click at the window centre, but only after XWayland confirms the
+    pointer is inside the CS2 window (CS2 is topmost there). Returns how."""
+    def focused():
+        f = xc.focused()
+        return f == win or f in xc.descendants(win)
+    if focused():
+        return 'already'
+    xc.activate(win)
+    time.sleep(1.0)
+    if focused():
+        return 'activate'
+    sw, sh = xc.screen_size()
+    ptr = Pointer(sw, sh)
+    try:
+        for _ in range(attempts):
+            rect = xc.window_rect(win)
+            if not rect:
+                return None
+            x, y, w, h = rect
+            cx, cy = x + w // 2, y + h // 2
+            ptr.move(cx, cy)
+            time.sleep(0.4)
+            at = xc.pointer()
+            inside = at and at[2] and (at[2] == win or at[2] in xc.descendants(win)) and abs(at[0] - cx) <= 8 and abs(at[1] - cy) <= 8
+            if inside:
+                ptr.click()
+                time.sleep(0.8)
+                if focused():
+                    return 'click'
+            time.sleep(1.0)
+    finally:
+        ptr.close()
+    return None
+
+
 def char_key(ch):
     name = xc.NAMES.get(ch, ch)
     sym = xc.x11.XStringToKeysym(name.encode())

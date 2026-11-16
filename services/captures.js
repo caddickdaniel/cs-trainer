@@ -1,45 +1,55 @@
-// Replay Inspector captures (Phase 11): real first-person frames from CS2.
+// Replay Inspector captures: real first-person frames and clips from CS2.
 //
-// How it works (tools/cs2-capture/capture.py): CS2 runs on this machine,
-// started with -condebug -console. The worker types console commands into it
-// through a uinput virtual keyboard (only while the CS2 window has focus),
-// confirms each step from CS2's own console log (demo loaded, seek finished
-// at the exact tick, which player is being watched), and reads the rendered
-// frames from the CS2 window through XWayland. Clips are frames sampled while
-// the demo plays at 0.2× and encoded to WebM with GStreamer.
-//
-// Earlier attempts that failed (16 Nov 2026, GNOME on Wayland): no
-// -netconport / VConsole listener; +playdemo at launch is dropped; XTest
-// keystrokes never reach the game. uinput is what works.
+// How it works (tools/cs2-capture): a capture *session* is one run of CS2.
+// The worker launches CS2 itself (windowed, with a temporary capture video
+// profile), focuses its window, loads the demo once and captures the
+// session's events in tick order. Commands are typed through a uinput
+// virtual keyboard only while CS2 has focus; every step is confirmed from
+// CS2's console log; frames are read from the CS2 window through XWayland
+// and clips encoded to WebM with GStreamer. When the session ends the CS2
+// it launched is closed (also on failure) and the player's settings are put
+// back. "Watch this round" opens the demo at a round and leaves CS2 open.
 //
 // Nothing is faked: media exists only when CS2 rendered it for that tick and
-// player. Requests queue in demo_captures and a single worker processes them
-// one at a time (there is one CS2). Without the worker (CAPTURE_WORKER=on),
+// player. A failed attempt keeps the previous media. Requests queue in
+// demo_captures / capture_sessions and one worker runs sessions one at a
+// time (there is one CS2). Without the worker (CAPTURE_WORKER=on) capture
 // requests are refused with the reason.
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const zlib = require('zlib');
-const { spawn } = require('child_process');
+const readline = require('readline');
+const { spawn, fork } = require('child_process');
 const { httpError, badRequest, notFound, conflict } = require('../errors');
 const { loadDemo } = require('./demos');
 const db = require('../db/connection');
 const config = require('../config/env');
+const estimates = require('./captureEstimates');
 
 const UTILITY = ['smoke', 'flash', 'he', 'fire'];
+const SELECTIONS = ['all', 'kill', 'utility'];
 // Bump when capture output changes so old cached media isn't reused.
 const CAPTURE_VERSION = 1;
 const SCRIPT = path.join(__dirname, '..', 'tools', 'cs2-capture', 'capture.py');
-const RUN_TIMEOUT_MS = 10 * 60 * 1000;
-const MEDIA_NAME = /^[a-z]+\.(jpg|webm)$/;
+const INPUTS_CHILD = path.join(__dirname, '..', 'workers', 'demo-inputs-child.js');
+const MEDIA_NAME = /^[a-z_]+\.(jpg|webm)$/;
+// Steps that end a session: CS2 is gone or can't be controlled.
+const FATAL = new Set(['cs2_closed', 'focus', 'focus_lost', 'cs2_start', 'cs2_running', 'cs2_missing', 'internal', 'tool']);
 
-const captureDir = (demoId, captureId) => path.join(config.captureStorageDir, String(demoId), ...(captureId ? [String(captureId)] : []));
+// Recorded input (usercmd button bits) → conventional key labels. These are
+// the actions the player's client sent (bound keys), not physical keys.
+const INPUT_BITS = { W: 3, A: 9, S: 4, D: 10, Shift: 16, Ctrl: 2, Space: 1, LMB: 0, RMB: 11 };
 
-// ---- Driver (the Python tool); replaceable in tests ---------------------
+const captureDir = (demoId, captureId, attempt) => path.join(config.captureStorageDir, String(demoId),
+  ...(captureId ? [String(captureId)] : []), ...(attempt ? [String(attempt)] : []));
+const stateDir = () => path.join(config.captureStorageDir, 'cs2-session');
 
-function runPython(args, input, timeoutMs) {
+// ---- Capture tool (Python) — replaceable in tests ------------------------
+
+function runPython(args, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', ['-I', SCRIPT, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('python3', ['-I', SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
@@ -48,20 +58,71 @@ function runPython(args, input, timeoutMs) {
     child.on('error', (e) => { clearTimeout(timer); reject(e); });
     child.on('close', () => {
       clearTimeout(timer);
-      const line = out.trim().split('\n').pop();
       try {
-        resolve(JSON.parse(line));
+        resolve(JSON.parse(out.trim().split('\n').pop()));
       } catch {
         reject(new Error(`capture tool gave no result${err ? `: ${err.trim().split('\n').pop()}` : ''}`));
       }
     });
-    child.stdin.end(input ? JSON.stringify(input) : '');
+  });
+}
+
+// A running `capture.py session`: call(op) → reply; close() → closed info.
+function openPythonSession(onStage) {
+  const child = spawn('python3', ['-I', SCRIPT, 'session'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let nextId = 1;
+  const waiting = new Map();
+  let closed = null;
+  let closedResolve;
+  const closedP = new Promise((r) => { closedResolve = r; });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
+  readline.createInterface({ input: child.stdout }).on('line', (line) => {
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+    if (msg.stage) onStage(msg.stage);
+    else if (msg.closed) closed = msg;
+    else if (msg.id != null && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+  });
+  child.on('close', () => {
+    for (const r of waiting.values()) r({ ok: false, code: 'tool', error: `The capture tool stopped${stderr ? `: ${stderr.trim().split('\n').pop()}` : ''}.` });
+    waiting.clear();
+    closedResolve(closed || { closed: true, timings: {} });
+  });
+  return {
+    call(req, timeoutMs = 15 * 60 * 1000) {
+      const id = nextId++;
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { waiting.delete(id); resolve({ ok: false, code: 'tool', error: 'The capture step timed out.' }); }, timeoutMs);
+        waiting.set(id, (m) => { clearTimeout(timer); resolve(m); });
+        child.stdin.write(`${JSON.stringify({ ...req, id })}\n`);
+      });
+    },
+    async close() {
+      try { child.stdin.write(`${JSON.stringify({ op: 'close' })}\n`); child.stdin.end(); } catch { /* already gone */ }
+      const t = setTimeout(() => child.kill('SIGKILL'), 120000);
+      const res = await closedP;
+      clearTimeout(t);
+      return res;
+    },
+  };
+}
+
+function readInputs(file, ranges, timeoutMs = 120000) {
+  if (!ranges.length) return Promise.resolve({});
+  return new Promise((resolve) => {
+    const child = fork(INPUTS_CHILD, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({}); }, timeoutMs);
+    child.on('message', (m) => { clearTimeout(timer); child.kill(); resolve(m.ok ? m.ranges : {}); });
+    child.on('error', () => { clearTimeout(timer); resolve({}); });
+    child.send({ file, ranges });
   });
 }
 
 const pythonDriver = {
-  check: () => runPython(['status'], null, 15000),
-  run: (job) => runPython(['run'], job, RUN_TIMEOUT_MS),
+  check: () => runPython(['status'], 15000),
+  open: openPythonSession,
+  inputs: readInputs,
 };
 
 let driver = pythonDriver;
@@ -70,14 +131,10 @@ let enabled = config.captureWorker;
 // ---- Readiness ------------------------------------------------------------
 
 let lastCheck = { at: 0, checks: null };
-async function checks(maxAgeMs = 3000) {
+async function checks(maxAgeMs = 5000) {
   if (Date.now() - lastCheck.at > maxAgeMs) {
     let c;
-    try {
-      c = await driver.check();
-    } catch (e) {
-      c = { error: e.message };
-    }
+    try { c = await driver.check(); } catch (e) { c = { error: e.message }; }
     lastCheck = { at: Date.now(), checks: c };
   }
   return lastCheck.checks;
@@ -88,21 +145,22 @@ function readiness(c) {
     return { ready: false, reason: 'First-person capture is turned off on this server. It runs on a machine with CS2 installed, with CAPTURE_WORKER=on.' };
   }
   if (!c || c.error) return { ready: false, reason: `The capture tool could not run${c && c.error ? ` (${c.error})` : ''}.` };
-  if (!c.uinput) return { ready: false, reason: 'The capture tool needs access to /dev/uinput (Steam\'s input rules grant it) to type into CS2.' };
-  if (!c.cs2_running || !c.window) return { ready: false, reason: 'Start CS2 (with the launch options -condebug -console) to capture. Queued requests will run once it is open and focused.' };
-  if (!c.console_log) return { ready: false, reason: 'CS2 is running without -condebug, so capture steps can\'t be confirmed. Restart it with -condebug -console.' };
-  if (!c.focused) return { ready: false, reason: 'Click inside the CS2 window and leave it focused: captures type into its console only while it has focus.' };
-  return { ready: true, reason: 'CS2 is ready. Captures take about 20–60 seconds each.' };
+  if (!c.cs2_installed || !c.runtime) return { ready: false, reason: 'CS2 (and the Steam Linux Runtime) must be installed on this machine to capture.' };
+  if (!c.uinput) return { ready: false, reason: 'The capture tool needs access to /dev/uinput (Steam\'s input rules grant it) to control CS2.' };
+  if (!c.encoder) return { ready: false, reason: 'GStreamer\'s VP8 encoder (vp8enc) is needed to encode clips.' };
+  if (c.cs2_running && !c.cs2_usable) return { ready: false, reason: 'CS2 is open without the console log, so capture can\'t confirm its steps. Close CS2: capture starts its own.' };
+  return { ready: true, reason: 'Capture launches CS2 on this PC, takes control of its window and closes it when done.' };
 }
 
 async function status() {
   const c = enabled ? await checks() : null;
   const r = readiness(c);
-  return { enabled, available: r.ready, reason: r.reason, checks: c, encoder: 'gstreamer-webm' };
+  return { enabled, available: r.ready, reason: r.reason, checks: c, estimates: estimates.summary() };
 }
 
-// ---- Requests -------------------------------------------------------------
+// ---- Presenting -------------------------------------------------------------
 
+const mediaUrl = (row, m) => `/api/demos/${row.demo_id}/captures/${row.capture_id}/media/${m.file}?v=${m.attempt ?? 0}-${new Date(row.updated_at).getTime()}`;
 const present = (row) => ({
   capture_id: row.capture_id,
   round_number: row.round_number,
@@ -111,10 +169,33 @@ const present = (row) => ({
   status: row.status,
   error: row.error,
   error_code: row.error_code,
-  // ?v changes when a capture is redone, so a cached older image isn't shown.
-  media: (row.media || []).map((m) => ({ ...m, url: `/api/demos/${row.demo_id}/captures/${row.capture_id}/media/${m.file}?v=${new Date(row.updated_at).getTime()}` })),
+  session_id: row.session_id,
+  media: (row.media || []).map((m) => ({ ...m, url: mediaUrl(row, m) })),
+  timings: row.timings || {},
   updated_at: row.updated_at,
 });
+
+const presentSession = (s) => s && ({
+  session_id: s.session_id,
+  demo_id: s.demo_id,
+  mode: s.mode,
+  selection: s.selection,
+  round_number: s.round_number,
+  status: s.status,
+  stage: s.stage,
+  total: s.total,
+  completed: s.completed,
+  failed: s.failed,
+  error: s.error,
+  error_code: s.error_code,
+  timings: s.timings || {},
+  created_at: s.created_at,
+  started_at: s.started_at,
+  finished_at: s.finished_at,
+  finished_ago: s.finished_at ? Math.round((Date.now() - new Date(s.finished_at).getTime()) / 1000) : null,
+});
+
+// ---- Event selection --------------------------------------------------------
 
 async function roundData(demoId, roundNumber) {
   const row = await db('demo_rounds').where({ demo_id: demoId, round_number: roundNumber }).first('data');
@@ -122,19 +203,60 @@ async function roundData(demoId, roundNumber) {
   return JSON.parse(zlib.gunzipSync(row.data));
 }
 
+const isUtility = (ev) => UTILITY.includes(ev.type) && ev.player != null;
+const isCapturableKill = (ev) => ev.type === 'kill' && (ev.attacker != null || ev.victim != null);
+const momentOf = (ev) => (isUtility(ev) && ev.throw_tick != null ? ev.throw_tick : ev.tick);
+
 function checkKind(kind, ev) {
   if (kind === 'kill' && ev.type !== 'kill') throw badRequest('That event is not a kill', 'wrong_event');
-  if (kind === 'utility' && !(UTILITY.includes(ev.type) && ev.player != null)) throw badRequest('That event is not a utility throw', 'wrong_event');
+  if (kind === 'utility' && !isUtility(ev)) throw badRequest('That event is not a utility throw', 'wrong_event');
 }
+
+// The events of a whole demo matching an upload selection, in tick order.
+async function selectEvents(demoId, selection) {
+  const rounds = await db('demo_rounds').where('demo_id', demoId).orderBy('round_number').select('round_number', 'data');
+  const out = [];
+  for (const r of rounds) {
+    const data = JSON.parse(zlib.gunzipSync(r.data));
+    data.events.forEach((ev, i) => {
+      const kind = isCapturableKill(ev) ? 'kill' : isUtility(ev) ? 'utility' : null;
+      if (!kind || (selection !== 'all' && selection !== kind)) return;
+      out.push({ round_number: r.round_number, event_index: i, kind, moment_tick: momentOf(ev) });
+    });
+  }
+  return out.sort((a, b) => a.moment_tick - b.moment_tick);
+}
+
+// ---- Requests -----------------------------------------------------------------
 
 async function list(demoId, userId) {
   await loadDemo(demoId, userId);
   const rows = await db('demo_captures').where({ demo_id: demoId, capture_version: CAPTURE_VERSION }).orderBy('capture_id');
-  return { ...(await status()), captures: rows.map(present) };
+  const session = await db('capture_sessions').where({ demo_id: demoId }).orderBy('session_id', 'desc').first();
+  return { ...(await status()), captures: rows.map(present), session: presentSession(session) };
 }
 
-// Validates the request against the demo the user can access and the
-// recorded event, then queues it (or returns the existing capture).
+async function requireEnabled() {
+  const st = await status();
+  if (!enabled) throw httpError(503, st.reason, 'capture_unavailable', { status: st });
+  return st;
+}
+
+async function createSession(fields) {
+  const [s] = await db('capture_sessions').insert(fields).returning('*');
+  return s;
+}
+
+// Upserts a capture row and (re)queues it in a session. Media from an
+// earlier success is kept until a new attempt succeeds.
+async function queueCapture(demoId, userId, ev, sessionId) {
+  const key = { demo_id: demoId, round_number: ev.round_number, event_index: ev.event_index, kind: ev.kind, capture_version: CAPTURE_VERSION };
+  const fields = { status: 'queued', error: null, error_code: null, session_id: sessionId, requested_by: userId, moment_tick: ev.moment_tick, updated_at: db.fn.now() };
+  const [row] = await db('demo_captures').insert({ ...key, ...fields }).onConflict(Object.keys(key)).merge(fields).returning('*');
+  return row;
+}
+
+// Captures (or recaptures) one event: its own single-event session.
 async function request(demoId, userId, body) {
   const { demo } = await loadDemo(demoId, userId);
   if (demo.status !== 'ready') throw conflict('This demo is not ready yet', 'demo_not_ready');
@@ -142,26 +264,89 @@ async function request(demoId, userId, body) {
   const ev = data.events[body.event_index];
   if (!ev) throw notFound('Event not found', 'event_not_found');
   checkKind(body.kind, ev);
-  const st = await status();
-  if (!enabled) throw httpError(503, st.reason, 'capture_unavailable', { status: st });
-  const key = { demo_id: demoId, round_number: body.round_number, event_index: body.event_index, kind: body.kind, capture_version: CAPTURE_VERSION };
-  let row = await db('demo_captures').where(key).first();
-  if (!row) {
-    [row] = await db('demo_captures').insert({ ...key, requested_by: userId }).onConflict(Object.keys(key)).ignore().returning('*');
-    row = row || await db('demo_captures').where(key).first();
-  } else if (row.status === 'failed' || (body.retry && row.status === 'ready')) {
-    [row] = await db('demo_captures').where('capture_id', row.capture_id)
-      .update({ status: 'queued', error: null, error_code: null, requested_by: userId, updated_at: db.fn.now() }).returning('*');
+  const st = await requireEnabled();
+  const existing = await db('demo_captures').where({ demo_id: demoId, round_number: body.round_number, event_index: body.event_index, kind: body.kind, capture_version: CAPTURE_VERSION }).first();
+  if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+    const s = existing.session_id ? await db('capture_sessions').where('session_id', existing.session_id).first() : null;
+    return { ...st, capture: present(existing), session: presentSession(s) };
   }
+  const session = await createSession({ demo_id: demoId, requested_by: userId, mode: 'single', total: 1 });
+  const row = await queueCapture(demoId, userId, { ...body, moment_tick: momentOf(ev) }, session.session_id);
   kick();
-  return { ...st, capture: present(row) };
+  return { ...st, capture: present(row), session: presentSession(session) };
+}
+
+// Queues every recorded event matching the upload selection (after the demo
+// parsed). Returns the session.
+async function queueBatch(demoId, userId, selection) {
+  if (!SELECTIONS.includes(selection)) throw badRequest('Unknown capture selection', 'bad_selection');
+  const events = await selectEvents(demoId, selection);
+  const session = await createSession({
+    demo_id: demoId, requested_by: userId, mode: 'batch', selection, total: events.length,
+    status: events.length ? 'queued' : 'done', stage: events.length ? 'Queued' : 'No recorded events matched the selection.',
+    finished_at: events.length ? null : db.fn.now(),
+  });
+  for (const ev of events) await queueCapture(demoId, userId, ev, session.session_id);
+  kick();
+  return session;
+}
+
+// Called by the demo worker once a demo has parsed.
+async function onDemoReady(demoId) {
+  const demo = await db('demos').where('demo_id', demoId).first();
+  if (!demo || !demo.capture_selection) return null;
+  await db('demos').where('demo_id', demoId).update({ capture_selection: null });
+  if (!enabled) {
+    return createSession({
+      demo_id: demoId, requested_by: demo.uploaded_by, mode: 'batch', selection: demo.capture_selection, status: 'failed',
+      error_code: 'capture_unavailable', error: readiness(null).reason, finished_at: db.fn.now(),
+    });
+  }
+  return queueBatch(demoId, demo.uploaded_by, demo.capture_selection);
+}
+
+// Requeues a finished session's failed events as one new batch (one CS2 run).
+async function retryFailed(demoId, userId, sessionId) {
+  await loadDemo(demoId, userId);
+  const old = await db('capture_sessions').where({ session_id: sessionId, demo_id: demoId }).first();
+  if (!old) throw notFound('Capture session not found');
+  if (old.status === 'queued' || old.status === 'running') throw conflict('That capture is still running', 'session_running');
+  const failed = await db('demo_captures').where({ session_id: sessionId, status: 'failed' });
+  if (!failed.length) throw badRequest('Nothing failed in that capture', 'nothing_to_retry');
+  const st = await requireEnabled();
+  const session = await createSession({ demo_id: demoId, requested_by: userId, mode: failed.length > 1 ? 'batch' : 'single', selection: old.selection, total: failed.length });
+  for (const row of failed) await queueCapture(demoId, userId, row, session.session_id);
+  kick();
+  return { ...st, session: presentSession(session) };
+}
+
+async function watchRound(demoId, userId, roundNumber) {
+  const { demo } = await loadDemo(demoId, userId);
+  if (demo.status !== 'ready') throw conflict('This demo is not ready yet', 'demo_not_ready');
+  const round = await db('demo_rounds').where({ demo_id: demoId, round_number: roundNumber }).first('start_tick');
+  if (!round) throw notFound('Round not found');
+  const st = await requireEnabled();
+  const session = await createSession({ demo_id: demoId, requested_by: userId, mode: 'watch', round_number: roundNumber, total: 0 });
+  kick();
+  return { ...st, session: presentSession(session) };
+}
+
+// The user's most recent session (for the progress overlay); the overlay
+// follows the job, so it survives a page refresh.
+async function currentSession(userId) {
+  const s = await db('capture_sessions').where('requested_by', userId).orderBy('session_id', 'desc').first();
+  if (!s) return { session: null, items: [], capture: await status() };
+  const items = s.mode === 'watch' ? [] : await db('demo_captures').where('session_id', s.session_id)
+    .orderBy('moment_tick').select('capture_id', 'round_number', 'event_index', 'kind', 'status', 'error', 'error_code');
+  return { session: presentSession(s), items, capture: await status() };
 }
 
 async function mediaFile(demoId, userId, captureId, name) {
   await loadDemo(demoId, userId);
   const row = await db('demo_captures').where({ demo_id: demoId, capture_id: captureId }).first();
-  if (!row || row.status !== 'ready' || !MEDIA_NAME.test(name) || !(row.media || []).some((m) => m.file === name)) throw notFound('Capture not found');
-  const file = path.join(captureDir(demoId, captureId), name);
+  const m = row && MEDIA_NAME.test(name) && (row.media || []).find((x) => x.file === name);
+  if (!m) throw notFound('Capture not found');
+  const file = path.join(captureDir(demoId, captureId, m.attempt || 0), name);
   if (!fs.existsSync(file)) throw notFound('Capture file is missing');
   return file;
 }
@@ -181,33 +366,60 @@ function victimLastAliveTick(round, victim, killTick) {
   return null;
 }
 
-// The items to capture for one event; each item is a real frame or clip
-// CS2 will render. Players are identified by their in-demo names.
-function buildItems(demo, round, ev, kind, dir) {
+// Two seconds centred on `tick`, clamped to the round.
+function window2s(round, tick, tickrate) {
+  const lo = round.start_tick ?? round.first_tick;
+  const hi = round.end_tick ?? Number.MAX_SAFE_INTEGER;
+  return { start: Math.max(lo, Math.round(tick - tickrate)), end: Math.min(hi, Math.round(tick + tickrate)) };
+}
+
+// The capture job for one event. Players are identified by their in-demo
+// names; nothing here comes from the client.
+function buildJob(demo, round, ev, kind, dir) {
   const players = (demo.meta && demo.meta.players) || [];
   const nameOf = (i) => (i == null ? null : (players.find((p) => p.index === i) || {}).name || null);
   const tickrate = demo.tickrate || 64;
-  const items = [];
   if (kind === 'kill') {
-    const killer = nameOf(ev.attacker);
-    if (killer && ev.attacker !== ev.victim) items.push({ role: 'killer', type: 'shot', tick: ev.tick, player: killer, file: path.join(dir, 'killer.jpg') });
-    const vt = victimLastAliveTick(round, ev.victim, ev.tick);
+    const { start, end } = window2s(round, ev.tick, tickrate);
+    const killer = ev.attacker != null && ev.attacker !== ev.victim ? nameOf(ev.attacker) : null;
     const victim = nameOf(ev.victim);
-    if (victim && vt != null) items.push({ role: 'victim', type: 'shot', tick: vt, player: victim, file: path.join(dir, 'victim.jpg') });
-  } else {
-    const thrower = nameOf(ev.player);
-    if (!thrower) return items;
-    const lo = round.start_tick ?? round.first_tick;
-    const hi = round.end_tick ?? Infinity;
-    const center = ev.throw_tick != null ? ev.throw_tick : ev.tick;
-    const start = Math.max(lo, center - tickrate);
-    const end = Math.min(hi, start + 2 * tickrate);
-    items.push({ role: 'replay', type: 'clip', start, end, player: thrower, fps: 30, file: path.join(dir, 'replay.webm') });
-    // Lineup: the thrower's view the tick before the grenade leaves the hand
-    // (only when the release is known), at 2560 px for the crosshair zoom.
-    if (ev.throw_tick != null) items.push({ role: 'lineup', type: 'shot', tick: ev.throw_tick - 1, player: thrower, width: 2560, file: path.join(dir, 'lineup.jpg') });
+    const vt = victimLastAliveTick(round, ev.victim, ev.tick);
+    const povs = {};
+    if (killer) povs.killer = { player: killer, clip_file: path.join(dir, 'killer.webm'), still_file: path.join(dir, 'killer.jpg'), still_tick: ev.tick };
+    if (victim) povs.victim = { player: victim, clip_file: path.join(dir, 'victim.webm'), ...(vt != null ? { still_file: path.join(dir, 'victim.jpg'), still_tick: vt } : {}) };
+    if (!Object.keys(povs).length) return null;
+    // Flash or smoke decided the kill: X-ray on (and labelled) so the players
+    // can be seen at all; the plain view would only show white or grey.
+    const xray = !!(ev.attacker_blind || ev.flash_assist || ev.through_smoke);
+    return { op: 'kill', tickrate, start, end, xray, povs };
   }
-  return items;
+  const thrower = nameOf(ev.player);
+  if (!thrower) return null;
+  const center = ev.throw_tick != null ? ev.throw_tick : ev.tick;
+  const { start, end } = window2s(round, center, tickrate);
+  return {
+    op: 'utility', tickrate, start, end, player: thrower, clip_file: path.join(dir, 'replay.webm'),
+    // Lineup: the thrower's view the tick before the grenade leaves the hand,
+    // at the window's own resolution (lineup_width 0).
+    ...(ev.throw_tick != null ? { lineup_file: path.join(dir, 'lineup.jpg'), lineup_tick: ev.throw_tick - 1, lineup_width: 0 } : {}),
+  };
+}
+
+function mediaFromReply(job, reply, attempt, inputs) {
+  const base = (m) => ({ ...m, file: path.basename(m.file), attempt });
+  const out = [];
+  if (job.op === 'kill') {
+    for (const role of ['killer', 'victim']) {
+      const p = reply.povs && reply.povs[role];
+      if (!p) continue;
+      if (p.clip) out.push({ ...base(p.clip), role: `${role}_clip`, type: 'video', mime: 'video/webm' });
+      if (p.still) out.push({ ...base(p.still), role: `${role}_still`, type: 'image', mime: 'image/jpeg' });
+    }
+  } else {
+    if (reply.clip) out.push({ ...base(reply.clip), role: 'replay', type: 'video', mime: 'video/webm', ...(inputs ? { inputs } : {}) });
+    if (reply.lineup) out.push({ ...base(reply.lineup), role: 'lineup', type: 'image', mime: 'image/jpeg' });
+  }
+  return out;
 }
 
 // ---- Worker ---------------------------------------------------------------
@@ -215,60 +427,155 @@ function buildItems(demo, round, ev, kind, dir) {
 let busy = false;
 let timer = null;
 
+const setSession = (id, fields) => db('capture_sessions').where('session_id', id).update(fields);
+
 async function runOnce() {
   if (busy || !enabled) return false;
-  const next = await db('demo_captures').where({ status: 'queued', capture_version: CAPTURE_VERSION }).orderBy('capture_id').first();
+  const next = await db('capture_sessions').where('status', 'queued').orderBy('session_id').first();
   if (!next) return false;
-  if (!readiness(await checks(0)).ready) return false; // stays queued until CS2 is ready
   busy = true;
   try {
-    const [row] = await db('demo_captures').where({ capture_id: next.capture_id, status: 'queued' })
-      .update({ status: 'running', attempts: next.attempts + 1, updated_at: db.fn.now() }).returning('*');
-    if (!row) return false;
-    await process1(row);
-    return true;
+    const [s] = await db('capture_sessions').where({ session_id: next.session_id, status: 'queued' })
+      .update({ status: 'running', started_at: db.fn.now(), stage: 'Starting' }).returning('*');
+    if (s) await runSession(s);
+    return !!s;
   } finally {
     busy = false;
   }
 }
 
-async function process1(row) {
-  const fail = (code, message) => db('demo_captures').where('capture_id', row.capture_id)
-    .update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
-  try {
-    const demo = await db('demos').where('demo_id', row.demo_id).first();
-    if (!demo || demo.status !== 'ready') return fail('demo_missing', 'The demo is no longer available.');
-    const round = await roundData(row.demo_id, row.round_number);
-    const ev = round.events[row.event_index];
-    if (!ev) return fail('event_missing', 'The event is no longer in this round.');
-    const dir = captureDir(row.demo_id, row.capture_id);
-    await fsp.rm(dir, { recursive: true, force: true });
-    await fsp.mkdir(dir, { recursive: true });
-    const items = buildItems(demo, round, ev, row.kind, dir);
-    if (!items.length) return fail('nothing_to_capture', 'There is no player view to capture for this event (no known killer, victim or thrower).');
-    const job = {
-      demo: path.join(config.demoStorageDir, demo.storage_key),
-      tickrate: demo.tickrate || 64,
-      state: path.join(config.captureStorageDir, 'cs2-state.json'),
-      focus_wait: 5,
-      items: items.map(({ role, ...item }) => item),
-    };
-    const result = await driver.run(job);
-    if (!result || !result.ok) return fail((result && result.code) || 'capture_failed', (result && result.error) || 'Capture failed.');
-    const media = items.map((item, i) => {
-      const r = result.items[i] || {};
-      const { file, type, ...rest } = item;
-      return {
-        ...rest, ...r, file: path.basename(file), type: type === 'clip' ? 'video' : 'image',
-        mime: type === 'clip' ? 'video/webm' : 'image/jpeg',
-      };
-    });
-    await db('demo_captures').where('capture_id', row.capture_id)
-      .update({ status: 'ready', media: JSON.stringify(media), error: null, error_code: null, updated_at: db.fn.now() });
-  } catch (e) {
-    await fail('capture_failed', `Capture failed: ${e.message}`);
+async function runSession(s) {
+  const timings = {};
+  const stageUpdates = [];
+  const onStage = (text) => { stageUpdates.push(setSession(s.session_id, { stage: text }).catch(() => {})); };
+  const finish = async (fields) => {
+    await Promise.all(stageUpdates);
+    await setSession(s.session_id, { finished_at: db.fn.now(), ...fields });
+  };
+  const items = s.mode === 'watch' ? [] : await db('demo_captures').where({ session_id: s.session_id, status: 'queued' })
+    .orderBy([{ column: 'moment_tick' }, { column: 'capture_id' }]);
+  const failRest = async (code, message, from = 0) => {
+    for (const it of items.slice(from)) {
+      await db('demo_captures').where({ capture_id: it.capture_id }).whereIn('status', ['queued', 'running'])
+        .update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
+    }
+  };
+  const demo = await db('demos').where('demo_id', s.demo_id).first();
+  if (!demo || demo.status !== 'ready') {
+    await failRest('demo_missing', 'The demo is no longer available.');
+    return finish({ status: 'failed', error_code: 'demo_missing', error: 'The demo is no longer available.', failed: items.length });
   }
-  return null;
+  const t0 = Date.now();
+  const demoFile = path.join(config.demoStorageDir, demo.storage_key);
+  await fsp.mkdir(stateDir(), { recursive: true });
+  const proc = driver.open(onStage);
+  let failed = 0;
+  let completed = 0;
+  try {
+    const opened = await proc.call({
+      op: 'open', state_dir: stateDir(), size: config.captureSize, profile: s.mode === 'watch' ? null : config.captureProfile,
+      short_forward: config.captureShortForward, timescale: config.captureTimescale,
+    }, 10 * 60 * 1000);
+    timings.open = opened.timings;
+    if (!opened.ok) {
+      await failRest(opened.code, opened.error);
+      return await finish({ status: 'failed', error_code: opened.code, error: opened.error, failed: items.length });
+    }
+    if (s.mode === 'watch') {
+      const round = await db('demo_rounds').where({ demo_id: s.demo_id, round_number: s.round_number }).first('start_tick');
+      onStage(`Opening round ${s.round_number}`);
+      const r = await proc.call({ op: 'watch', demo: demoFile, tick: round.start_tick });
+      timings.watch = r.timings;
+      if (!r.ok) return await finish({ status: 'failed', error_code: r.code, error: r.error });
+      // The tool confirms both from CS2's log: the demo file it is playing
+      // and the tick the seek finished on.
+      if (r.demo !== demoFile || r.tick !== round.start_tick) return await finish({ status: 'failed', error_code: 'seek', error: 'CS2 did not open this demo at the round start.' });
+      return await finish({ status: 'done', stage: `Round ${s.round_number} is open in CS2, paused at the round start.` });
+    }
+    const loaded = await proc.call({ op: 'load', demo: demoFile });
+    timings.load = loaded.timings;
+    if (!loaded.ok) {
+      await failRest(loaded.code, loaded.error);
+      return await finish({ status: 'failed', error_code: loaded.code, error: loaded.error, failed: items.length });
+    }
+    // Recorded input for every utility clip in this session, in one parse.
+    const prepared = [];
+    const roundsCache = new Map();
+    for (const it of items) {
+      if (!roundsCache.has(it.round_number)) roundsCache.set(it.round_number, await roundData(s.demo_id, it.round_number).catch(() => null));
+      const round = roundsCache.get(it.round_number);
+      prepared.push({ it, round, ev: round && round.events[it.event_index] });
+    }
+    const ranges = [];
+    const players = (demo.meta && demo.meta.players) || [];
+    for (const p of prepared) {
+      if (p.it.kind !== 'utility' || !p.ev) continue;
+      const name = (players.find((x) => x.index === p.ev.player) || {}).name;
+      const w = window2s(p.round, p.ev.throw_tick ?? p.ev.tick, demo.tickrate || 64);
+      if (name) ranges.push({ key: String(p.it.capture_id), name, start: w.start, end: w.end });
+    }
+    const ti = Date.now();
+    const inputs = await driver.inputs(demoFile, ranges);
+    timings.inputs_parse = (Date.now() - ti) / 1000;
+
+    for (let i = 0; i < prepared.length; i += 1) {
+      const { it, round, ev } = prepared[i];
+      onStage(`Capturing ${it.kind === 'kill' ? 'kill' : 'utility'} ${i + 1} of ${prepared.length} (round ${it.round_number})`);
+      const attempt = (it.attempt || 0) + 1;
+      await db('demo_captures').where('capture_id', it.capture_id).update({ status: 'running', attempts: db.raw('attempts + 1'), updated_at: db.fn.now() });
+      const fail = async (code, message) => {
+        failed += 1;
+        await db('demo_captures').where('capture_id', it.capture_id).update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
+        await setSession(s.session_id, { failed });
+      };
+      if (!ev) { await fail('event_missing', 'The event is no longer in this round.'); continue; }
+      const dir = captureDir(s.demo_id, it.capture_id, attempt);
+      await fsp.rm(dir, { recursive: true, force: true });
+      await fsp.mkdir(dir, { recursive: true });
+      const job = buildJob(demo, round, ev, it.kind, dir);
+      if (!job) { await fail('nothing_to_capture', 'There is no player view to capture for this event (no known killer, victim or thrower).'); continue; }
+      const te = Date.now();
+      const reply = await proc.call(job);
+      if (!reply.ok) {
+        await fsp.rm(dir, { recursive: true, force: true });
+        await fail(reply.code || 'capture_failed', reply.error || 'Capture failed.');
+        if (FATAL.has(reply.code)) {
+          await failRest(reply.code, `Not captured: ${reply.error}`, i + 1);
+          failed += prepared.length - i - 1;
+          return await finish({ status: 'failed', error_code: reply.code, error: reply.error, failed, completed });
+        }
+        continue;
+      }
+      const inp = inputs[String(it.capture_id)];
+      const media = mediaFromReply(job, reply, attempt, inp ? { start: inp.start, bits: inp.bits, tickrate: demo.tickrate || 64, map: INPUT_BITS } : null);
+      const old = it.attempt;
+      await db('demo_captures').where('capture_id', it.capture_id).update({
+        status: 'ready', media: JSON.stringify(media), attempt, error: null, error_code: null,
+        timings: JSON.stringify({ ...reply.timings, total: (Date.now() - te) / 1000 }), updated_at: db.fn.now(),
+      });
+      // The replaced media is removed only now that the new media exists.
+      if (old) await fsp.rm(captureDir(s.demo_id, it.capture_id, old), { recursive: true, force: true });
+      else {
+        for (const m of it.media || []) await fsp.rm(path.join(captureDir(s.demo_id, it.capture_id), m.file), { force: true });
+      }
+      completed += 1;
+      await setSession(s.session_id, { completed });
+    }
+    return await finish({
+      status: failed && !completed ? 'failed' : 'done', completed, failed,
+      stage: failed ? `${completed} captured, ${failed} failed.` : `${completed} captured.`,
+    });
+  } catch (e) {
+    await failRest('capture_failed', `Capture failed: ${e.message}`);
+    return await finish({ status: 'failed', error_code: 'capture_failed', error: e.message, completed, failed: items.length - completed });
+  } finally {
+    // Closes the CS2 this session launched (also after a failure); a watch
+    // session leaves it open.
+    const closed = await proc.close();
+    timings.close = closed && closed.timings;
+    timings.total = (Date.now() - t0) / 1000;
+    await setSession(s.session_id, { timings: JSON.stringify(timings) }).catch(() => {});
+  }
 }
 
 function kick() {
@@ -279,17 +586,24 @@ function kick() {
 async function start() {
   if (!enabled) return;
   await fsp.mkdir(config.captureStorageDir, { recursive: true });
-  // A capture interrupted by a restart runs again.
-  await db('demo_captures').where('status', 'running').update({ status: 'queued', updated_at: db.fn.now() });
+  // Work interrupted by a restart: those sessions fail (their CS2 is gone)
+  // and their unfinished captures can be retried.
+  const stuck = await db('capture_sessions').where('status', 'running').select('session_id');
+  for (const { session_id: id } of stuck) {
+    await setSession(id, { status: 'failed', error_code: 'interrupted', error: 'The server restarted during capture.', finished_at: db.fn.now() });
+    await db('demo_captures').where('session_id', id).whereIn('status', ['queued', 'running'])
+      .update({ status: 'failed', error_code: 'interrupted', error: 'The server restarted during capture.' });
+  }
   timer = setInterval(() => runOnce().catch((e) => console.error('capture worker:', e.message)), 3000);
   timer.unref();
 }
 
 module.exports = {
-  CAPTURE_VERSION, status, list, request, mediaFile, start, victimLastAliveTick, buildItems,
+  CAPTURE_VERSION, INPUT_BITS, SELECTIONS, status, list, request, queueBatch, onDemoReady, watchRound, retryFailed, currentSession, mediaFile, start,
+  victimLastAliveTick, buildJob, selectEvents,
   // Tests: swap the CS2 driver and enable the queue without a real game.
   _test: {
-    setDriver(d) { driver = d || pythonDriver; lastCheck = { at: 0, checks: null }; },
+    setDriver(d) { driver = d ? { ...pythonDriver, ...d } : pythonDriver; lastCheck = { at: 0, checks: null }; },
     setEnabled(on) { enabled = on; lastCheck = { at: 0, checks: null }; },
     runOnce,
   },

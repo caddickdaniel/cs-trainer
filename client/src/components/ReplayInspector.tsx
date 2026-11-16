@@ -1,9 +1,9 @@
-// Replay Inspector (Phase 11): the right-hand panel of Demo Review for one
+// Replay Inspector (Phases 11–12): the right-hand panel of Demo Review for one
 // selected kill or utility throw. First-person media is captured from CS2 by
 // the server's capture worker (services/captures.js) and shown only once it
 // exists; until then the frames say why there's nothing to show. Everything
 // else comes from the demo and is labelled as tactical data.
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { killfeedIcon, weaponLabel } from '../lib/cs2Assets';
 import { eventMoment, FACING_DEGREES, isKill, killTactics, mediaFileName, STEP_SECONDS, stepTicks, utilityTactics, type InspectFilter } from '../lib/inspector';
@@ -12,10 +12,17 @@ import type { ReplayEvent, ReplayRound } from '../lib/types';
 import { Icon } from './Icons';
 import { CsImg } from './ReplayHud';
 import { UtilityIcon } from './UtilityIcon';
+import { CaptureWarning, ConfirmDialog } from './CaptureSession';
 
+// Recorded input for a clip: usercmd button bits per tick from `start`
+// (null where the demo has none), and which bit is which action.
+export interface ClipInputs { start: number; bits: (number | null)[]; tickrate: number; map: Record<string, number> }
 export interface CaptureMedia {
-  role: 'killer' | 'victim' | 'replay' | 'lineup'; type: 'image' | 'video'; mime: string; file: string; url: string;
+  // Phase 11 kill captures used 'killer' / 'victim' for the stills.
+  role: 'killer' | 'victim' | 'killer_clip' | 'killer_still' | 'victim_clip' | 'victim_still' | 'replay' | 'lineup';
+  type: 'image' | 'video'; mime: string; file: string; url: string; attempt?: number;
   player: string; tick?: number; start?: number; end?: number; width?: number; height?: number; fps?: number; timescale?: number;
+  xray?: boolean; inputs?: ClipInputs;
 }
 export interface Capture {
   capture_id: number; round_number: number; event_index: number; kind: 'kill' | 'utility';
@@ -29,26 +36,36 @@ const metres = (units: number) => `${units.toLocaleString('en-GB')} units (≈${
 const levelName = (l: string) => (l === 'lower' ? 'lower floor' : 'main floor');
 
 // One media slot: the captured image or clip when it exists, otherwise why not.
-function MediaFrame({ title, note, media, capture, status, zoom, videoRef, children }: {
+function MediaFrame({ title, note, media, capture, status, zoom, crosshair, videoRef, overlay, children }: {
   title: string; note?: string; media: CaptureMedia | null; capture: Capture | null; status: CaptureStatus | null;
-  zoom?: number; videoRef?: React.Ref<HTMLVideoElement>; children?: React.ReactNode;
+  zoom?: number; crosshair?: boolean; videoRef?: Ref<HTMLVideoElement>; overlay?: ReactNode; children?: ReactNode;
 }) {
+  const busy = capture && (capture.status === 'queued' || capture.status === 'running');
   if (media) {
     return (
       <figure className="inspector-media">
-        <figcaption>{title}{note ? <span className="muted small"> · {note}</span> : null}</figcaption>
+        <figcaption>{title}{note ? <span className="muted small"> · {note}</span> : null}
+          {media.xray ? <span className="xray-badge" title="Spectator X-ray was on: players are outlined through walls, smoke and flashes, which the player could not see.">X-ray enabled</span> : null}</figcaption>
         <div className="inspector-media__frame captured">
           {media.type === 'video'
             ? <video ref={videoRef} src={media.url} controls loop muted playsInline preload="auto" aria-label={title} />
             : <img src={media.url} alt={`${title}, captured from CS2 at tick ${media.tick}`} style={zoom && zoom > 1 ? { transform: `scale(${zoom})` } : undefined} />}
+          {/* Thin crosshair through the aim point (the frame centre, where CS2
+              draws the crosshair); the zoom scales about the same point. */}
+          {crosshair ? <div className="lineup-crosshair" aria-hidden="true"><span className="h" /><span className="v" /></div> : null}
+          {overlay}
         </div>
+        {media.type === 'image' ? (
+          <span className="muted small still-note">Paused still: positions and view are exact for the tick, but CS2 rebuilds smoke and fire effects when it seeks, so their density can differ from live playback (the clip plays through and is closer).</span>
+        ) : null}
         <span className="muted small">Captured from CS2 playing this demo{media.type === 'video'
           ? ` · ${media.player}'s view, ticks ${media.start}–${media.end}, ${media.fps} fps (frames sampled while the demo played at ${media.timescale ?? 0.2}× speed)`
-          : ` · ${media.player}'s view at tick ${media.tick}`}</span>
+          : ` · ${media.player}'s view at tick ${media.tick}`}
+          {media.xray ? ' · X-ray enabled (outlines show players the player could not see)' : ''}
+          {busy ? ' · a new capture is in progress; this one stays until it succeeds' : capture?.status === 'failed' ? ` · the last recapture failed (${capture.error}); this is the earlier capture` : ''}</span>
       </figure>
     );
   }
-  const busy = capture && (capture.status === 'queued' || capture.status === 'running');
   let heading = 'Capture unavailable';
   let detail = status ? status.reason : 'Checking capture status…';
   if (capture?.status === 'running') { heading = 'Capturing from CS2…'; detail = 'CS2 is seeking to the moment and recording this view.'; }
@@ -95,6 +112,54 @@ async function downloadZoom(url: string, zoom: number, name: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// Recorded actions over a utility clip, highlighted in sync with the video
+// (including slow playback). The demo stores the actions the player's client
+// sent each tick (usercmd buttons), shown with CS2's default keys; the
+// physical keys pressed aren't recorded, and ticks without data say so.
+const INPUT_KEYS = ['W', 'A', 'S', 'D', 'Shift', 'Ctrl', 'Space', 'LMB', 'RMB'] as const;
+const INPUT_ACTION: Record<string, string> = { W: 'forward', A: 'move left', S: 'back', D: 'move right', Shift: 'walk', Ctrl: 'crouch', Space: 'jump', LMB: 'attack', RMB: 'attack 2' };
+function InputOverlay({ media, videoRef }: { media: CaptureMedia; videoRef: RefObject<HTMLVideoElement | null> }) {
+  const [bits, setBits] = useState<number | null | undefined>(undefined);
+  const inp = media.inputs;
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!inp || media.start == null || !v) return undefined;
+    let raf = 0;
+    let stopped = false;
+    const update = () => {
+      // Frame time → demo tick: the clip covers start..end in real time, so
+      // the overlay follows any playback speed.
+      const tick = Math.round(media.start! + v.currentTime * inp.tickrate);
+      const i = tick - inp.start;
+      setBits(i >= 0 && i < inp.bits.length ? inp.bits[i] : null);
+    };
+    // Every decoded frame when supported, otherwise every animation frame;
+    // plus seek/time events so a paused, scrubbed or hidden video still updates.
+    const vfc = (v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }).requestVideoFrameCallback?.bind(v);
+    const loop = () => { if (stopped) return; update(); if (vfc) vfc(loop); else raf = requestAnimationFrame(loop); };
+    loop();
+    const events = ['seeked', 'timeupdate', 'loadeddata', 'play', 'pause'];
+    events.forEach((e) => v.addEventListener(e, update));
+    // Fallback when frame callbacks and events are delayed (hidden tab).
+    const poll = window.setInterval(update, 150);
+    return () => { stopped = true; cancelAnimationFrame(raf); window.clearInterval(poll); events.forEach((e) => v.removeEventListener(e, update)); };
+  }, [inp, media.start, videoRef]);
+  if (!inp) {
+    return <div className="input-overlay unavailable" title="No recorded input was read for this clip.">Input not recorded</div>;
+  }
+  return (
+    <div className="input-overlay" aria-label="Recorded actions at this frame">
+      {INPUT_KEYS.map((k) => {
+        const bit = inp.map[k];
+        const state = bits == null || bit == null ? 'na' : (bits & (1 << bit)) ? 'on' : 'off';
+        return <span key={k} className={`key ${state} ${k.length > 1 ? 'wide' : ''}`}
+          title={state === 'na' ? `${k}: not recorded at this tick` : `${INPUT_ACTION[k]} (default key ${k})${state === 'on' ? ': held' : ''}`}>{k}</span>;
+      })}
+      <span className="input-overlay__note">{bits === null ? 'no input recorded here' : 'recorded actions · default keys'}</span>
+    </div>
+  );
+}
+
 export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, tick, event, eventIndex, selectionRound, name, side,
   filter, onFilter, onPrev, onNext, onClear, onSeek, onGoToRound, canControl, status, onStatus, onRefresh, mapName }: {
   demoId: number; round: ReplayRound | null; roundNumber: number; info: { start_tick: number; freeze_end_tick: number | null };
@@ -115,8 +180,17 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
   const capture = event && eventIndex != null && selectionRound != null
     ? status?.captures?.find((c) => c.round_number === selectionRound && c.event_index === eventIndex && c.kind === kind) ?? null
     : null;
-  const mediaFor = (role: CaptureMedia['role']) => (capture?.status === 'ready' ? capture.media.find((m) => m.role === role) ?? null : null);
+  // Media stays visible while a recapture is pending or after it failed.
+  const mediaFor = (...roles: CaptureMedia['role'][]) => {
+    for (const r of roles) {
+      const m = capture?.media.find((x) => x.role === r);
+      if (m) return m;
+    }
+    return null;
+  };
   const busy = capture?.status === 'queued' || capture?.status === 'running';
+  const [confirm, setConfirm] = useState(false);
+  const [pov, setPov] = useState<'killer' | 'victim'>('killer');
 
   // Asks the server to capture the selected event (validated there); the
   // result appears through the polled status.
@@ -135,7 +209,7 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
     }
   };
   const captureButton = status?.enabled && !busy ? (
-    <button type="button" className="btn small" disabled={requesting} onClick={() => requestCapture(capture?.status === 'ready')}>
+    <button type="button" className="btn small" disabled={requesting} onClick={() => setConfirm(true)}>
       {requesting ? 'Requesting…' : capture?.status === 'failed' ? 'Try again' : capture?.status === 'ready' ? 'Capture again' : 'Capture from CS2'}
     </button>
   ) : !status?.enabled ? (
@@ -149,6 +223,14 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
     if (videoRef.current) videoRef.current.playbackRate = r;
   };
 
+  const confirmDialog = confirm && event ? (
+    <ConfirmDialog title={capture?.status === 'ready' ? 'Capture this again?' : 'Capture this from CS2?'} confirmLabel={capture?.status === 'ready' ? 'Capture again' : 'Capture'}
+      busy={requesting} onCancel={() => setConfirm(false)}
+      onConfirm={async () => { await requestCapture(!!capture?.media.length); setConfirm(false); }}>
+      <p>Only this {isKill(event) ? 'kill (killer and victim views)' : 'throw (clip and lineup)'} is captured.{capture?.media.length ? ' The current media stays until the new capture succeeds.' : ''}</p>
+      <CaptureWarning />
+    </ConfirmDialog>
+  ) : null;
   const header = (
     <div className="inspector-head">
       <h2>Replay Inspector</h2>
@@ -223,11 +305,27 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
           </p>
           <p className="muted small">Round {roundNumber} · {at(event.tick)} · tick {event.tick}{flags.length ? ` · ${flags.join(', ')}` : ''}</p>
           {nav}
-          <MediaFrame title={`Killer POV — ${killerName}`} note={`tick ${event.tick}`} media={mediaFor('killer')} capture={capture} status={status}>{captureButton}</MediaFrame>
-          <MediaFrame title={`Victim POV — ${name(event.victim)}`}
-            note={k.victimTick != null ? `last recorded alive tick ${k.victimTick} (${Math.round(((event.tick - k.victimTick) / tickrate) * 1000)} ms before death), not the death frame` : 'no alive sample before death'}
-            media={mediaFor('victim')} capture={capture} status={status}>{captureButton}</MediaFrame>
-          {capture?.status === 'ready' && captureButton ? <div className="row tight">{captureButton}</div> : null}
+          <div className="row tight pov-switch" role="group" aria-label="Whose view">
+            {(['killer', 'victim'] as const).map((r) => (
+              <button key={r} type="button" className={`btn small${pov === r ? ' primary' : ' ghost'}`} aria-pressed={pov === r} onClick={() => setPov(r)}>
+                {r === 'killer' ? `Killer · ${killerName}` : `Victim · ${name(event.victim)}`}</button>
+            ))}
+          </div>
+          {pov === 'killer' ? (
+            <>
+              <MediaFrame title={`Killer POV — ${killerName}`} note="2 s centred on the kill" media={mediaFor('killer_clip')} capture={capture} status={status}>{captureButton}</MediaFrame>
+              <MediaFrame title="Killer still" note={`kill tick ${event.tick}`} media={mediaFor('killer_still', 'killer')} capture={capture} status={status}>{captureButton}</MediaFrame>
+            </>
+          ) : (
+            <>
+              <MediaFrame title={`Victim POV — ${name(event.victim)}`} note="2 s centred on the death (after it, CS2 shows its death camera)" media={mediaFor('victim_clip')} capture={capture} status={status}>{captureButton}</MediaFrame>
+              <MediaFrame title="Victim still"
+                note={k.victimTick != null ? `last recorded alive tick ${k.victimTick} (${Math.round(((event.tick - k.victimTick) / tickrate) * 1000)} ms before death), not the death frame` : 'no alive sample before death'}
+                media={mediaFor('victim_still', 'victim')} capture={capture} status={status}>{captureButton}</MediaFrame>
+            </>
+          )}
+          {capture?.media.length && captureButton ? <div className="row tight">{captureButton}</div> : null}
+          {confirmDialog}
           {requestError ? <p className="error-text small">{requestError}</p> : null}
           <h3 className="inspector-sub">Tactical data <span className="muted small">(from the demo, not first-person imagery)</span></h3>
           <dl className="inspector-facts">
@@ -236,7 +334,7 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
             <dt>Killer</dt><dd>{k.killer ? `${pct(k.killer.x)}, ${pct(k.killer.y)} on the radar, ${levelName(k.killer.level)}, facing ${Math.round(k.killer.yaw)}°` : 'Position not recorded'}</dd>
             <dt>Victim</dt><dd>{k.victim ? `${pct(k.victim.x)}, ${pct(k.victim.y)}, ${levelName(k.victim.level)}, facing ${Math.round(k.victim.yaw)}°, ${k.victim.hp} HP` : 'Position not recorded'}</dd>
             <dt>Distance</dt><dd>{k.distanceUnits != null ? `${metres(k.distanceUnits)} across the map` : '—'}</dd>
-            <dt>Elevation</dt><dd>{k.sameFloor == null ? '—' : k.sameFloor ? 'Same radar floor' : 'Different radar floors'}<span className="muted small"> (height and pitch aren't recorded in the replay data)</span></dd>
+            <dt>Elevation</dt><dd>{k.sameFloor == null ? '—' : k.sameFloor ? 'Same radar floor' : 'Different radar floors'}<span className="muted small"> (height and pitch are in the demo but not in this app's replay data yet)</span></dd>
             <dt>Facing</dt>
             <dd>{k.killerFacingOff != null ? (
               <>
@@ -247,8 +345,8 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
             ) : '—'}</dd>
           </dl>
           <div className="row wrap tight inspector-exports">
-            {download(mediaFor('killer'), 'Export killer screenshot', 'jpg')}
-            {download(mediaFor('victim'), 'Export victim screenshot', 'jpg')}
+            {download(mediaFor(`${pov}_clip`), `Export ${pov} clip (WebM)`, 'webm')}
+            {download(mediaFor(`${pov}_still`, pov), `Export ${pov} still`, 'jpg')}
           </div>
         </div>
       </section>
@@ -270,18 +368,20 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
         <p className="muted small">Round {roundNumber} · {u.releaseTick != null ? `released ${at(u.releaseTick)} (tick ${u.releaseTick})` : 'release not linked'} · detonated {at(event.tick)} (tick {event.tick})</p>
         {nav}
         <MediaFrame title="Two-second replay" note={u.releaseTick != null ? `around the release, from ${name(event.player)}'s view` : 'around the detonation (release not linked)'}
-          media={replay} capture={capture} status={status} videoRef={videoRef}>{captureButton}</MediaFrame>
+          media={replay} capture={capture} status={status} videoRef={videoRef}
+          overlay={replay ? <InputOverlay media={replay} videoRef={videoRef} /> : null}>{captureButton}</MediaFrame>
         <div className="row wrap tight inspector-speeds" role="group" aria-label="Replay speed">
           {[0.25, 0.5, 1].map((r) => (
             <button key={r} type="button" className={`btn small${speed === r ? '' : ' ghost'}`} aria-pressed={speed === r} disabled={!replay} onClick={() => setPlayback(r)}>{r}×</button>
           ))}
         </div>
         <MediaFrame title="Lineup — just before release" note={u.releaseTick != null ? `tick ${u.releaseTick - 1}` : 'needs a linked release'}
-          media={lineup} capture={capture} status={status} zoom={zoom}>{u.releaseTick != null ? captureButton : null}</MediaFrame>
+          media={lineup} capture={capture} status={status} zoom={zoom} crosshair>{u.releaseTick != null ? captureButton : null}</MediaFrame>
         <label className="inline small inspector-zoom">Crosshair zoom {zoom}×
           <input type="range" min={1} max={5} step={1} value={zoom} disabled={!lineup} onChange={(e) => setZoom(Number(e.target.value))} aria-label="Crosshair zoom" />
         </label>
-        {capture?.status === 'ready' && captureButton ? <div className="row tight">{captureButton}</div> : null}
+        {capture?.media.length && captureButton ? <div className="row tight">{captureButton}</div> : null}
+        {confirmDialog}
         {requestError ? <p className="error-text small">{requestError}</p> : null}
         <h3 className="inspector-sub">Tactical data <span className="muted small">(from the demo, not first-person imagery)</span></h3>
         <dl className="inspector-facts">
@@ -295,7 +395,7 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
           <dt>Landed</dt><dd>{u.landed ? `${pct(u.landed.x)}, ${pct(u.landed.y)}, ${levelName(u.landed.level)}` : 'Not recorded'}</dd>
           <dt>Distance</dt><dd>{u.throwDistanceUnits != null ? metres(u.throwDistanceUnits) : '—'}</dd>
           {event.end_tick != null ? <><dt>Lasted</dt><dd>{((event.end_tick - event.tick) / tickrate).toFixed(1)} s</dd></> : null}
-          <dt>Aim</dt><dd className="muted">{lineup ? 'Pitch isn\'t in the replay data; the lineup screenshot shows the crosshair as CS2 rendered it.' : 'Pitch and the exact crosshair point aren\'t in the replay data; only a lineup capture shows them.'}</dd>
+          <dt>Aim</dt><dd className="muted">{lineup ? 'The lineup screenshot shows the crosshair as CS2 rendered it (green lines mark it).' : 'The exact crosshair point is only shown by a lineup capture.'}</dd>
         </dl>
         <div className="row wrap tight inspector-exports">
           {download(replay, 'Export clip (WebM)', 'webm')}

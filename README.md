@@ -946,6 +946,89 @@ Real POV screenshots and clips are recorded by the CS2 client playing the demo o
   - `GET /api/demos/:id/captures/:capture_id/media/:file`: only files listed for that capture.
   - No paths or commands are ever accepted from the client: the demo path comes from storage, and player names come from the parsed demo.
 
+## Phase 12: capture sessions, kill clips and recorded input
+
+### What was added
+- **Capture sessions** (`capture_sessions`, `services/captures.js`): one session is one run of CS2. A batch from upload, a single (re)capture or Watch this round each get their own session.
+  - **CS2 lifecycle:** the worker launches CS2 itself through the Steam runtime (`tools/cs2-capture/launcher.py`) in a 1280×720 window and focuses it. It loads the demo once and captures events in tick order. When the session ends (also on failure) it closes the instance it launched.
+  - **Process tracking:** the session tracks its CS2 by a marker environment variable, so it never closes an unrelated CS2. An already-open CS2 started with `-condebug -console` is used and left open.
+  - **Your settings:** `cs2_video.txt` is backed up before launch and restored after the instance exits; a crash is recovered on the next session. Changed convars are put back before quitting. The `console.log` that `-condebug` creates is deleted afterwards.
+  - **Focus without the user:** a new CS2 window normally takes focus itself. Otherwise `_NET_ACTIVE_WINDOW` is tried, then a uinput absolute pointer moves to the window centre. It clicks only once XWayland reports the pointer inside the CS2 window, so nothing else can be clicked. Focus is still checked before every command.
+- **Upload options:** Demo Review → Upload has Kills & Utility / Kills only / Utility only (none selected by default; select again to clear).
+  - With an option, a confirmation explains that CS2 launches, how long it takes and that the PC must be left alone, and **Go back** keeps the choice.
+  - After parsing, the matching recorded events are queued as one batch. A failed event doesn't stop the rest; a fatal error (CS2 closed, focus lost) marks the remaining events as not captured.
+  - Without an option the import is unchanged.
+- **Progress overlay:** a translucent overlay with a spinner covers the Demo Review page while the user's session runs. It shows the stage (starting CS2, loading the demo, "capturing kill 3 of 12"), the count and the remaining time.
+  - It follows the job (`GET /api/capture-sessions/current`), so it survives a refresh.
+  - When the job ends it is replaced by a summary with **Retry N failed**, which requeues them as one session (`POST /api/demos/:id/captures/retry`).
+- **Kills:** a **Killer / Victim** switch shows one POV at a time.
+  - **Clip:** two seconds centred on the kill (on the death for the victim), clamped to the round.
+  - **Still below:** the killer at the kill tick, the victim at their last recorded alive tick.
+  - **X-ray:** flash-affected (attacker blind or flash assist) and through-smoke kills are recorded with spectator X-ray on and labelled **X-ray enabled**.
+  - **Earlier media:** older captures (Phase 11 stills) stay visible, also while a recapture is pending or after it fails.
+- **Utility:**
+  - **Input overlay:** the clip has an overlay (W A S D Shift Ctrl Space LMB RMB) synced to the video at any speed.
+  - **Lineup:** the still has a thin green crosshair through the aim point that stays aligned when zooming.
+  - **Radar:** landed recorded utility on the radar is clickable and opens the same inspector event as its timeline entry (the same event object, so overlapping throws resolve correctly).
+- **Watch this round** (under the round list): opens the original demo in CS2 at the selected round's start. CS2 is launched with the player's own video settings, paused, and left open. The tool confirms from CS2's log that it is playing that demo file and landed on the round's start tick.
+- **Capture again / Capture from CS2** asks first (it takes control of the local CS2 window) and recaptures only that event. The existing media stays until the new capture succeeds; each attempt is stored in its own folder.
+
+### Recorded input (verified in the demo)
+The demo stores each player's usercmd button state per tick (`usercmd_buttonstate_1`). The bits were checked against the game's own state over 53,245 alive samples of `spirit-vs-g2-m3-ancient.dem`, with none missing:
+
+| Bit | Action | Default key | Check against game state |
+|---|---|---|---|
+| 0 | attack | LMB | |
+| 1 | jump | Space | |
+| 2 | duck | Ctrl | |
+| 3 | forward | W | |
+| 4 | back | S | |
+| 9 | move left | A | |
+| 10 | move right | D | |
+| 11 | attack2 | RMB | |
+| 16 | speed (walk) | Shift | 6,436 of 6,496 `is_walking` samples have it |
+
+These are **actions the player's client sent, not physical keys**: the overlay labels them "recorded actions · default keys". Ticks without data are shown struck through, never guessed from movement. The bits are read in one parse per session (`workers/demo-inputs-child.js`) and stored with the clip.
+
+### Benchmarks (16 Nov 2026, `tools/cs2-capture/bench.py`, RTX 4090, `spirit-vs-g2-m3-ancient.dem`)
+
+**Final settings** (1280×720 window, your own quality settings, clips recorded at 1× speed):
+
+| Step | Time |
+|---|---|
+| Cold start (launch → window 1.5 s → main menu → focused) | 7.1 s (once 53 s while CS2 rebuilt its shader cache after a settings change) |
+| Demo load | 18.9 s |
+| Kill, both POVs (2 clips + 2 stills) | 25.0–27.1 s; 35 s in dense smoke |
+| Utility throw (clip + lineup) | 12.8–14.7 s |
+| Mixed batch, 3 throws + 3 kills | 119 s, about 20 s per event |
+| Close | 3.8 s |
+| Website end-to-end single recapture | 57.6 s in total |
+
+Inside a kill, roughly:
+- seeking 5–8.5 s;
+- recording 9.1 s (2 × (2 s + 0.5 s pre-roll) plus console steps);
+- stills 3.2 s;
+- POV switches 1.3 s;
+- encoding 0 s, because VP8 encoding streams during recording and the tail is ~2 ms.
+
+**Estimates shown to users** (`services/captureEstimates.js`): 8 s start + 19 s load + 26 s per kill + 13.5 s per throw. For a full match like this one (131 kills, 391 throws, 18 rounds):
+- Kills & Utility: about 2.4 h;
+- Kills only: about 57 min;
+- Utility only: about 1.5 h.
+
+After parsing, the overlay uses the real count.
+
+**Findings:**
+- **Resolution:** at 1920×1080 a grab takes 35 ms and clips at 1× fell up to 48 ticks behind. At 1280×720 a grab takes 13–14 ms with 0.0 ticks of lag at 1×, so 720p is used. Media is saved at 1280×720 either way.
+- **Graphics settings:** low settings didn't help. Grab time was 13.9 ms on the low profile vs 12.7 ms on your own settings, and seeking (the real bottleneck) is CPU-bound. Capture keeps your quality settings (`CAPTURE_PROFILE=native`); only the window size changes.
+- **Seeks:** a backward seek is always rebuilt from a full snapshot, so it is one command. Forward seeks still overshoot and come back (`CAPTURE_SHORT_FORWARD=0`).
+  - After a 1,500-tick forward seek the players were at the right tick but the camera was where magixx stood 23 seconds earlier (frame difference 38 vs about 0.5 for identical paused frames).
+  - Short forward seeks (64–400 ticks) kept the camera but still differed by 10–13, mainly in smoke.
+- **Accidental extra seeks:** after each clip the tool forgot where it was paused, so the next seek defaulted to the slow overshoot path. It now keeps the clip end as a lower bound, and kills are ordered killer clip → killer still → victim still → victim clip, so all seeks after the first are single backward commands. The deliberately doubled convar commands were dropped once the console's input delay was handled.
+- **Stills from clips:** a clip frame at the kill tick differs from a paused still by 14.3, so stills stay separate captures.
+- **Smoke and fire in stills:** when CS2 seeks it rebuilds smoke and fire without their history. At the same tick and view, paused stills showed visibly different smoke density, and once missed a fire the clip showed. Positions and camera are exact. Stills carry a note saying this, and the clips (played through) are closer to what was seen.
+- **Flash and smoke views:** in the flashed-attacker kill (NertZ → zont1x) the view at the kill tick is heavily washed out but not fully white, and X-ray outlines stay visible. In the through-smoke kill (magixx → huNter) the view inside the smoke shows nothing without X-ray; with it, the players are outlined.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

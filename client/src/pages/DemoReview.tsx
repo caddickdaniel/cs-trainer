@@ -12,6 +12,7 @@ import { Icon } from '../components/Icons';
 import { MapBackground, UtilityGlyph } from '../components/MapBoard';
 import { KillFeed, ReplayHud, ReplayScoreboard } from '../components/ReplayHud';
 import { ReplayInspector, type CaptureStatus } from '../components/ReplayInspector';
+import { CaptureOverlay, CaptureWarning, ConfirmDialog, minutes, useCaptureSession } from '../components/CaptureSession';
 import { eventMoment, inspectable, inspectableIndexes, isKill, isUtility, neighbourIndex, type InspectFilter } from '../lib/inspector';
 import { weaponLabel } from '../lib/cs2Assets';
 import { UtilityIcon } from '../components/UtilityIcon';
@@ -57,6 +58,15 @@ function useTeamReview(teamId: number | undefined, intervalMs: number) {
   return state;
 }
 
+// Estimated capture time for an upload option, from measured benchmarks.
+function estimateText(est: { measured: boolean; options?: { all: number; kill: number; utility: number }; per_kill?: number; per_utility?: number; cold_start?: number;
+  typical_kills?: number; typical_utility?: number } | undefined, opt: 'all' | 'kill' | 'utility') {
+  if (!est || !est.measured || !est.options) return 'Capture can take a long time for a full match (no measured estimate yet).';
+  const per = opt === 'kill' ? `about ${Math.round(est.per_kill!)} s per kill` : opt === 'utility' ? `about ${Math.round(est.per_utility!)} s per throw`
+    : `about ${Math.round(est.per_kill!)} s per kill and ${Math.round(est.per_utility!)} s per throw`;
+  return `Expect roughly ${minutes(est.options[opt])} for a full match (${per}, plus about ${Math.round(est.cold_start!)} s to start CS2).`;
+}
+
 export function DemoLibraryPage() {
   useDocumentTitle('Demo Review');
   const { active_team: team } = useAuth();
@@ -73,6 +83,11 @@ function DemoLibrary({ teamId }: { teamId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Optional CS2 capture once the demo has parsed (none selected by default).
+  const [captureOpt, setCaptureOpt] = useState<'' | 'all' | 'kill' | 'utility'>('');
+  const [confirming, setConfirming] = useState(false);
+  const { current: captureCurrent, refresh: refreshCapture } = useCaptureSession();
+  const captureInfo = captureCurrent?.capture;
   const pending = lib.data?.demos.some((d) => d.status === 'queued' || d.status === 'processing');
   const { reload } = lib;
 
@@ -83,21 +98,26 @@ function DemoLibrary({ teamId }: { teamId: number }) {
     return () => window.clearInterval(t);
   }, [pending, reload]);
 
-  const upload = async () => {
+  const upload = async (confirmed = false) => {
     if (!file || !lib.data) return;
+    if (captureOpt && !confirmed) { setConfirming(true); return; }
+    setConfirming(false);
     setError(null);
     setNotice(null);
     if (!/\.dem$/i.test(file.name)) { setError('Choose a CS2 demo file (.dem). Unzip .dem.gz / .zip / .bz2 downloads first.'); return; }
     if (file.size > lib.data.limits.max_bytes) { setError(`That demo is ${fmtSize(file.size)}; the limit is ${fmtSize(lib.data.limits.max_bytes)}.`); return; }
     setProgress(0);
     try {
-      const q = new URLSearchParams({ file_name: file.name, ...(title.trim() ? { title: title.trim() } : {}) });
+      const q = new URLSearchParams({ file_name: file.name, ...(title.trim() ? { title: title.trim() } : {}), ...(captureOpt ? { capture: captureOpt } : {}) });
       const res = await api.uploadFile<{ retried?: boolean }>(`/teams/${teamId}/demos?${q}`, file, setProgress);
-      setNotice(res?.retried
+      setNotice((res?.retried
         ? 'This demo was already in your library but had failed, so it is being processed again.'
-        : 'Uploaded. The demo is being processed in the background; this list updates when it is ready.');
+        : 'Uploaded. The demo is being processed in the background; this list updates when it is ready.')
+        + (captureOpt ? ' CS2 capture starts once processing finishes.' : ''));
       setFile(null);
       setTitle('');
+      setCaptureOpt('');
+      refreshCapture();
       if (inputRef.current) inputRef.current.value = '';
       await reload();
     } catch (err) {
@@ -138,6 +158,14 @@ function DemoLibrary({ teamId }: { teamId: number }) {
   const review = live?.review;
   return (
     <div className="stack">
+      <CaptureOverlay current={captureCurrent} refresh={refreshCapture} />
+      {confirming && captureOpt ? (
+        <ConfirmDialog title={`Upload and capture ${captureOpt === 'all' ? 'kills & utility' : captureOpt === 'kill' ? 'kills' : 'utility'}?`}
+          confirmLabel="Upload and capture" onCancel={() => setConfirming(false)} onConfirm={() => upload(true)}>
+          <p>After the demo is processed, every recorded {captureOpt === 'all' ? 'kill and utility throw' : captureOpt === 'kill' ? 'kill' : 'utility throw'} is captured from CS2.</p>
+          <CaptureWarning extra={<p>{estimateText(captureInfo?.estimates, captureOpt)} You can follow progress on this page.</p>} />
+        </ConfirmDialog>
+      ) : null}
       <div className="page-head">
         <div>
           <h1>Demo Review</h1>
@@ -157,8 +185,19 @@ function DemoLibrary({ teamId }: { teamId: number }) {
         <div className="row wrap">
           <input ref={inputRef} type="file" accept=".dem" aria-label="CS2 demo file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           <input placeholder="Title (optional)" maxLength={120} value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Demo title" />
-          <button type="button" className="btn primary" disabled={!file || progress !== null} onClick={upload}><Icon name="upload" /> Upload</button>
+          <button type="button" className="btn primary" disabled={!file || progress !== null} onClick={() => upload()}><Icon name="upload" /> Upload</button>
         </div>
+        <fieldset className="capture-options">
+          <legend className="small">Also capture first-person footage from CS2 <span className="muted">(optional)</span></legend>
+          <div className="row tight wrap" role="group" aria-label="Capture from CS2 after import">
+            {([['all', 'Kills & Utility'], ['kill', 'Kills only'], ['utility', 'Utility only']] as const).map(([v, l]) => (
+              <button key={v} type="button" className={`btn small${captureOpt === v ? ' primary' : ' ghost'}`} aria-pressed={captureOpt === v}
+                disabled={!captureInfo?.enabled} onClick={() => setCaptureOpt((cur) => (cur === v ? '' : v))}>{l}</button>
+            ))}
+          </div>
+          <p className="muted small">{!captureInfo ? 'Checking whether capture is available…' : !captureInfo.enabled ? captureInfo.reason
+            : captureOpt ? `${estimateText(captureInfo.estimates, captureOpt)} Select it again to clear.` : 'None selected: the demo is imported as usual.'}</p>
+        </fieldset>
         {progress !== null ? <progress className="upload-progress" value={progress} max={1} aria-label="Upload progress" /> : null}
         <div className="row wrap share-code-row">
           <span className="muted small share-code-label">Or import a match share code</span>
@@ -539,13 +578,31 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     api.get<CaptureStatus>(`/demos/${demo.demo_id}/captures`).then((s) => { if (!cancelled) setCaptureStatus(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, [demo.demo_id, captureRefresh]);
-  // While a capture is queued or running, check on it every few seconds.
+  // The user's capture session (overlay); its progress refreshes the list.
+  const { current: captureCurrent, refresh: refreshCapture } = useCaptureSession(() => setCaptureRefresh((n) => n + 1));
   const capturePending = !!captureStatus?.captures?.some((c) => c.status === 'queued' || c.status === 'running');
   useEffect(() => {
+    // Captures someone else started on this demo: check now and then.
     if (!capturePending) return undefined;
-    const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 2500);
+    const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 5000);
     return () => window.clearTimeout(t);
   }, [capturePending, captureStatus]);
+  const [watchConfirm, setWatchConfirm] = useState(false);
+  const [watchBusy, setWatchBusy] = useState(false);
+  const [watchError, setWatchError] = useState<string | null>(null);
+  const watchRound = async () => {
+    setWatchBusy(true);
+    setWatchError(null);
+    try {
+      await api.post(`/demos/${demo.demo_id}/watch`, { round_number: roundNumber });
+      setWatchConfirm(false);
+      refreshCapture();
+    } catch (err) {
+      setWatchError(errorMessage(err));
+    } finally {
+      setWatchBusy(false);
+    }
+  };
   // moving: the utility marker or text that the next map click moves.
   const [moving, setMoving] = useState<number | null>(null);
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null);
@@ -880,6 +937,16 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     if (canControl) control.seek(Math.max(info.start_tick, Math.min(info.end_tick, eventMoment(ev))));
   };
   const pickKill = (ev: ReplayEvent) => selectEvent(ev);
+  // Landed recorded utility on the radar opens the same inspector event as
+  // its timeline entry (same event object, so overlapping throws resolve to
+  // their own clip). Off while a drawing tool is active.
+  const pickUtility = (ev: ReplayEvent) => (tool === 'none' && isUtility(ev) ? {
+    pointerEvents: 'auto' as const, role: 'button', tabIndex: 0, style: { cursor: 'pointer' },
+    'aria-label': `Inspect ${RECORDED_LABEL[ev.type] ?? ev.type} by ${ev.player != null ? nameOf(ev.player) : 'unknown'}`,
+    onPointerDown: (e: ReactPointerEvent) => e.stopPropagation(),
+    onClick: () => selectEvent(ev),
+    onKeyDown: (e: { key: string; preventDefault: () => void }) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectEvent(ev); } },
+  } : {});
   // The inspected event, once its round is loaded.
   const inspectedEv = inspect && round && inspect.round === roundNumber ? round.events[inspect.index] : undefined;
   const inspected = inspectedEv && inspectable(inspectedEv) ? { ev: inspectedEv, index: inspect!.index } : null;
@@ -940,6 +1007,15 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
 
   return (
     <div className="stack replay-page">
+      <CaptureOverlay current={captureCurrent} refresh={refreshCapture} demoId={demo.demo_id} />
+      {watchConfirm ? (
+        <ConfirmDialog title={`Watch round ${roundNumber} in CS2?`} confirmLabel="Open in CS2" busy={watchBusy}
+          onCancel={() => setWatchConfirm(false)} onConfirm={watchRound}>
+          <p>Opens this demo in <strong>CS2 on this PC</strong> at the start of round {roundNumber}, paused, with your own video settings. CS2 stays open for you to watch.</p>
+          <p>While it starts, CS2's window is controlled automatically: please don't type or click until the round is open.</p>
+          {watchError ? <p className="error-text small">{watchError}</p> : null}
+        </ConfirmDialog>
+      ) : null}
       <div className="replay-head">
         <h1>{demo.title}</h1>
         <p className="muted small">{mapName(demo.map)} · {demo.rounds.length} rounds · round {roundNumber}
@@ -1100,7 +1176,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               {rec ? (
                 <g className="recorded" pointerEvents="none" data-recorded-layer="">
                   {rec.smokes.filter(onLevel).map((ev) => (
-                    <g key={`s${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="smoke">
+                    <g key={`s${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="smoke" {...pickUtility(ev)}>
                       <circle r={RECORDED_RADIUS.smoke} fill="#c9d0d8" fillOpacity="0.55" stroke={recColor(ev)} strokeWidth="2" strokeDasharray="5 4" />
                       <UtilityGlyph kind="smoke" color={recColor(ev)} r={10} />
                       <text y={RECORDED_RADIUS.smoke + 13} textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">
@@ -1108,7 +1184,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                     </g>
                   ))}
                   {rec.fires.filter(onLevel).map((ev) => (
-                    <g key={`f${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="fire">
+                    <g key={`f${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="fire" {...pickUtility(ev)}>
                       <circle r={RECORDED_RADIUS.fire} fill="#e8833a" fillOpacity="0.5" stroke={recColor(ev)} strokeWidth="2" strokeDasharray="5 4" />
                       <UtilityGlyph kind="molly" color={recColor(ev)} r={10} />
                       <text y={RECORDED_RADIUS.fire + 13} textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">
@@ -1116,14 +1192,14 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                     </g>
                   ))}
                   {rec.flashes.filter(onLevel).map((ev) => (
-                    <g key={`fl${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="flash"
+                    <g key={`fl${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="flash" {...pickUtility(ev)}
                       opacity={Math.max(0.25, 1 - (tick - ev.tick) / FLASH_SHOW_TICKS)}>
                       <circle r="20" fill="#fffbe0" fillOpacity="0.6" />
                       <UtilityGlyph kind="flash" color={recColor(ev)} r={10} />
                     </g>
                   ))}
                   {rec.hes.filter(onLevel).map((ev) => (
-                    <g key={`he${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="he"
+                    <g key={`he${ev.tick}-${ev.x}`} transform={`translate(${ev.x! * SIZE},${ev.y! * SIZE})`} data-recorded="he" {...pickUtility(ev)}
                       opacity={Math.max(0.25, 1 - (tick - ev.tick) / BLAST_SHOW_TICKS)}>
                       <circle r="22" fill="none" stroke="#ff7a45" strokeWidth="4" />
                       <UtilityGlyph kind="he" color={recColor(ev)} r={10} />
@@ -1289,6 +1365,13 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   onClick={() => control.round(r.round_number)}>{r.round_number}</button>
               ))}
             </div>
+            {captureStatus?.enabled ? (
+              <div className="watch-round">
+                <button type="button" className="btn small" onClick={() => setWatchConfirm(true)}>
+                  <Icon name="screen" size={14} /> Watch this round</button>
+                <span className="muted small">Opens round {roundNumber} in CS2</span>
+              </div>
+            ) : null}
           </Panel>
           <Panel title={`Round ${roundNumber} notes`} className="round-notes">
             <textarea aria-label={`Notes for round ${roundNumber}`} value={noteText} maxLength={5000} readOnly={!canAnnotate}
@@ -1360,7 +1443,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             name={(p) => (p == null ? 'Unknown' : nameOf(p))} side={sideOfPlayer} filter={inspectFilter} onFilter={setInspectFilter}
             onPrev={() => stepEvent(-1)} onNext={() => stepEvent(1)} onClear={() => { setInspect(null); setSelectedKill(null); }}
             onSeek={(t) => control.seek(Math.max(info.start_tick, Math.min(info.end_tick, t)))} onGoToRound={(n) => control.round(n)}
-            canControl={canControl} status={captureStatus} onStatus={setCaptureStatus} onRefresh={() => setCaptureRefresh((n) => n + 1)} mapName={demo.map} />
+            canControl={canControl} status={captureStatus} onStatus={setCaptureStatus} onRefresh={() => { setCaptureRefresh((n) => n + 1); refreshCapture(); }} mapName={demo.map} />
         </div>
       </div>
     </div>
