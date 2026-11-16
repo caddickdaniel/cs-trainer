@@ -1,36 +1,38 @@
 #!/usr/bin/env python3
-"""CS2 demo capture driver for the Replay Inspector (Phase 11).
+"""CS2 demo capture driver for the Replay Inspector.
 
-Drives a running CS2 client (started with -condebug -console, window
-focused) to play a demo and records real first-person frames from it:
+Drives a CS2 client to play a demo and records real first-person frames:
 
 - control: console commands typed through a uinput virtual keyboard
-  (ukeys.py), only while the CS2 window has input focus;
-- confirmation: every step is checked against the game's own console log
+  (ukeys.py), only while the CS2 window has input focus (checked before
+  every command; focus is recovered automatically, see launcher.py);
+- confirmation: each step is checked against the game's own console log
   (demo loaded, seek finished at the exact tick, which player is watched)
-  or its pixels (console open/closed, playback paused);
+  or its pixels (console open/closed, playback paused, demo bar hidden);
 - capture: the CS2 window's pixels read through XWayland (xgrab.py); clips
   are frames sampled while the demo plays at reduced speed, encoded to WebM
-  with GStreamer (VP8).
+  (VP8) with GStreamer.
 
-Nothing is drawn or synthesised: an item either holds pixels CS2 rendered
-for that tick and player, or fails with a reason.
+Nothing is drawn or synthesised: a file holds pixels CS2 rendered for that
+tick and player, or the step fails with a reason.
 
 Usage:
-  capture.py status          JSON readiness report
-  capture.py run < job.json  runs a job, prints one JSON result line
-
-Job: {"demo": "/abs/x.dem", "tickrate": 64, "state": "/abs/state.json",
-      "items": [{"type": "shot", "tick": 14132, "player": "magixx", "file": "/abs/k.jpg", "width": 1280},
-                {"type": "clip", "start": 100, "end": 228, "player": "x", "file": "/abs/u.webm", "fps": 30}]}
-Player names are matched against the names CS2 logs; names that can't be
-typed safely are reached by cycling spectator targets instead.
+  capture.py status            JSON readiness report
+  capture.py session           JSON-lines session on stdin/stdout:
+      {"id": 1, "op": "open", "state_dir": "...", "size": [1280, 720], "profile": "capture"}
+      {"id": 2, "op": "load", "demo": "/abs/x.dem"}
+      {"id": 3, "op": "kill", ...}   {"id": 4, "op": "utility", ...}
+      {"id": 5, "op": "watch", "demo": "/abs/x.dem", "tick": 1234}
+      {"id": 6, "op": "close", "keep_open": false}
+    Replies: {"id": n, "ok": true, ...} or {"id": n, "ok": false, "code", "error"};
+    progress lines: {"stage": "..."}.
 """
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,19 +45,30 @@ GAME = os.path.expanduser('~/.local/share/Steam/steamapps/common/Counter-Strike 
 LOG = os.path.join(GAME, 'console.log')
 SAFE_NAME = re.compile(r'^[A-Za-z0-9 _.\-]{1,32}$')
 SAFE_PATH = re.compile(r'^/[A-Za-z0-9 _./\-]+\.dem$')
-# Convars changed while capturing (spectator X-ray off: it outlines players
-# through walls, which the player didn't see; HUD reduced to crosshair and
-# kill feed, which hides the demo playback bar), restored afterwards.
+# Convars changed while capturing, restored afterwards. Spectator X-ray
+# outlines players through walls, which the player didn't see, so it is off
+# unless an event asks for it (flash / through-smoke kills, labelled). The
+# HUD is reduced to crosshair and kill feed (also hides the demo bar).
 VIEW = {'spec_show_xray': '0', 'cl_draw_only_deathnotices': '1'}
 DEFAULTS = {'spec_show_xray': '1', 'cl_draw_only_deathnotices': '0'}
-CLIP_TIMESCALE = 0.2
 PREROLL_TICKS = 32
+SEEK_RX = r'Demo Skipping: skipping (?:forward |back(?:ward)? )?to demo tick \d+[^\n]*'
+TRUEVIEW_RX = r'Added TrueView prediction for player slot \d+ \((.*)\)'
 
 
 class CaptureError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + '\n')
+    sys.stdout.flush()
+
+
+def stage(text):
+    emit({'stage': text})
 
 
 def cs2_pid():
@@ -68,22 +81,12 @@ def uinput_ok():
 
 
 def status():
-    pid = cs2_pid()
-    win = xc.find_cs2() if pid else None
-    focused = False
-    if win:
-        f = xc.focused()
-        focused = f == win or f in xc.descendants(win)
-    log_live = os.path.exists(LOG) and pid is not None and os.path.getmtime(LOG) >= _proc_start(pid)
-    return {'cs2_running': pid is not None, 'window': bool(win), 'focused': focused,
-            'console_log': log_live, 'uinput': uinput_ok()}
-
-
-def _proc_start(pid):
-    try:
-        return os.path.getmtime(f'/proc/{pid}')
-    except OSError:
-        return 0
+    import launcher
+    root, lib = launcher.game_root()
+    pid, usable = launcher.Instance(None).find_running()
+    gst = subprocess.run(['gst-inspect-1.0', 'vp8enc'], capture_output=True).returncode == 0
+    return {'cs2_installed': bool(root), 'runtime': bool(lib and launcher.runtime(lib)), 'uinput': uinput_ok(), 'encoder': gst,
+            'cs2_running': pid is not None, 'cs2_usable': bool(usable)}
 
 
 def user_convars():
@@ -105,16 +108,16 @@ def user_convars():
 
 
 class Log:
-    """Tails console.log (-condebug) from the moment it's created."""
+    """Tails console.log (-condebug)."""
 
-    def __init__(self):
-        # Start with the recent tail so the current state (last seek, watched
-        # player) is known; waits only look at text after their mark.
-        self.pos = max(0, os.path.getsize(LOG) - 4_000_000)
+    def __init__(self, tail=4_000_000):
+        self.pos = max(0, os.path.getsize(LOG) - tail) if os.path.exists(LOG) else 0
         self.text = ''
         self.read()
 
     def read(self):
+        if not os.path.exists(LOG):
+            return self.text
         size = os.path.getsize(LOG)
         if size < self.pos:
             self.pos = 0
@@ -140,37 +143,61 @@ class Log:
                 return m
             if time.time() > end:
                 raise CaptureError(code, message)
-            time.sleep(0.15)
+            time.sleep(0.1)
 
-    def last(self, pattern):
-        ms = list(re.finditer(pattern, self.read()))
+    def last(self, pattern, since=0):
+        ms = list(re.finditer(pattern, self.read()[since:]))
         return ms[-1] if ms else None
 
 
+class Timer:
+    def __init__(self):
+        self.t = {}
+
+    def add(self, key, seconds):
+        self.t[key] = round(self.t.get(key, 0) + seconds, 3)
+
+    def run(self, key, fn, *a, **kw):
+        t0 = time.time()
+        try:
+            return fn(*a, **kw)
+        finally:
+            self.add(key, time.time() - t0)
+
+
 class Driver:
-    def __init__(self, focus_wait=0):
+    def __init__(self, win, short_forward=0, timescale=0.5):
         import ukeys
         import xgrab
         self.xgrab = xgrab
         self.ukeys = ukeys
-        if not cs2_pid():
-            raise CaptureError('cs2_not_running', 'CS2 is not running.')
-        self.win = xc.find_cs2()
-        if not self.win:
-            raise CaptureError('cs2_not_running', 'The CS2 window was not found.')
-        if not os.path.exists(LOG):
-            raise CaptureError('no_console_log', 'CS2 must be started with -condebug so each step can be confirmed.')
+        self.win = win
         self.log = Log()
         self.con = ukeys.Console()
-        if not self.con.wait_focus(focus_wait):
-            self.con.close()
-            raise CaptureError('not_focused', 'CS2 does not have keyboard focus: click inside the CS2 window and try again.')
         self.watching = None
+        self.tick = None          # tick CS2 is paused on (after a confirmed seek)
+        self.xray = None          # current spec_show_xray value we set
         self.view_set = False
         self.bar_toggled = False
+        self.demo = None
+        # Forward seeks of at most this many ticks use one command; longer
+        # ones overshoot and come back (see seek()).
+        self.short_forward = short_forward
+        self.timescale = timescale
+        self.encoders = []
+        self.debug_dir = None  # when set, failed checks save evidence here
 
     def close(self):
         self.con.close()
+
+    # ---- focus and console ------------------------------------------------
+
+    def ensure_focus(self):
+        if self.con.has_focus():
+            return
+        how = self.ukeys.focus_window(self.win)
+        if not how:
+            raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
 
     def frame(self, width=1280):
         if not cs2_pid():
@@ -184,36 +211,49 @@ class Driver:
         f = self.frame(640)
         w, h = f.size
         box = f.crop((int(w * .05), int(h * .739), int(w * .45), int(h * .748))).convert('L')
-        lo, hi = box.getextrema()
-        return hi <= 6
+        return box.getextrema()[1] <= 6
 
     def _set_console(self, want_open):
         for _ in range(3):
             if self.console_open() == want_open:
                 return
+            self.ensure_focus()
             self.con.toggle()
-            time.sleep(0.5)
+            time.sleep(0.4)
             if want_open and self.console_open():
                 # The input line takes keys a moment after the panel shows.
-                time.sleep(0.6)
+                time.sleep(0.5)
                 return
         raise CaptureError('console', f'Could not {"open" if want_open else "close"} the CS2 console.')
 
-    def cmd(self, text, settle=0.15):
+    def cmd(self, text, settle=0.1):
         self._set_console(True)
-        try:
-            self.con.run(text)
-        except self.ukeys.FocusLost:
-            raise CaptureError('focus_lost', 'CS2 lost keyboard focus during capture; nothing more was typed.')
+        for attempt in range(2):
+            try:
+                self.con.run(text)
+                break
+            except self.ukeys.FocusLost:
+                if attempt:
+                    raise CaptureError('focus_lost', 'CS2 lost keyboard focus during capture; nothing more was typed.')
+                self.ensure_focus()
+                self._set_console(True)
         time.sleep(settle)
+
+    def refresh_console(self):
+        # After a level load the console can be visible without its input
+        # line taking keys; closing and reopening it restores that.
+        self._set_console(False)
+        self._set_console(True)
+
+    # ---- demo playback bar --------------------------------------------------
 
     @staticmethod
     def bar_in(img):
         """True when the demo playback bar's progress track is in the frame
         (full bar ~94% down, or the collapsed bar at the bottom): a row that
         is uniformly brighter than the row 3 px above it across most of the
-        width. Scored as mean/spread of that step so it still holds when a
-        flash or bright scene washes out the contrast."""
+        width, scored as mean/spread so it holds when a flash washes out the
+        contrast."""
         g = img.convert('L')
         if g.width != 1280:
             g = g.resize((1280, round(g.height * 1280 / g.width)))
@@ -225,73 +265,88 @@ class Driver:
                 return True
         return False
 
-    def demo_bar_visible(self):
-        return self.bar_in(self.frame(1280))
-
     def hide_demo_bar(self):
         # `demoui` toggles the bar (its state persists), so check the pixels.
         for _ in range(2):
             self._set_console(False)
-            time.sleep(0.4)
-            if not self.demo_bar_visible():
+            time.sleep(0.3)
+            if not self.bar_in(self.frame(1280)):
                 return
-            self.cmd('demoui', settle=0.4)
+            self.cmd('demoui', settle=0.3)
             self.bar_toggled = not self.bar_toggled
         self._set_console(False)
-        time.sleep(0.4)
-        if self.demo_bar_visible():
+        time.sleep(0.3)
+        if self.bar_in(self.frame(1280)):
             raise CaptureError('demo_ui', 'Could not hide the demo playback bar.')
 
-    def still(self, gap=0.35, tries=4):
+    def still(self, gap=0.3, tries=4):
         # Paused if two frames match; small blinking UI is tolerated.
-        for _ in range(tries):
+        for i in range(tries):
             a = self.frame(320)
             time.sleep(gap)
             b = self.frame(320)
-            if ImageStat.Stat(ImageChops.difference(a, b).convert('L')).mean[0] < 0.5:
+            dv = ImageStat.Stat(ImageChops.difference(a, b).convert('L')).mean[0]
+            # Paused frames still differ a little (smoke particles, X-ray
+            # glow): measured 0.5-0.6; a playing demo differs by 5-25.
+            if dv < 2.0:
                 return True
+        if self.debug_dir:
+            n = len(os.listdir(self.debug_dir))
+            a.save(os.path.join(self.debug_dir, f'{n:03d}_notstill_a.png'))
+            b.save(os.path.join(self.debug_dir, f'{n:03d}_notstill_b.png'))
+            with open(os.path.join(self.debug_dir, f'{n:03d}_notstill.txt'), 'w') as f:
+                f.write(f'diff {dv:.3f} tick {self.tick}\n' + '\n'.join(self.log.read()[-6000:].splitlines()[-60:]))
         return False
 
-    def load_demo(self, path, state_file):
-        pid = cs2_pid()
-        try:
-            st = json.load(open(state_file))
-        except (OSError, ValueError):
-            st = {}
-        if st.get('pid') == pid and st.get('demo') == path:
+    # ---- demo, view, seeking ------------------------------------------------
+
+    def current_demo(self):
+        m = self.log.last(r"\[Demo\] playing demo from '([^']*)'")
+        return m.group(1) if m else None
+
+    def load_demo(self, path):
+        if not SAFE_PATH.match(path) or not os.path.exists(path):
+            raise CaptureError('bad_job', 'Demo path is not usable.')
+        if self.demo == path:
             return False
         # Leave any demo or map first: opening a demo over a running one is
         # where CS2's own loader is least stable.
-        self.cmd('disconnect', settle=3)
-        at = self.log.mark()
-        self.cmd(f'playdemo "{path}"')
-        m = self.log.wait(r"\[Demo\] playing demo from '([^']*)'", at, 30, 'demo_load', 'CS2 did not start playing the demo.')
+        self.refresh_console()
+        self.cmd('disconnect', settle=2)
+        # The command can be lost while the main menu is still settling
+        # (seen after a shader rebuild): retry with a fresh console.
+        for attempt in range(3):
+            if attempt:
+                self.refresh_console()
+            at = self.log.mark()
+            self.cmd(f'playdemo "{path}"')
+            try:
+                m = self.log.wait(r"\[Demo\] playing demo from '([^']*)'", at, 20, 'demo_load', 'CS2 did not start playing the demo.')
+                break
+            except CaptureError:
+                if attempt == 2:
+                    raise
         if m.group(1) != path:
             raise CaptureError('demo_load', 'CS2 opened a different demo.')
         self.log.wait(r'CSGO_GAME_UI_STATE_INGAME', at, 240, 'demo_load', 'The demo did not finish loading in CS2.')
-        # Seeking straight after the load crashes CS2 ("CopyNewEntity: invalid
-        # class index"): let it play until frames are moving, then a bit more.
-        # (The camera can sit still on a paused match, so motion isn't required.)
-        end = time.time() + 20
-        time.sleep(4)
-        while self.still(0.5) and time.time() < end:
-            time.sleep(1)
-        time.sleep(8)
-        with open(state_file, 'w') as f:
-            json.dump({'pid': pid, 'demo': path}, f)
+        # Seeking straight after the load crashed CS2 once ("CopyNewEntity:
+        # invalid class index"): let it play a few seconds first.
+        time.sleep(6)
+        self.demo = path
         self.watching = None
+        self.tick = None
+        self.view_set = False
         return True
 
-    def set_view(self):
+    def set_view(self, xray=False):
+        want = '1' if xray else '0'
         if not self.view_set:
             self.refresh_console()
-            # These can't be confirmed from the log, so each is sent twice
-            # (setting a convar is idempotent).
-            for k, v in VIEW.items():
-                self.cmd(f'{k} {v}')
-                self.cmd(f'{k} {v}')
-            self.hide_demo_bar()
+            self.cmd(f'cl_draw_only_deathnotices {VIEW["cl_draw_only_deathnotices"]}')
             self.view_set = True
+        if self.xray != want:
+            self.cmd(f'spec_show_xray {want}')
+            self.xray = want
 
     def restore(self, saved):
         for k in VIEW:
@@ -299,91 +354,124 @@ class Driver:
         self.cmd('demo_timescale 1')
         if self.bar_toggled:
             self.cmd('demoui')
-
-    def refresh_console(self):
-        # After a level load the console can be visible without its input
-        # line taking keys; closing and reopening it restores that.
-        self._set_console(False)
-        self._set_console(True)
+            self.bar_toggled = False
+        self.view_set = False
+        self.xray = None
 
     def _goto(self, tick, attempts=3):
         for attempt in range(attempts):
             if attempt:
                 self.refresh_console()
             at = self.log.mark()
-            self.cmd(f'demo_gototick {int(tick)}')
+            self.cmd(f'demo_gototick {int(tick)}', settle=0)
             try:
                 # Skipping starts within a second when the command lands.
-                m = self.log.wait(r'Demo Skipping: skipping (?:forward |back(?:ward)? )?to demo tick \d+[^\n]*', at, 4, 'seek', '')
+                m = self.log.wait(SEEK_RX, at, 4, 'seek', '')
             except CaptureError:
                 continue
             self.log.wait(rf'Demo Skipping finished at tick {int(tick)}\b', at, 90, 'seek', f'CS2 did not confirm the seek to tick {tick}.')
+            self.tick = int(tick)
             return m.group(0)
         raise CaptureError('seek', f'CS2 did not accept the seek to tick {tick}.')
 
-    def seek(self, tick):
-        """Pauses on exactly `tick`. A long forward skip while paused can leave
-        the view on stale positions, so this always overshoots and comes back:
-        a backward seek rebuilds the world from a full snapshot."""
-        self.cmd('demo_pause')
-        self._goto(int(tick) + 128)
-        line = self._goto(int(tick))
-        if 'from full packet' not in line:
-            raise CaptureError('seek', 'CS2 did not rebuild the frame from a full snapshot.')
-        self.cmd('demo_pause', settle=0.3)
-        m = self.log.last(r'Added TrueView prediction for player slot \d+ \((.*)\)')
-        self.watching = m.group(1) if m else None
+    def seek(self, tick, timer=None):
+        """Pauses on exactly `tick`.
 
-    def spectate(self, name):
-        if self.watching == name:
-            return
-        rx = r'Added TrueView prediction for player slot \d+ \((.*)\)'
-        if SAFE_NAME.match(name):
-            at = self.log.mark()
-            self.cmd(f'spec_player "{name}"')
-            try:
-                m = self.log.wait(rx, at, 6, 'spectate', '')
-                if m.group(1) == name:
-                    self.watching = name
-                    return
-            except CaptureError:
-                pass
-        # Names that can't be typed (or didn't match): cycle targets until CS2 reports this one.
-        for _ in range(12):
-            at = self.log.mark()
-            self.cmd('spec_next')
-            try:
-                m = self.log.wait(rx, at, 4, 'spectate', '')
-            except CaptureError:
-                continue
+        A backward seek always rebuilds the world from a full snapshot, so it
+        is one command. A long forward skip while paused once left stale
+        positions on screen, so forward seeks overshoot and come back,
+        unless they are within `short_forward` ticks (benchmarked)."""
+        t0 = time.time()
+        tick = int(tick)
+        if self.tick is None:
+            self.cmd('demo_pause')
+        mode = 'overshoot'
+        if self.tick is not None and tick < self.tick:
+            mode = 'backward'
+        elif self.tick is not None and 0 < tick - self.tick <= self.short_forward:
+            mode = 'forward'
+        if mode == 'overshoot':
+            self._goto(tick + 128)
+            line = self._goto(tick)
+            if 'from full packet' not in line:
+                raise CaptureError('seek', 'CS2 did not rebuild the frame from a full snapshot.')
+        else:
+            self._goto(tick)
+        m = self.log.last(TRUEVIEW_RX)
+        if m:
             self.watching = m.group(1)
+        if timer:
+            timer.add('seek', time.time() - t0)
+            timer.add(f'seek_{mode}_count', 1)
+        return mode
+
+    def spectate(self, name, timer=None):
+        t0 = time.time()
+        try:
             if self.watching == name:
                 return
-        raise CaptureError('spectate', f'CS2 could not switch to {name}\'s view.')
+            if SAFE_NAME.match(name):
+                at = self.log.mark()
+                self.cmd(f'spec_player "{name}"', settle=0)
+                try:
+                    m = self.log.wait(TRUEVIEW_RX, at, 6, 'spectate', '')
+                    if m.group(1) == name:
+                        self.watching = name
+                        return
+                except CaptureError:
+                    pass
+            # Names that can't be typed (or didn't match): cycle targets until CS2 reports this one.
+            for _ in range(12):
+                at = self.log.mark()
+                self.cmd('spec_next', settle=0)
+                try:
+                    m = self.log.wait(TRUEVIEW_RX, at, 4, 'spectate', '')
+                except CaptureError:
+                    continue
+                self.watching = m.group(1)
+                if self.watching == name:
+                    return
+            raise CaptureError('spectate', f'CS2 could not switch to {name}\'s view.')
+        finally:
+            if timer:
+                timer.add('pov_switch', time.time() - t0)
 
-    def shot(self, item):
-        self.seek(item['tick'])
-        self.spectate(item['player'])
+    # ---- capture ------------------------------------------------------------
+
+    def shot(self, tick, player, file, width=1280, timer=None, mode=None):
+        self.seek(tick, timer)
+        self.spectate(player, timer)
+        t0 = time.time()
         self._set_console(False)
-        time.sleep(0.8)
+        time.sleep(0.5)
         if not self.still():
-            raise CaptureError('not_paused', 'The demo kept playing; the frame would not match the tick.')
-        img = self.frame(int(item.get('width', 1280)))
+            # A forward skip can resume playback: pause and seek again.
+            self.cmd('demo_pause')
+            self.tick = None
+            self.seek(tick, timer)
+            self._set_console(False)
+            time.sleep(0.5)
+            if not self.still():
+                raise CaptureError('not_paused', 'The demo kept playing; the frame would not match the tick.')
+        img = self.frame(width)
         if self.bar_in(img):
             self.hide_demo_bar()
-            img = self.frame(int(item.get('width', 1280)))
+            img = self.frame(width)
             if self.bar_in(img):
                 raise CaptureError('demo_ui', 'The demo playback bar would cover the frame.')
-        img.save(item['file'], quality=90)
-        return {'file': item['file'], 'tick': item['tick'], 'player': item['player'], 'width': img.width, 'height': img.height}
+        img.save(file, quality=90)
+        if timer:
+            timer.add('still', time.time() - t0)
+        return {'file': file, 'tick': int(tick), 'player': player, 'width': img.width, 'height': img.height}
 
-    def clip(self, item, tickrate):
-        start, end = int(item['start']), int(item['end'])
-        fps = int(item.get('fps', 30))
-        ts = CLIP_TIMESCALE
+    def clip(self, start, end, player, file, tickrate, fps=30, timer=None, grab_ticks=()):
+        """Records ticks start..end from `player`'s view. Frames are sampled
+        on a clock while the demo plays at `self.timescale`; the encoder runs
+        in the background and is waited for by finish_encoders()."""
+        ts = self.timescale
         pre = max(0, start - PREROLL_TICKS)
-        self.seek(pre)
-        self.spectate(item['player'])
+        self.seek(pre, timer)
+        self.spectate(player, timer)
         self.hide_demo_bar()
         self.cmd(f'demo_timescale {ts}')
         first = self.frame(1280)
@@ -391,11 +479,14 @@ class Driver:
         enc = subprocess.Popen(
             ['gst-launch-1.0', '-q', 'fdsrc', 'fd=0', '!', 'rawvideoparse', f'width={w}', f'height={h}', 'format=rgb',
              f'framerate={fps}/1', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1', 'cpu-used=4', 'target-bitrate=6000000',
-             '!', 'webmmux', '!', 'filesink', f'location={item["file"]}'],
+             '!', 'webmmux', '!', 'filesink', f'location={file}'],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         frames = round((end - start) / tickrate * fps)
         lag = 0.0
+        kept = {}
+        t_rec = time.time()
         try:
+            self.ensure_focus()
             self.con.run('demo_resume')  # console is open (cmd above)
             t0 = time.time()
             self.con.toggle()  # close it during the pre-roll
@@ -406,7 +497,12 @@ class Driver:
                 if target > now:
                     time.sleep(target - now)
                 lag = max(lag, time.time() - target)
-                enc.stdin.write(self.frame(w).tobytes())
+                img = self.frame(w)
+                tk = start + k * tickrate / fps
+                for g in grab_ticks:
+                    if abs(tk - g) < 1e-6:
+                        kept[g] = img
+                enc.stdin.write(img.tobytes())
         except self.ukeys.FocusLost:
             raise CaptureError('focus_lost', 'CS2 lost keyboard focus during capture; nothing more was typed.')
         finally:
@@ -414,45 +510,215 @@ class Driver:
                 enc.stdin.close()
             except OSError:
                 pass
-            enc.wait(timeout=60)
-            try:
-                self.cmd('demo_pause')
-                self.cmd('demo_timescale 1')
-            except CaptureError:
-                pass
-        if enc.returncode != 0:
-            raise CaptureError('encode', 'Encoding the clip failed.')
-        # Lag in game ticks: how late the worst frame was sampled.
-        return {'file': item['file'], 'start': start, 'end': end, 'player': item['player'], 'fps': fps, 'frames': frames,
-                'width': w, 'height': h, 'max_lag_ticks': round(lag * ts * tickrate, 2), 'timescale': ts}
+            self.cmd('demo_pause')
+            # Paused at or just after `end`: any seek before it is backward
+            # (one command, rebuilt from a full snapshot).
+            self.tick = int(end)
+            if timer:
+                timer.add('record', time.time() - t_rec)
+        done = {'returncode': None, 'wait': 0.0}
+
+        def wait():
+            t = time.time()
+            enc.wait(timeout=120)
+            done['returncode'] = enc.returncode
+            done['wait'] = time.time() - t
+        th = threading.Thread(target=wait)
+        th.start()
+        self.encoders.append((th, done, file, timer))
+        return {'file': file, 'start': int(start), 'end': int(end), 'player': player, 'fps': fps, 'frames': frames,
+                'width': w, 'height': h, 'max_lag_ticks': round(lag * ts * tickrate, 2), 'timescale': ts}, kept
+
+    def finish_encoders(self):
+        t0 = time.time()
+        for th, done, file, timer in self.encoders:
+            th.join()
+            if done['returncode'] != 0:
+                self.encoders = []
+                raise CaptureError('encode', f'Encoding {os.path.basename(file)} failed.')
+            if timer:
+                timer.add('encode_tail', done['wait'])
+        if self.encoders and self.encoders[-1][3]:
+            self.encoders[-1][3].add('encode_wait', time.time() - t0)
+        self.encoders = []
 
 
-def run(job):
-    demo = job['demo']
-    if not SAFE_PATH.match(demo) or not os.path.exists(demo):
-        raise CaptureError('bad_job', 'Demo path is not usable.')
+# ---- events -------------------------------------------------------------------
+
+def kill_event(d, job):
+    """Killer and victim POV for one kill: a clip centred on the kill (each
+    side) and stills (killer at the kill tick, victim at the last alive
+    tick). Order keeps seeks backward (single command) after the first."""
+    timer = Timer()
     tickrate = float(job.get('tickrate') or 64)
+    xray = bool(job.get('xray'))
+    d.set_view(xray)
+    out = {}
+    pov = job['povs']  # {"killer": {...}, "victim": {...}} with player, clip_file, still_file, still_tick
+    start, end = int(job['start']), int(job['end'])
+    # Order: killer clip, killer still, victim still, victim clip. After the
+    # first seek every seek goes backward (kill tick ≥ last alive tick ≥
+    # clip start), so each is one command; the victim clip needs no switch.
+    k, v = pov.get('killer'), pov.get('victim')
+    steps = []
+    if k and k.get('clip_file'):
+        steps.append(('killer', 'clip', k))
+    if k and k.get('still_file'):
+        steps.append(('killer', 'still', k))
+    if v and v.get('still_file'):
+        steps.append(('victim', 'still', v))
+    if v and v.get('clip_file'):
+        steps.append(('victim', 'clip', v))
+    for role, what, p in steps:
+        res = out.setdefault(role, {})
+        if what == 'clip':
+            res['clip'], _ = d.clip(start, end, p['player'], p['clip_file'], tickrate, timer=timer)
+        else:
+            res['still'] = d.shot(p['still_tick'], p['player'], p['still_file'], timer=timer)
+    d.finish_encoders()
+    for role in out.values():
+        for m in role.values():
+            m['xray'] = xray
+    return {'povs': out, 'timings': timer.t}
+
+
+def utility_event(d, job):
+    """The thrower's clip around the release and the lineup still the tick
+    before release (when the release is known)."""
+    timer = Timer()
+    tickrate = float(job.get('tickrate') or 64)
+    d.set_view(False)
+    res = {}
+    if job.get('clip_file'):
+        res['clip'], _ = d.clip(int(job['start']), int(job['end']), job['player'], job['clip_file'], tickrate, timer=timer)
+    if job.get('lineup_file') and job.get('lineup_tick') is not None:
+        res['lineup'] = d.shot(int(job['lineup_tick']), job['player'], job['lineup_file'], width=int(job.get('lineup_width') or 1280), timer=timer)
+    d.finish_encoders()
+    return {**res, 'timings': timer.t}
+
+
+def watch(d, job, saved):
+    """Opens the demo at a round start for the player to watch: normal view
+    (their own X-ray/HUD settings, playback bar shown), paused, game left open."""
+    timer = Timer()
+    path = job['demo']
+    timer.run('demo_load', d.load_demo, path)
+    if d.current_demo() != path:
+        raise CaptureError('demo_load', 'CS2 is showing a different demo.')
+    d.restore(saved)
+    d.seek(int(job['tick']), timer)
+    d._set_console(False)
+    return {'demo': path, 'tick': d.tick, 'timings': timer.t}
+
+
+# ---- session loop -------------------------------------------------------------
+
+def session():
+    import launcher
+    inst = None
+    d = None
     saved = user_convars()
-    d = Driver(focus_wait=float(job.get('focus_wait', 3)))
-    results = []
-    try:
-        d.load_demo(demo, job['state'])
-        d.set_view()
-        for item in job['items']:
-            if item['type'] == 'shot':
-                results.append(d.shot(item))
-            elif item['type'] == 'clip':
-                results.append(d.clip(item, tickrate))
-            else:
-                raise CaptureError('bad_job', 'Unknown item type.')
-    finally:
+    keep_open = False
+
+    def reply(req, **kw):
+        emit({'id': req.get('id'), **kw})
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        op = req.get('op')
         try:
-            d.restore(saved)
-            d._set_console(False)
+            if op == 'open':
+                t0 = time.time()
+                state_dir = req['state_dir']
+                launcher.Instance.recover(state_dir)
+                inst = launcher.Instance(state_dir)
+                pid, usable = inst.find_running()
+                timings = {}
+                if pid and usable:
+                    stage('Using the CS2 that is already open')
+                    inst.use_running(pid)
+                    reused = True
+                elif pid:
+                    raise CaptureError('cs2_running', 'CS2 is already open without the console log (-condebug), so capture can\'t confirm its steps. Close CS2 and try again.')
+                else:
+                    stage('Starting CS2')
+                    try:
+                        inst.launch(req.get('profile', 'capture') or None, tuple(req.get('size') or (1280, 720)))
+                    except RuntimeError as e:
+                        code, msg = str(e).split('|', 1)
+                        raise CaptureError(code, msg)
+                    reused = False
+                try:
+                    win = inst.wait_window()
+                except RuntimeError as e:
+                    code, msg = str(e).split('|', 1)
+                    raise CaptureError(code, msg)
+                timings['window'] = round(time.time() - t0, 3)
+                if not reused:
+                    stage('Waiting for the CS2 main menu')
+                    end = time.time() + 180
+                    while not os.path.exists(LOG) and time.time() < end:
+                        time.sleep(0.5)
+                    lg = Log(tail=10_000_000)
+                    lg.wait(r'CSGO_GAME_UI_STATE_MAINMENU', 0, 180, 'cs2_start', 'CS2 did not reach the main menu.')
+                    time.sleep(3)
+                timings['menu'] = round(time.time() - t0, 3)
+                stage('Focusing the CS2 window')
+                import ukeys
+                how = ukeys.focus_window(win)
+                if not how:
+                    raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
+                timings['focus'] = round(time.time() - t0, 3)
+                d = Driver(win, short_forward=int(req.get('short_forward', 0)), timescale=float(req.get('timescale', 0.5)))
+                reply(req, ok=True, pid=inst.pid, launched=inst.launched, focus=how, size=list(xc.window_rect(win)[2:]), timings=timings)
+            elif op == 'load':
+                stage('Loading the demo in CS2')
+                t0 = time.time()
+                loaded = d.load_demo(req['demo'])
+                reply(req, ok=True, loaded=loaded, timings={'demo_load': round(time.time() - t0, 3)})
+            elif op == 'kill':
+                reply(req, ok=True, **kill_event(d, req))
+            elif op == 'utility':
+                reply(req, ok=True, **utility_event(d, req))
+            elif op == 'watch':
+                keep_open = True
+                reply(req, ok=True, **watch(d, req, saved))
+            elif op == 'set':
+                if 'short_forward' in req:
+                    d.short_forward = int(req['short_forward'])
+                if 'timescale' in req:
+                    d.timescale = float(req['timescale'])
+                reply(req, ok=True)
+            elif op == 'close':
+                break
+            else:
+                raise CaptureError('bad_job', f'Unknown op {op}.')
+        except CaptureError as e:
+            reply(req, ok=False, code=e.code, error=str(e))
+        except Exception as e:  # noqa: BLE001 - reported to the server, not swallowed
+            reply(req, ok=False, code='internal', error=f'{type(e).__name__}: {e}')
+    # Close: restore the player's settings; quit CS2 if this session started it
+    # (unless it was opened for watching).
+    t0 = time.time()
+    if d and not keep_open:
+        try:
+            if inst and inst.alive():
+                d.restore(saved)
         except CaptureError:
             pass
+    if inst:
+        if keep_open:
+            pass  # restored in watch(); files are restored when it exits (next session's recover)
+        else:
+            def send_quit():
+                d.cmd('quit', settle=0)
+            inst.close(send_quit if d else None)
+    if d:
         d.close()
-    return results
+    emit({'closed': True, 'kept_open': keep_open, 'timings': {'close': round(time.time() - t0, 3)}})
 
 
 def main():
@@ -460,14 +726,8 @@ def main():
     if mode == 'status':
         print(json.dumps(status()))
         return
-    if mode == 'run':
-        job = json.load(sys.stdin)
-        try:
-            print(json.dumps({'ok': True, 'items': run(job)}))
-        except CaptureError as e:
-            print(json.dumps({'ok': False, 'code': e.code, 'error': str(e)}))
-        except Exception as e:  # noqa: BLE001 - reported to the server, not swallowed
-            print(json.dumps({'ok': False, 'code': 'internal', 'error': f'{type(e).__name__}: {e}'}))
+    if mode == 'session':
+        session()
         return
     sys.exit(__doc__)
 

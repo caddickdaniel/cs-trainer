@@ -10,6 +10,7 @@ const notificationRouter = require('./notificationRouter');
 const discovery = require('./discoveryRouter');
 const sharedRouter = require('./sharedRouter');
 const demoRouter = require('./demoRouter');
+const { asyncHandler } = require('../errors');
 const reviewRouter = require('./reviewRouter');
 const createAuthRouter = require('./authRouter');
 const { endpoints } = require('../endpoints');
@@ -42,6 +43,11 @@ module.exports = ({ authLimiter }) => {
   apiRouter.use('/users', userRouter);
   apiRouter.use('/invites', inviteRouter);
   apiRouter.use('/game-sessions', gameRouter);
+  // Replay Inspector: the signed-in user's latest CS2 capture session (progress overlay).
+  apiRouter.get('/capture-sessions/current', asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await require('../services/captures').currentSession(req.user.user_id));
+  }));
   apiRouter.use('/lineup-images', imageRouter);
   apiRouter.use('/me', meRouter);
   apiRouter.use('/notifications', notificationRouter);

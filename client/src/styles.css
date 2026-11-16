@@ -860,3 +860,43 @@ img.util-icon { vertical-align: middle; object-fit: contain; }
 .inspector-speeds, .inspector-exports { gap: 6px; }
 .inspector-zoom input { width: 140px; }
 .replay-inspector-cell.below .inspector-media, .replay-layout.stacked .inspector-media { max-width: 640px; }
+
+/* ---- Phase 12: CS2 capture sessions ---------------------------------------- */
+.content { position: relative; }
+/* Covers the Demo Review page (not the app's navigation) while CS2 is controlled. */
+.capture-overlay { position: absolute; inset: 0; z-index: 40; background: rgba(40, 40, 40, 0.72); backdrop-filter: blur(2px); }
+/* Centred in the viewport (the replay page can be wider than the window). */
+.capture-overlay__card { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); width: min(460px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 22px 24px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+.capture-overlay__card h2 { margin: 6px 0 0; font-size: 1.1rem; }
+.capture-overlay__card progress { width: 100%; }
+.capture-overlay__stage { margin: 0; font-weight: 600; }
+.capture-overlay__spinner { width: 38px; height: 38px; border: 4px solid #555; border-top-color: var(--accent); border-radius: 50%; animation: inspector-spin 0.9s linear infinite; }
+.capture-result { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; }
+.capture-result ul { margin: 4px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }
+.capture-dialog-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.capture-dialog { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; width: min(520px, 100%); display: flex; flex-direction: column; gap: 10px; }
+.capture-dialog h2 { margin: 0; font-size: 1.1rem; }
+.capture-dialog p { margin: 0; }
+.capture-dialog__actions { justify-content: flex-end; margin-top: 6px; }
+.capture-options { border: 0; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.capture-options legend { padding: 0; margin-bottom: 4px; }
+.capture-options p { margin: 0; }
+.watch-round { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pov-switch { flex-wrap: wrap; }
+.xray-badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: #3a2a6b; color: #e2d6ff; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; vertical-align: 1px; }
+/* Lineup: thin green lines through the aim point across the whole frame. */
+.lineup-crosshair { position: absolute; inset: 0; pointer-events: none; }
+.lineup-crosshair .h, .lineup-crosshair .v { position: absolute; background: #3dff6e; opacity: 0.85; }
+.lineup-crosshair .h { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-0.5px); }
+.lineup-crosshair .v { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-0.5px); }
+/* Recorded actions over utility clips (top-left). */
+.input-overlay { position: absolute; top: 6px; left: 6px; display: grid; grid-template-columns: repeat(5, auto); gap: 3px; padding: 5px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55); font-size: 0.68rem; font-weight: 700; pointer-events: auto; max-width: calc(100% - 12px); }
+.input-overlay .key { min-width: 22px; padding: 2px 5px; text-align: center; border-radius: 4px; border: 1px solid #666; color: #ccc; background: rgba(30, 30, 30, 0.8); }
+.input-overlay .key.on { background: var(--accent); border-color: var(--accent); color: #111; }
+.input-overlay .key.na { border-style: dashed; color: #777; background: transparent; text-decoration: line-through; }
+.input-overlay__note { grid-column: 1 / -1; font-weight: 500; color: #ccc; font-size: 0.62rem; }
+.input-overlay.unavailable { display: block; color: #ccc; font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { .capture-overlay__spinner { animation: none; } }

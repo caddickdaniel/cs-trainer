@@ -58,6 +58,18 @@ module.exports = {
   // to record real first-person frames. Opt-in (CAPTURE_WORKER=on) because it
   // types into the CS2 window on this machine's desktop.
   captureWorker: process.env.CAPTURE_WORKER === 'on' && NODE_ENV !== 'test',
+  // CS2 window size for capture sessions ("1280x720" default: media is
+  // saved at 1280x720; at 1920x1080 grabs fall behind at full speed), demo
+  // speed while recording clips (1 = real time; no frame lag measured at
+  // 720p), and how far a forward seek may go with one command (0 = always
+  // overshoot and come back: forward skips left stale views in benchmarks).
+  captureSize: (process.env.CAPTURE_SIZE || '1280x720').split('x').map(Number),
+  captureTimescale: Number(process.env.CAPTURE_TIMESCALE) || 1,
+  // Video profile while capturing: 'native' keeps the player's own quality
+  // settings (only the window size changes); 'capture' lowers shadows etc.
+  // Benchmarks showed no speed gain from lower settings (seeking is CPU-bound).
+  captureProfile: process.env.CAPTURE_PROFILE || 'native',
+  captureShortForward: process.env.CAPTURE_SHORT_FORWARD != null ? Number(process.env.CAPTURE_SHORT_FORWARD) : 0,
   captureStorageDir: path.resolve(process.env.CAPTURE_STORAGE_DIR
     || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'captures-test' : 'captures')),
   // Public origin of the app (scheme://host[:port]) used for Steam sign-in

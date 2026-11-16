@@ -435,7 +435,11 @@ exports.sharedQuery = z.object({
 exports.demoUploadQuery = z.object({
   title: z.string().trim().max(120).optional(),
   file_name: z.string().trim().max(255).optional(),
+  // Optional: capture these recorded events from CS2 once the demo parses.
+  capture: z.enum(['all', 'kill', 'utility']).optional(),
 });
+exports.watchRound = z.object({ round_number: z.number().int().min(1).max(200) }).strict();
+exports.captureRetry = z.object({ session_id: z.number().int().positive() }).strict();
 exports.shareCodeImport = z.object({
   share_code: z.string().trim().min(1, 'Paste a match share code').max(200),
   title: z.string().trim().max(120).optional(),

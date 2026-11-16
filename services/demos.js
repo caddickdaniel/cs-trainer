@@ -91,7 +91,7 @@ const cleanName = (name) => path.basename(String(name || 'demo.dem')).replace(/[
 
 // Streams the request body to a temporary file, enforcing the size limit and
 // checking the CS2 demo signature from the first bytes.
-async function upload(teamId, userId, req, { title, file_name: fileName } = {}) {
+async function upload(teamId, userId, req, { title, file_name: fileName, capture } = {}) {
   await requireMember(teamId, userId);
   const declared = Number(req.headers['content-length']);
   if (Number.isFinite(declared) && declared > config.demoMaxBytes) {
@@ -148,7 +148,7 @@ async function upload(teamId, userId, req, { title, file_name: fileName } = {}) 
     // same id) instead of being blocked as a duplicate.
     await fsp.rm(file, { force: true });
     const [again] = await db('demos').where('demo_id', existing.demo_id)
-      .update({ status: 'queued', attempts: 0, error_code: null, error_message: null }).returning('*');
+      .update({ status: 'queued', attempts: 0, error_code: null, error_message: null, capture_selection: capture || null }).returning('*');
     demoJobs.notifyQueued();
     return { demo: present(again, await userNames([again.uploaded_by])), retried: true };
   }
@@ -165,6 +165,7 @@ async function upload(teamId, userId, req, { title, file_name: fileName } = {}) 
     byte_size: size,
     sha256,
     storage_key: key,
+    capture_selection: capture || null,
   }).returning('*');
   demoJobs.notifyQueued();
   const names = await userNames([userId]);

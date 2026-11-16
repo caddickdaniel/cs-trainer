@@ -84,6 +84,16 @@ demoRouter.route('/:demo_id/captures')
     res.status(202).send(await captures.request(demoId(req), me(req), v.captureRequest.parse(req.body)));
   }))
   .all(handle405);
+demoRouter.route('/:demo_id/captures/retry')
+  .post(asyncHandler(async (req, res) => {
+    res.status(202).send(await captures.retryFailed(demoId(req), me(req), v.captureRetry.parse(req.body).session_id));
+  }))
+  .all(handle405);
+demoRouter.route('/:demo_id/watch')
+  .post(asyncHandler(async (req, res) => {
+    res.status(202).send(await captures.watchRound(demoId(req), me(req), v.watchRound.parse(req.body).round_number));
+  }))
+  .all(handle405);
 demoRouter.route('/:demo_id/captures/:capture_id/media/:name')
   .get(asyncHandler(async (req, res) => {
     const file = await captures.mediaFile(demoId(req), me(req), v.parseId(req.params.capture_id, 'capture_id'), req.params.name);

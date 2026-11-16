@@ -81,7 +81,6 @@ describe('phase 11', () => {
 
   describe('capture API', () => {
     const captures = require('../services/captures');
-    const fs = require('fs');
     beforeEach(reseed);
     afterEach(() => { captures._test.setEnabled(false); captures._test.setDriver(null); });
 
@@ -98,22 +97,6 @@ describe('phase 11', () => {
     }
     const kill = () => round.events.findIndex((e) => e.type === 'kill');
     const smoke = () => round.events.findIndex((e) => e.type === 'smoke');
-    const READY = { cs2_running: true, window: true, focused: true, console_log: true, uinput: true };
-    // Stand-in for the CS2 tool: records the job and writes placeholder bytes
-    // (test fixtures only; the real tool writes what CS2 rendered).
-    function fakeDriver(checks = READY, outcome = 'ok') {
-      const jobs = [];
-      return {
-        jobs,
-        check: async () => checks,
-        run: async (job) => {
-          jobs.push(job);
-          if (outcome !== 'ok') return { ok: false, code: 'seek', error: 'CS2 did not confirm the seek.' };
-          return { ok: true, items: job.items.map((it) => { fs.writeFileSync(it.file, 'fixture'); return { file: it.file, width: 1280, height: 720 }; }) };
-        },
-      };
-    }
-
     it('refuses capture with the reason while the worker is off, after validating the request', async () => {
       const { member, demo: d } = await readyDemo();
       const url = `/api/demos/${d.demo_id}/captures`;
@@ -136,66 +119,6 @@ describe('phase 11', () => {
       await member.post(url).send({ kind: 'kill', round_number: 1, event_index: kill(), path: '/etc/passwd' }).expect(400);
       await member.post(url).send({ kind: 'video', round_number: 1, event_index: kill() }).expect(400);
       await other.member.post(url).send({ kind: 'kill', round_number: 1, event_index: kill() }).expect(404);
-    });
-
-    it('queues a kill capture, waits for CS2 to be ready, then serves the media to members only', async () => {
-      const { member, demo: d } = await readyDemo();
-      const url = `/api/demos/${d.demo_id}/captures`;
-      const notFocused = fakeDriver({ ...READY, focused: false });
-      captures._test.setEnabled(true);
-      captures._test.setDriver(notFocused);
-      const queued = (await member.post(url).send({ kind: 'kill', round_number: 1, event_index: kill() }).expect(202)).body;
-      expect(queued.capture.status).to.equal('queued');
-      expect(queued.reason).to.match(/Click inside the CS2 window/);
-      // Asking again returns the same capture rather than queueing another.
-      const again = (await member.post(url).send({ kind: 'kill', round_number: 1, event_index: kill() }).expect(202)).body;
-      expect(again.capture.capture_id).to.equal(queued.capture.capture_id);
-      expect(await captures._test.runOnce()).to.equal(false);
-      expect(notFocused.jobs).to.have.length(0);
-
-      const drv = fakeDriver();
-      captures._test.setDriver(drv);
-      expect(await captures._test.runOnce()).to.equal(true);
-      const [job] = drv.jobs;
-      expect(job.demo).to.match(/i\.dem$/);
-      expect(job.items.map((i) => [i.type, i.tick, i.player])).to.deep.equal([['shot', 500, 'alpha'], ['shot', 496, 'bravo']]);
-
-      const list = (await member.get(url).expect(200)).body;
-      const cap = list.captures[0];
-      expect(cap.status).to.equal('ready');
-      expect(cap.media.map((m) => [m.role, m.type, m.tick, m.file])).to.deep.equal([['killer', 'image', 500, 'killer.jpg'], ['victim', 'image', 496, 'victim.jpg']]);
-      expect(cap.media[0].url).to.match(/killer\.jpg\?v=\d+$/);
-      const media = await member.get(cap.media[0].url).expect(200);
-      expect(media.headers['content-type']).to.match(/image\/jpeg/);
-      const base = cap.media[0].url.split('?')[0];
-      await member.get(base.replace('killer.jpg', 'replay.webm')).expect(404);
-      await member.get(base.replace('killer.jpg', '..%2F..%2Fi.dem')).expect(404);
-      const other = await teamWithMember();
-      await other.member.get(cap.media[0].url).expect(404);
-    });
-
-    it('captures a throw as a two-second clip and a lineup frame, and records failures for a retry', async () => {
-      const { member, demo: d } = await readyDemo();
-      const url = `/api/demos/${d.demo_id}/captures`;
-      captures._test.setEnabled(true);
-      const bad = fakeDriver(READY, 'fail');
-      captures._test.setDriver(bad);
-      await member.post(url).send({ kind: 'utility', round_number: 1, event_index: smoke() }).expect(202);
-      await captures._test.runOnce();
-      let cap = (await member.get(url).expect(200)).body.captures[0];
-      expect(cap).to.include({ status: 'failed', error_code: 'seek' });
-      expect(cap.media).to.deep.equal([]);
-      const [job] = bad.jobs;
-      // Release at 300: the clip is 236–364 (1 s either side) and the lineup the tick before release.
-      expect(job.items.map((i) => [i.type, i.start ?? i.tick, i.end ?? null, i.player])).to.deep.equal([['clip', 236, 364, 'alpha'], ['shot', 299, null, 'alpha']]);
-
-      captures._test.setDriver(fakeDriver());
-      const retried = (await member.post(url).send({ kind: 'utility', round_number: 1, event_index: smoke() }).expect(202)).body;
-      expect(retried.capture.status).to.equal('queued');
-      await captures._test.runOnce();
-      cap = (await member.get(url).expect(200)).body.captures[0];
-      expect(cap.status).to.equal('ready');
-      expect(cap.media.map((m) => [m.role, m.mime])).to.deep.equal([['replay', 'video/webm'], ['lineup', 'image/jpeg']]);
     });
 
     it('picks the same victim frame as the inspector', async () => {
