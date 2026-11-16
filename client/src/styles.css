@@ -823,3 +823,40 @@ img.util-icon { vertical-align: middle; object-fit: contain; }
 .board-frame.placing-throw { position: relative; }
 .throw-hint { position: absolute; left: 8px; right: 8px; top: 8px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;
   padding: 6px 10px; border-radius: 6px; background: #000000c8; color: #fff; font-size: 0.8rem; pointer-events: auto; }
+
+/* ---- Phase 11: Replay Inspector (right-hand column of Demo Review) ---- */
+.replay-inspector-cell { min-width: 0; position: sticky; top: 12px; height: min(var(--replay-height, 100vh), calc(100vh - 24px)); display: flex; }
+.replay-inspector-cell.below { grid-column: 1 / -1; position: static; height: auto; }
+.replay-layout.stacked .replay-inspector-cell { order: 3; position: static; height: auto; }
+.replay-inspector { flex: 1; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+.inspector-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.inspector-head h2 { margin: 0; font-size: 1.05rem; }
+.inspector-head select { padding: 3px 6px; }
+.inspector-body { padding: 10px 12px 14px; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+.inspector-empty { padding: 28px 16px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.inspector-empty p { margin: 0; }
+.inspector-title { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 700; flex-wrap: wrap; min-width: 0; }
+.inspector-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
+.inspector-name.ct { color: var(--cs2-kf-ct, #6f9ce6); } .inspector-name.t { color: var(--cs2-kf-t, #eabe54); }
+.inspector-weapon { height: 18px; width: auto; }
+.inspector-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.inspector-nav select { padding: 2px 4px; }
+.inspector-media { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.inspector-media figcaption { font-size: 0.85rem; font-weight: 600; overflow-wrap: anywhere; }
+.inspector-media__frame { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: repeating-linear-gradient(135deg, #1a1a1a 0 10px, #161616 10px 20px); border: 1px dashed #3a3a3a; overflow: hidden; }
+.inspector-media__empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 10px; text-align: center; color: #aaa; overflow: auto; }
+.inspector-media__empty .small { max-width: 46ch; line-height: 1.35; }
+.inspector-media__frame.captured { background: #000; border: 1px solid #333; }
+.inspector-media__frame.captured img, .inspector-media__frame.captured video { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* Crosshair zoom: the crosshair sits at the frame centre, so scale about it. */
+.inspector-media__frame.captured img { transform-origin: 50% 50%; transition: transform 0.15s ease; }
+.inspector-spinner { display: inline-block; width: 12px; height: 12px; margin-left: 8px; border: 2px solid #666; border-top-color: #ddd; border-radius: 50%; animation: inspector-spin 0.9s linear infinite; vertical-align: -1px; }
+@keyframes inspector-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .inspector-spinner { animation: none; } .inspector-media__frame.captured img { transition: none; } }
+.inspector-sub { margin: 8px 0 0; font-size: 0.95rem; }
+.inspector-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 0.85rem; }
+.inspector-facts dt { color: var(--muted); }
+.inspector-facts dd { margin: 0; overflow-wrap: anywhere; }
+.inspector-speeds, .inspector-exports { gap: 6px; }
+.inspector-zoom input { width: 140px; }
+.replay-inspector-cell.below .inspector-media, .replay-layout.stacked .inspector-media { max-width: 640px; }

@@ -242,6 +242,8 @@ async function deleteDemo(demoId, userId) {
   if (live) throw conflict('End the live review of this demo before deleting it', 'review_active');
   await db('demos').where('demo_id', demoId).del();
   await fsp.rm(path.join(config.demoStorageDir, demo.storage_key), { force: true });
+  // Replay Inspector captures of this demo (services/captures.js).
+  await fsp.rm(path.join(config.captureStorageDir, String(demoId)), { recursive: true, force: true });
   return { deleted: true };
 }
 

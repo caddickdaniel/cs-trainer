@@ -11,6 +11,8 @@ import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBackground, UtilityGlyph } from '../components/MapBoard';
 import { KillFeed, ReplayHud, ReplayScoreboard } from '../components/ReplayHud';
+import { ReplayInspector, type CaptureStatus } from '../components/ReplayInspector';
+import { eventMoment, inspectable, inspectableIndexes, isKill, isUtility, neighbourIndex, type InspectFilter } from '../lib/inspector';
 import { weaponLabel } from '../lib/cs2Assets';
 import { UtilityIcon } from '../components/UtilityIcon';
 
@@ -348,10 +350,10 @@ export function DemoPage() {
 // square that fits the window height with the HUD above it and the timeline
 // below; the right pane sits directly beside the radar. Below the breakpoint
 // everything stacks.
-const REPLAY_COLS = { tools: 172, side: 320, minSide: 280, gap: 14, stackBelow: 1101 };
+const REPLAY_COLS = { tools: 172, side: 320, minSide: 280, gap: 14, stackBelow: 1101, inspectorMin: 340, inspectorMax: 760 };
 function useReplayColumns() {
   const [layout, setLayout] = useState<HTMLDivElement | null>(null);
-  const [size, setSize] = useState<{ board: number; height: number } | null>(null);
+  const [size, setSize] = useState<{ board: number; height: number; inspector: number } | null>(null);
   useLayoutEffect(() => {
     if (!layout) return undefined;
     const measure = () => {
@@ -366,7 +368,11 @@ function useReplayColumns() {
       const board = Math.max(320, Math.floor(Math.min(byWidth, window.innerHeight - top - below - 12)));
       // The side panes scroll inside the height of the HUD, radar and timeline.
       const height = Math.max(320, Math.floor(top - layoutTop + board + below));
-      setSize((s) => (s && s.board === board && s.height === height ? s : { board, height }));
+      // Replay Inspector: the width left beside the rounds column, when there's
+      // enough of it (otherwise it goes below, at full width).
+      const spare = layout.clientWidth - REPLAY_COLS.tools - REPLAY_COLS.side - board - REPLAY_COLS.gap * 3;
+      const inspector = spare >= REPLAY_COLS.inspectorMin ? Math.floor(Math.min(spare, REPLAY_COLS.inspectorMax)) : 0;
+      setSize((s) => (s && s.board === board && s.height === height && s.inspector === inspector ? s : { board, height, inspector }));
     };
     measure();
     window.addEventListener('resize', measure);
@@ -382,10 +388,10 @@ function useReplayColumns() {
     return () => { window.removeEventListener('resize', measure); ro?.disconnect(); mo?.disconnect(); };
   }, [layout]);
   const style = size == null ? undefined : {
-    gridTemplateColumns: `${REPLAY_COLS.tools}px ${size.board}px minmax(${REPLAY_COLS.minSide}px, ${REPLAY_COLS.side}px)`,
+    gridTemplateColumns: `${REPLAY_COLS.tools}px ${size.board}px minmax(${REPLAY_COLS.minSide}px, ${REPLAY_COLS.side}px)${size.inspector ? ` ${size.inspector}px` : ''}`,
     ['--replay-height' as string]: `${size.height}px`,
   };
-  return { setLayout, style };
+  return { setLayout, style, inspectorBeside: Boolean(size?.inspector) };
 }
 
 function TimelineGlyph({ ev }: { ev: ReplayEvent }) {
@@ -521,6 +527,25 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const [damageSeconds, setDamageSeconds] = useState(5);
   // The kill picked in the kill feed: killer and victim are highlighted around it.
   const [selectedKill, setSelectedKill] = useState<ReplayEvent | null>(null);
+  // Replay Inspector: the selected kill or utility event (round + index in that
+  // round's events, or the first/last inspectable one once that round loads).
+  // Kept until another event is chosen or it's cleared.
+  const [inspect, setInspect] = useState<{ round: number; index: number } | null>(null);
+  const [inspectFilter, setInspectFilter] = useState<InspectFilter>('all');
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
+  const [captureRefresh, setCaptureRefresh] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    api.get<CaptureStatus>(`/demos/${demo.demo_id}/captures`).then((s) => { if (!cancelled) setCaptureStatus(s); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [demo.demo_id, captureRefresh]);
+  // While a capture is queued or running, check on it every few seconds.
+  const capturePending = !!captureStatus?.captures?.some((c) => c.status === 'queued' || c.status === 'running');
+  useEffect(() => {
+    if (!capturePending) return undefined;
+    const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 2500);
+    return () => window.clearTimeout(t);
+  }, [capturePending, captureStatus]);
   // moving: the utility marker or text that the next map click moves.
   const [moving, setMoving] = useState<number | null>(null);
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null);
@@ -528,7 +553,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
-  const { setLayout, style: layoutStyle } = useReplayColumns();
+  const { setLayout, style: layoutStyle, inspectorBeside } = useReplayColumns();
 
   // Saved annotations plus this user's unsaved drafts (outside a live review).
   const notes = useLoad(
@@ -593,14 +618,31 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
       : sendLive({ action: 'play' })),
     pause: () => (mode === 'solo' ? setSolo({ ...solo, playing: false, anchorTick: tick, anchorAt: Date.now() }) : sendLive({ action: 'pause' })),
     seek: (t: number) => (mode === 'solo' ? setSolo({ ...solo, anchorTick: t, anchorAt: Date.now() }) : sendLive({ action: 'seek', tick: t })),
-    round: (n: number) => {
+    // startTick: where to start in that round (Replay Inspector navigation);
+    // otherwise the end of freeze time.
+    round: async (n: number, startTick?: number) => {
       const r = demo.rounds.find((x) => x.round_number === n);
       if (!r) return;
       setTextEdit(null);
       setMoving(null);
       setSelectedKill(null);
-      if (mode === 'solo') setSolo({ ...solo, round: n, playing: false, anchorTick: r.freeze_end_tick ?? r.start_tick, anchorAt: Date.now() });
-      else sendLive({ action: 'round', round_number: n });
+      const at = startTick != null ? Math.max(r.start_tick, Math.min(r.end_tick, startTick)) : r.freeze_end_tick ?? r.start_tick;
+      if (mode === 'solo') setSolo({ ...solo, round: n, playing: false, anchorTick: at, anchorAt: Date.now() });
+      else if (liveHere) {
+        // Live: change round, then seek with the version that change returned.
+        setBusy(true);
+        try {
+          const res = await api.post<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/command`, { action: 'round', round_number: n, expected_version: liveHere.version });
+          let review = res.review;
+          if (startTick != null) review = (await api.post<{ review: LiveReview }>(`/reviews/${review.review_id}/command`, { action: 'seek', tick: at, expected_version: review.version })).review;
+          sync.adopt(review);
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 409 && err.body.review) sync.adopt(err.body.review as LiveReview);
+          else setError(errorMessage(err));
+        } finally {
+          setBusy(false);
+        }
+      }
     },
     speed: (s: number) => (mode === 'solo' ? setSolo({ ...solo, speed: s, anchorTick: tick, anchorAt: Date.now() }) : sendLive({ action: 'speed', speed: s })),
   };
@@ -825,11 +867,58 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const killFeed = round && showKillFeed ? killFeedAt(round.events, tick, tickrate) : [];
   const sideOfPlayer = (pl: number | null | undefined) => (pl == null ? null : sideOf.get(pl) ?? null);
   const slotOfPlayer = (pl: number | null | undefined) => (round && pl != null ? round.roster.findIndex((r) => r.player === pl) : -1);
-  const pickKill = (ev: ReplayEvent) => {
-    setSelectedKill(ev);
-    // Seeks without changing play/pause; following viewers only get the highlight.
-    if (canControl) control.seek(ev.tick);
+  // Selecting an event for the inspector (kill feed, timeline or Previous /
+  // Next): seek to its moment (a kill's tick, a throw's release) without
+  // changing play/pause, highlight the players, and show it in the inspector.
+  // Following viewers get the selection and highlight but don't move playback.
+  const selectEvent = (ev: ReplayEvent) => {
+    if (!round) return;
+    const index = round.events.indexOf(ev);
+    if (index < 0) return;
+    setInspect({ round: roundNumber, index });
+    setSelectedKill(isKill(ev) ? ev : null);
+    if (canControl) control.seek(Math.max(info.start_tick, Math.min(info.end_tick, eventMoment(ev))));
   };
+  const pickKill = (ev: ReplayEvent) => selectEvent(ev);
+  // The inspected event, once its round is loaded.
+  const inspectedEv = inspect && round && inspect.round === roundNumber ? round.events[inspect.index] : undefined;
+  const inspected = inspectedEv && inspectable(inspectedEv) ? { ev: inspectedEv, index: inspect!.index } : null;
+  const stepEvent = (dir: 1 | -1) => {
+    if (!round) return;
+    const from = inspected ? inspected.index : (() => {
+      // Nothing selected: start from the current moment.
+      const list = inspectableIndexes(round.events, inspectFilter);
+      const pick = dir === 1 ? list.find((i) => eventMoment(round.events[i]) >= tick) : [...list].reverse().find((i) => eventMoment(round.events[i]) <= tick);
+      return pick ?? null;
+    })();
+    if (!inspected && from != null) { selectEvent(round.events[from]); return; }
+    const next = from != null ? neighbourIndex(round.events, from, dir, inspectFilter) : null;
+    if (next != null) { selectEvent(round.events[next]); return; }
+    // Past either end of the round: continue with the first / last
+    // inspectable event of the neighbouring rounds (fetched first, so the
+    // round and position change together).
+    if (!canControl) return;
+    void (async () => {
+      for (let i = roundIndex + dir; i >= 0 && i < demo.rounds.length; i += dir) {
+        const target = demo.rounds[i];
+        try {
+          const data = await api.get<ReplayRound>(`/demos/${demo.demo_id}/rounds/${target.round_number}`);
+          const list = inspectableIndexes(data.events, inspectFilter);
+          const index = dir === 1 ? list[0] : list[list.length - 1];
+          if (index == null) continue;
+          setInspect({ round: target.round_number, index });
+          await control.round(target.round_number, eventMoment(data.events[index]));
+          if (isKill(data.events[index])) setSelectedKill(data.events[index]);
+          return;
+        } catch (err) {
+          setError(errorMessage(err));
+          return;
+        }
+      }
+    })();
+  };
+  // Utility throw highlight: where it was thrown from and where it landed.
+  const utilityHighlight = inspected && isUtility(inspected.ev) && Math.abs(tick - eventMoment(inspected.ev)) <= 3 * tickrate ? inspected.ev : null;
   const killHighlight = (() => {
     if (!round || !selectedKill || Math.abs(tick - selectedKill.tick) > 3 * tickrate) return null;
     const killerSlot = slotOfPlayer(selectedKill.attacker);
@@ -978,7 +1067,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
 
         <div className="replay-centre">
           {round ? <ReplayHud round={round} info={info} tick={tick} tickrate={tickrate} name={nameOf} roundNumber={roundNumber}
-            highlight={[...(killHighlight?.players ?? []), ...bombHits.map((d) => d.player)]} /> : <div className="cs2-hud placeholder" aria-hidden="true" />}
+            highlight={[...(killHighlight?.players ?? []), ...(utilityHighlight?.player != null ? [utilityHighlight.player] : []), ...bombHits.map((d) => d.player)]} /> : <div className="cs2-hud placeholder" aria-hidden="true" />}
           <div className="board-frame">
             <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} className={`board${tool !== 'none' && canAnnotate ? ' editable' : ''}`} role="img"
               aria-label={`Replay of round ${roundNumber}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
@@ -1091,6 +1180,12 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                     stroke="#fff" strokeWidth="2.5" strokeDasharray="7 5" />
                 </g>
               ) : null}
+              {utilityHighlight && utilityHighlight.from && utilityHighlight.x != null ? (
+                <g pointerEvents="none" data-utility-highlight="">
+                  {utilityHighlight.from.level === level ? <circle cx={utilityHighlight.from.x * SIZE} cy={utilityHighlight.from.y * SIZE} r="20" fill="none" stroke="#fff" strokeWidth="3" /> : null}
+                  {(utilityHighlight.level ?? 'main') === level ? <circle cx={utilityHighlight.x * SIZE} cy={utilityHighlight.y! * SIZE} r="16" fill="none" stroke="#ffd166" strokeWidth="3" strokeDasharray="5 4" /> : null}
+                </g>
+              ) : null}
               {killHighlight ? [killHighlight.killer, killHighlight.victim].map((pt, i) => (pt && pt.level === level ? (
                 <circle key={`kh${i}`} cx={pt.x * SIZE} cy={pt.y * SIZE} r="20" fill="none" stroke={i === 0 ? '#ffffff' : '#ff5a5f'} strokeWidth="3"
                   opacity={killHighlight.fade} pointerEvents="none" />
@@ -1181,7 +1276,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           </div>
           {round ? (
             <EventTimeline info={{ start_tick: info.freeze_end_tick ?? info.start_tick, end_tick: info.end_tick }} events={timelineEvents} annotations={annotations} tick={tick} canControl={canControl}
-              describe={describe} onSeek={control.seek} onJump={jump} />
+              describe={describe} onSeek={control.seek} onJump={(ev) => (inspectable(ev) ? selectEvent(ev) : jump(ev))} />
           ) : !roundError ? <p className="muted small">Loading round…</p> : null}
         </div>
 
@@ -1259,6 +1354,14 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
             ) : <Loading />}
           </details>
         </aside>
+        <div className={`replay-inspector-cell${inspectorBeside ? '' : ' below'}`}>
+          <ReplayInspector demoId={demo.demo_id} round={round} roundNumber={roundNumber} info={info} tickrate={tickrate} tick={tick}
+            event={inspected?.ev ?? null} eventIndex={inspected?.index ?? null} selectionRound={inspect?.round ?? null}
+            name={(p) => (p == null ? 'Unknown' : nameOf(p))} side={sideOfPlayer} filter={inspectFilter} onFilter={setInspectFilter}
+            onPrev={() => stepEvent(-1)} onNext={() => stepEvent(1)} onClear={() => { setInspect(null); setSelectedKill(null); }}
+            onSeek={(t) => control.seek(Math.max(info.start_tick, Math.min(info.end_tick, t)))} onGoToRound={(n) => control.round(n)}
+            canControl={canControl} status={captureStatus} onStatus={setCaptureStatus} onRefresh={() => setCaptureRefresh((n) => n + 1)} mapName={demo.map} />
+        </div>
       </div>
     </div>
   );

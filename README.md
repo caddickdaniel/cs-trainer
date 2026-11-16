@@ -904,6 +904,48 @@ From the extracted Panorama styles and layouts (`hudteamcounter`, `hudteamcounte
 ### Migrations
 `20261118000100_phase_10_colours_availability.js`: `team_memberships.game_color` (+ unique per team), `team_events.ends_at`, `team_availability`.
 
+## Phase 11: Replay Inspector
+
+### First-person capture from CS2
+Real POV screenshots and clips are recorded by the CS2 client playing the demo on this machine (`tools/cs2-capture/`, driven by `services/captures.js`). Nothing is drawn or synthesised: a frame exists only if CS2 rendered it for that tick and player.
+
+**How it works**
+- **Control:** console commands are typed into CS2 through a **uinput virtual keyboard** (`ukeys.py`). On GNOME Wayland the compositor treats it as real hardware; Steam's udev rules (`60-steam-input.rules`) already give the logged-in user `/dev/uinput`. Nothing is typed unless the CS2 window has input focus, checked before every command.
+- **Confirmation:** every step is checked against CS2's own `console.log` (`-condebug`): the demo loaded, the seek **finished at the exact tick**, which player is being watched. The console's open/closed state and paused playback are checked from the pixels.
+- **Capture:** the CS2 window's pixels are read through XWayland (`xgrab.py`), scaled to 1280×720 (lineups at 2560×1440 for the crosshair zoom) and saved as JPEG. Clips are frames sampled while the demo plays at 0.2× speed (30 fps output, timing checked against the clock) and encoded to WebM (VP8) with GStreamer.
+- **What makes the frames trustworthy:** every seek goes past the target and back, so CS2 rebuilds the frame from a full snapshot (a long forward skip while paused left stale positions on screen). Spectator X-ray is turned off (it outlines players through walls, which the player didn't see) and the HUD is reduced to crosshair and kill feed. The demo playback bar is detected in the pixels and hidden. All of these settings are put back afterwards.
+- **Queue:** requests are stored in `demo_captures` and run one at a time by the worker in the API process (there is one CS2). Media is cached under `storage/captures/<demo>/<capture>/` and served only to members of the demo's team. Deleting a demo deletes its captures. A kill takes about 20–30 s; a throw (clip and lineup) about 30–40 s; loading a different demo adds about 20 s.
+
+**Running it**
+1. Set `CAPTURE_WORKER=on` in `.env` (opt-in: it types into the CS2 window on this desktop).
+2. Start CS2 with `-condebug -console`, for example from the game folder: `SteamAppId=730 SteamGameId=730 ~/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper/run -- ./cs2.sh -steam -novid -windowed -condebug -console`. This route avoids the "Processing Vulkan shaders" dialog Steam can show.
+3. Click into the CS2 window and leave it focused while captures run. The inspector shows the reason whenever capture can't run yet; queued requests start once CS2 is ready.
+
+`-condebug` writes `game/csgo/console.log` inside the CS2 install while the game runs. Delete it after closing CS2 if you don't want it there.
+
+**Dead ends (16 Nov 2026, GNOME on Wayland):** `-netconport` and `-vconsole` opened no port; `+playdemo` at launch is dropped; XTest keystrokes never reach the game. Seeking right after a demo loads crashed CS2 once ("CopyNewEntity: invalid class index"), so the tool now lets the demo play for a few seconds first.
+
+### What was added
+- **Replay Inspector** (`components/ReplayInspector.tsx`): a permanent panel in the space right of the Rounds / notes column. It takes the spare width, up to 760 px, without shrinking the radar; on narrower windows it moves below at full width; it scrolls inside itself. It shows an empty state until an event is selected.
+- **Selecting events:** clicking a kill in the kill feed or on the timeline, or a grenade on the timeline, selects it and seeks to its moment without changing play/pause, and highlights the players.
+  - A kill's moment is its exact tick.
+  - A throw's moment is its **release** tick. Throws are linked to their detonation by projectile entity id, or by thrower and timing for fires.
+  - **Previous / Next** steps through events in order (filter: kills and utility, kills, utility), continuing into the neighbouring rounds.
+- **Kill mode:**
+  - **Killer POV** at the kill tick.
+  - **Victim POV** at the victim's **last recorded alive tick** (labelled as such, never as the death frame).
+  - Kill details, and **tactical data labelled as such**: positions and floors, distance, facing angles, with the note that facing is not visibility.
+- **Utility mode:**
+  - A **two-second replay** from the thrower's view (1 s either side of the release, clamped to the round), with 0.25× / 0.5× / 1× playback.
+  - A **lineup** frame the tick before release, with a 1–5× crosshair zoom about the frame centre (where CS2 draws the crosshair).
+  - Release and detonation ticks, flight time, positions, distance and duration.
+- **Exports:** downloads of the captured killer/victim screenshots, clip (WebM), lineup image, and a zoomed crop of the lineup (PNG, the same pixels as the zoom). Files are named map_round_event_player_tick. GIF export is disabled: there's no GIF encoder on this machine.
+- **API:**
+  - `GET /api/demos/:id/captures`: status, reason and this demo's captures.
+  - `POST /api/demos/:id/captures`: `{ kind, round_number, event_index, retry? }`. It is validated against the demo the user can access and the recorded event, then queued, or the existing capture is returned. With the worker off it answers **503 `capture_unavailable`**.
+  - `GET /api/demos/:id/captures/:capture_id/media/:file`: only files listed for that capture.
+  - No paths or commands are ever accepted from the client: the demo path comes from storage, and player names come from the parsed demo.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

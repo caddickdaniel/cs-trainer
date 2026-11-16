@@ -54,6 +54,12 @@ module.exports = {
   demoDemosPerTeam: Number(process.env.DEMO_LIMIT_PER_TEAM) || 50,
   // The background demo worker runs in the web process unless disabled.
   demoWorker: process.env.DEMO_WORKER ? process.env.DEMO_WORKER !== 'off' : NODE_ENV !== 'test',
+  // Replay Inspector capture: drives a local CS2 client (tools/cs2-capture)
+  // to record real first-person frames. Opt-in (CAPTURE_WORKER=on) because it
+  // types into the CS2 window on this machine's desktop.
+  captureWorker: process.env.CAPTURE_WORKER === 'on' && NODE_ENV !== 'test',
+  captureStorageDir: path.resolve(process.env.CAPTURE_STORAGE_DIR
+    || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'captures-test' : 'captures')),
   // Public origin of the app (scheme://host[:port]) used for Steam sign-in
   // return URLs. Required in production; development derives it from localhost hosts.
   appOrigin: process.env.APP_ORIGIN ? process.env.APP_ORIGIN.replace(/\/$/, '') : null,
