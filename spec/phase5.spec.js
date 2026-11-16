@@ -376,6 +376,9 @@ describe('phase 5', () => {
         const moved = (await member.patch(`/api/demos/${demo.demo_id}/annotations/${annotation.annotation_id}`).send({ x: 0.5, utility: 'flash' }).expect(200)).body.annotation;
         expect(moved.data).to.deep.equal({ x: 0.5, y: 0.6, utility: 'flash' });
         const third = await addMember(owner, teamId, 'Third');
+        // Phase 8: a draft is private to its author until saved.
+        await third.patch(`/api/demos/${demo.demo_id}/annotations/${annotation.annotation_id}`).send({ x: 0.1 }).expect(404);
+        await member.post(`/api/demos/${demo.demo_id}/save`).send({}).expect(200);
         await third.patch(`/api/demos/${demo.demo_id}/annotations/${annotation.annotation_id}`).send({ x: 0.1 }).expect(403);
         const listed = (await owner.get(`/api/demos/${demo.demo_id}/annotations?round=1`).expect(200)).body.annotations;
         expect(listed.map((a) => a.kind)).to.deep.equal(['utility']);
@@ -383,16 +386,19 @@ describe('phase 5', () => {
         // Live: the IGL places, moves and removes; followers see each change.
         const { review } = (await owner.post(`/api/teams/${teamId}/review`).send({ demo_id: demo.demo_id }).expect(201)).body;
         let r = (await owner.post(`/api/reviews/${review.review_id}/annotations`).send({ ...body, data: { x: 0.2, y: 0.2, utility: 'molly' } }).expect(201)).body.review;
-        const live = r.annotations[0];
+        // Phase 8: the review also shows the demo's saved annotations; live drawings carry the review id.
+        const liveOnly = (rev) => rev.annotations.filter((a) => a.review_id === review.review_id);
+        expect(r.annotations.filter((a) => a.saved).map((a) => a.data.utility)).to.deep.equal(['flash']);
+        const live = liveOnly(r)[0];
         await member.post(`/api/reviews/${review.review_id}/annotations`).send(body).expect(403);
         await member.patch(`/api/reviews/${review.review_id}/annotations/${live.annotation_id}`).send({ x: 0.3 }).expect(403);
         r = (await owner.patch(`/api/reviews/${review.review_id}/annotations/${live.annotation_id}`).send({ x: 0.3, level: 'main' }).expect(200)).body.review;
         let seen = (await member.get(`/api/teams/${teamId}/review`).expect(200)).body.review;
         expect(seen.version).to.equal(r.version);
-        expect(seen.annotations[0].data).to.include({ x: 0.3, utility: 'molly' });
+        expect(liveOnly(seen)[0].data).to.include({ x: 0.3, utility: 'molly' });
         await owner.delete(`/api/reviews/${review.review_id}/annotations/${live.annotation_id}`).expect(200);
         seen = (await member.get(`/api/teams/${teamId}/review`).expect(200)).body.review;
-        expect(seen.annotations).to.deep.equal([]);
+        expect(liveOnly(seen)).to.deep.equal([]);
       } finally {
         fs.rmSync(demoJobs.storagePath(key), { force: true });
       }

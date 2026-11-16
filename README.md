@@ -801,6 +801,72 @@ From `spirit-vs-g2-m3-ancient.dem` (demoparser2 0.42.2), using `parseGrenades(fi
 
 No migration. `REPLAY_VERSION` is 3, so the demo worker re-parses ready demos in the background (or `npm run demos:reprocess`), replacing round data in place by round number. Annotations and reviews are kept.
 
+## Phase 8
+
+### What was added
+
+- **Demo Review controls in the left pane.** One compact group at the top: Play/Pause, playback speed, the playback position (time since freeze end / round length, separate from the in-game clock in the HUD), previous/next round, and Start/End live review. The duplicate "Demo Review" link above the title is gone (the sidebar item is the entry point). The centre is now HUD → radar → timeline, sized so all of it fits the window at desktop sizes (at 1440×900 the radar is 607 px, the timeline 52 px).
+- **Shallower timeline.** 16 px icons in at most two rows, tooltips opening upwards (the timeline sits under the radar), same hover/focus details and click-to-jump.
+- **Fixed HUD above the radar** (`components/ReplayHud.tsx`, after reference image 2). CT players on the left, T on the right, the round clock and score in the middle with alive counts and team names. One row per player: health, name, armour (kevlar or kevlar + helmet), defuse kit (CT) or bomb (T carrier), current weapon, carried utility and money. Dead players are greyed with a skull. The clock counts freeze time down, then 1:55; after a plant it shows the bomb; after the round result it reads END and the score updates.
+- **Bomb countdown.** A pulsing red line across the top of the HUD, full width at the plant, shrinking from both ends to the centre over 40 s. It is computed from the replay tick, so it freezes on pause, follows the speed and is right after a seek; it clears on defusal, explosion or the round result.
+- **Flashed players.** The radar marker turns white and fades back to the side colour over the recorded flash duration (the side-coloured ring, view line and name stay). The HUD row whitens too. Derived from the tick, so seeking into, through or out of a flash is exact, and followers in a live review see the same.
+- **Expanded scoreboard** (Scoreboard button under the annotation tools, after reference image 1). Overlays the radar without moving anything or changing playback. Per team: score, side, team name and alive count, then Name · Money · Kills · Deaths · Assists · HS% · Damage at the current moment (seeking back restores earlier values). "—" with a tooltip marks a field the demo doesn't supply; demos still on an older replay version say they are being updated.
+- **Text tool like a tactic Note.** Choose Text, click the radar to place it, type (Ctrl+Enter adds), use the up/down arrows to change the size (12–64). Click a text (or Edit in the list) to change its content and size; Move and remove work as for utility markers. The text, size, round, replay position and floor are stored.
+- **Round notes and Save.** The right pane has a notepad per round. Switching rounds shows that round's notes and keeps unsaved edits while the page is open (the browser warns before leaving with unsaved notes). **Save notes and annotations** saves every edited round's notes and your new annotations, and says what was saved or why not. New annotations are drafts only you see (tagged "unsaved") until you save. A note someone else saved since you loaded it is reported instead of overwritten. In a live review the IGL's drawings are broadcast immediately as before (tagged "live"), and Save also keeps them as saved annotations of the demo. Saved notes and annotations show when the demo is reopened, and in live reviews for everyone following. Teammates following can read the notes but not edit them; outside a review any member can write notes and their own annotations (as before).
+- **Match share code** sits on its own row with room above it; the field fits a whole code (monospaced, about 40 characters) and shrinks on narrow screens.
+- **Calendar.** The Training nav item, page heading and tab title are now **Calendar** (`/training` still works, `/calendar` is an alias). Clicking a day (or Enter on a focused day) selects it and shows everything booked that day with full details. Double-clicking a day opens a new event on that date (team owner). The Add event button is always shown; other members see it disabled with the reason. While adding an event, clicking another day moves the form to it. The selected day has a white outline; today keeps its orange ring, including when selected. Events and event types are unchanged.
+- **Kit icon and Game Mode utility icons.** Game Mode's team utility table uses the same white/grey grenade icons as elsewhere and has a kit column for CT players assigned a kit. `KitIcon` uses `client/public/icons/defuse-kit.png`; **that PNG is not in the repository** (it wasn't found on this machine), so an olive pliers outline stands in until the file is added. Drop the transparent PNG at that path and every kit icon (Tactics Player instructions, viewer, Game Mode, Demo Review HUD) uses it.
+
+### What the demo parser supplies (HUD and scoreboard, replay version 4)
+
+Checked on `spirit-vs-g2-m3-ancient.dem` (demoparser2 0.42.2):
+- **Money, armour, helmet, defuse kit, active weapon, carried grenades and the bomb** from player properties (`balance`, `armor_value`, `has_helmet`, `has_defuser`, `active_weapon_name`, `inventory`), sampled with positions every 8 ticks and stored only when something changes (8,572 entries for the match).
+- **Kills, deaths, assists, headshots and damage** from `player_death` and `player_hurt`, with the same rules as Player Stats: enemy kills only, flash-only assists excluded, damage capped at the victim's remaining health. Each round stores everyone's totals before it and the changes during it; end-of-match totals equal the Player Stats rows exactly. The demo's own `damage_total` property was not used: it only updates at round boundaries and didn't match the damage events.
+- **Flashes.** This demo has no `player_blind` event, so a flash is detected from `flash_duration` changing between the tick before and 2 ticks after each flashbang detonation: 249 player flashes, 0.09–5.05 s. Teammates flashed by their own team are included (as in game).
+- **Team names** from `team_clan_name` (Spirit / G2); score before each round from the round results.
+- **Not supplied or approximated:** grenade counts (two flashbangs show one flash icon); health, money and equipment between 8-tick samples; the round time and bomb timer are the competitive defaults (1:55, 40 s) rather than read from the server's settings; the in-game scoreboard's assist and damage numbers can differ slightly from these definitions (CS2 counts flash assists).
+- **Cost.** Parsing Ancient now takes 3.3 s (was 2.3 s) and stores 5.4 MB of round data (was 4.5 MB). Peak memory is 1.8 GB (was 1.05 GB), mostly from the per-tick inventory lists, which matters on small servers.
+
+### Migrations and upgrading
+
+- `20261117000100_phase_8_round_notes.js`: `demo_round_notes` (one per demo round, versioned) and `demo_annotations.saved` (default true, so every existing annotation stays shared).
+- `REPLAY_VERSION` is 4: the demo worker re-parses ready demos in the background (or `npm run demos:reprocess`), replacing round data in place. Annotations, notes and reviews are kept.
+- New endpoints: `GET /api/demos/:id/notes`, `POST /api/demos/:id/save` (`{ notes: [{ round_number, body, expected_version }], review_id? }`). Live review state now includes the demo's saved annotations for the round and its `note`.
+
+## Phase 9
+
+### CS2 icons from your own game install
+
+Demo Review uses Valve's own HUD icons, extracted from the local CS2 install. **They are not in the repository** (this repo is public and the artwork is Valve's), so each machine builds them once:
+
+1. Extractor: ValveResourceFormat's `Source2Viewer-CLI` 20.1 (official GitHub release, `cli-linux-x64.zip`, SHA-256 `29d25a6d…aef5`), unzipped to `tools/cs2-asset-extraction/bin/vrf/`. It is self-contained (no .NET needed).
+2. Python with CairoSVG and Pillow in a local venv: `python3 -m venv tools/cs2-asset-extraction/work/venv && tools/cs2-asset-extraction/work/venv/bin/pip install cairosvg==2.7.1 pillow==11.3.0`.
+3. `npm run cs2:assets` (add `-- --extract` to re-extract after a game update). It finds CS2 through Steam's `libraryfolders.vdf` (or `CS2_DIR`), reads `pak01_dir.vpk` read-only, and writes `client/public/assets/cs2/` (gitignored). **Restart the dev server afterwards**: Vite only serves public files that existed when it started.
+
+Output (checked on this machine): 235 icons from `panorama/images/` (weapons by class, all knives, grenades, armour, kit, Zeus, C4, kill feed indicators, team counter, scoreboard, radar and objective icons), each as the original SVG (what the app uses), a 256×256 PNG (kill feed icons: natural width at 64 px high) and white and black PNG variants (470); `manifest.json` (source resource and archive, sizes, variants, status, `weapon_<id>` → inventory and kill feed icons) and `contact-sheet.png`. Validation: every file opens, has transparency, isn't cropped, and every manifest path exists. Findings:
+- The kill feed and the inventory use the same `icons/equipment/<weapon>` files; there are no separate kill feed silhouettes in the game files.
+- `world`, `worldent` and `trigger_hurt` are blank in the game (no icon for world or fall deaths); `kevlar`/`armor` and `c4`/`bomb_icon` are identical images.
+- Not provided as images: planting/defusing progress, burning, scoped and footstep indicators, a team-kill indicator, and knife/grenade/fire kill indicators other than the team counter's kill types.
+
+Without the asset set everything still works, with text or the app's own icons instead.
+
+### Styling taken from the game
+
+From the extracted Panorama styles and layouts (`hudteamcounter`, `hudteamcounter-equipmentinfo`, `scoreboard`, `huddeathnotice`, `csgostyles`), confirmed values are marked `(P)` in `styles.css`: team colours (#B5D4EE / #EAD18A; kill feed #6f9ce6 / #eabe54), team counter backgrounds, name, health bar and equipment rows, the planted-bomb icon washed #b80000 pulsing every 0.8 / 0.5 / 0.3 s, scoreboard cell backgrounds and 80 px team panel, kill feed 3 px radius, #000000a0 background, 5 s lifetime with a 1 s fade, and the order of its parts. The scoreboard order is from `scoreboard.js` (competitive: damage, kills, assists, fewest deaths). Approximations: CS2's Stratum2 font is a `.uifont` the browser can't load (a condensed system font stands in); sizes are scaled to fit beside the radar (cards about 43–58 px against CS2's 54 px); there are no Steam avatars in demos, so cards have no picture.
+
+### What was added
+
+- **Spectator HUD** (replaces the Phase 8 rows): CT cards, then score, timer and score, then T cards, as in CS2's team counter. Each card: name, health bar with the number (skull icon when dead), money, best weapon (primary, else pistol), carried grenades, armour or armour + helmet, defuse kit or bomb. Alive counts, round number and team names under the timer. The Phase 8 40-second bomb line is kept along the top.
+- **Scoreboard** (same Scoreboard button): a CS2-style overlay across the replay area with each team's score, side, team name and alive count, then Money · Kills · Deaths · Assists · HS% · DMG, ordered like CS2's competitive scoreboard. Values at the current tick, as before. No ping or score column (CS2 doesn't show score there; ping isn't in demos).
+- **Kill feed** in the radar's top right: attacker, "+ assister" with the flash-assist icon, then weapon, no-scope, through smoke, wallbang, headshot (and blind, in air, suicide), then victim, in team colours. Shown for 5 s of demo time with the last second fading, derived from the tick (pausing, speed, seeking and round changes are exact). Clicking an entry (or Enter) seeks to the kill without changing play or pause, outlines the killer and victim on the radar with a dashed line between them and highlights their HUD cards for 3 s of demo time. Bomb kills show the C4 icon with no killer; world deaths show the recorded weapon as text. Toggle: Display → Kill feed.
+- **Bomb detonation** (from the recorded `bomb_exploded` event, placed at the plant): a 1.5 s shockwave (flash, expanding ring, fade) and, separately, an estimated damage area that stays for 5 s (3, 5, 10 or 20 s). Players hurt or killed by the bomb get an orange ring and their recorded damage ("−139 C4 kill", "−9 (17 HP)"). Display toggles: Bomb shockwave, Bomb damage area (both on by default). Both are drawn in the radar's coordinates, so they stay aligned at any size.
+- **Damage area is an estimate.** It uses the CS:GO formula (500 damage, Gaussian falloff over 1,750 units, no armour or cover) and is labelled as such. Recorded CS2 bomb damage doesn't follow it: on these demos 829 units did 27 and 1,599 units did 69 (map settings and cover change it), so the real damage is always shown on the players.
+- The kit icon (Tactics, viewer, Game Mode) now uses CS2's own pliers icon when the asset set is built.
+
+### Replay data (version 5)
+
+`REPLAY_VERSION` is 5: kills carry the assister and flash assist, wallbang, no-scope, through smoke, attacker blind and in air (only when the event has them) and the raw weapon id; rounds carry the bomb damage actually done (`player_hurt` with `planted_c4`), each player's best weapon and in-game score, and the radar width in game units. Demos are re-parsed in the background as before; annotations and notes are kept.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

@@ -26,7 +26,28 @@ const FIRE_TICKS = 7 * TICKRATE;
 // 1: positions, kills, plants/defusals. 2: recorded utility (smoke, flash,
 // HE, molotov/incendiary) with effect durations, and the explosion position.
 // 3: grenade flights (throw tick, thrower position, projectile trail).
-const REPLAY_VERSION = 3;
+// 4: HUD and scoreboard data (equipment and money changes, stat deltas and
+// totals before the round, flashes, team names, score before the round).
+// 5: kill feed details (assister, flash assist, wallbang, no-scope, through
+// smoke, blind, in air, raw weapon id), recorded bomb damage, best weapon and
+// in-game score per player, and the radar scale (game units per radar width).
+const REPLAY_VERSION = 5;
+// Player properties sampled for the HUD and scoreboard (version 4).
+const HUD_PROPS = ['balance', 'armor_value', 'has_helmet', 'has_defuser', 'active_weapon_name', 'inventory', 'flash_duration', 'team_clan_name', 'score'];
+// The team counter shows each player's best weapon: primary, else pistol.
+const PRIMARY_NAMES = new Set(['AK-47', 'M4A4', 'M4A1-S', 'FAMAS', 'Galil AR', 'AUG', 'SG 553', 'AWP', 'SSG 08', 'SCAR-20', 'G3SG1', 'MAC-10', 'MP9', 'MP7',
+  'MP5-SD', 'UMP-45', 'P90', 'PP-Bizon', 'Nova', 'XM1014', 'MAG-7', 'Sawed-Off', 'M249', 'Negev']);
+const PISTOL_NAMES = new Set(['Glock-18', 'USP-S', 'P2000', 'P250', 'Five-SeveN', 'Tec-9', 'CZ75-Auto', 'Desert Eagle', 'R8 Revolver', 'Dual Berettas']);
+// Inventory names (as demoparser2 reports them) for carried utility and the bomb.
+const INVENTORY_CODE = {
+  'Smoke Grenade': 'smoke', Flashbang: 'flash', 'High Explosive Grenade': 'he', Molotov: 'molly', 'Incendiary Grenade': 'inc', 'Decoy Grenade': 'decoy', 'C4 Explosive': 'c4',
+};
+const UTILITY_ORDER = ['he', 'flash', 'smoke', 'molly', 'inc', 'decoy'];
+// Flash detection: flash_duration is compared just before and just after each
+// flashbang detonation (the value is set within a tick of the blast and then
+// left in place, so a later sample alone can't tell a new flash from an old one).
+const FLASH_BEFORE = 1;
+const FLASH_AFTER = 2;
 // Projectile trail samples are kept every TRAIL_STEP ticks (16 per second),
 // plus the exact detonation point.
 const TRAIL_STEP = 4;
@@ -125,6 +146,62 @@ function groupFlights(rows) {
   return flights.sort((a, b) => a.ticks[0] - b.ticks[0]);
 }
 
+const inRoundTick = (r, tick) => tick >= r.start_tick && tick <= r.end_tick;
+
+function equipmentOf(row) {
+  const inv = Array.isArray(row.inventory) ? row.inventory : null;
+  const codes = inv ? inv.map((n) => INVENTORY_CODE[n]).filter(Boolean) : [];
+  const num = (v) => (v == null || Number.isNaN(Number(v)) ? null : Math.round(Number(v)));
+  const bool = (v) => (v == null ? null : v ? 1 : 0);
+  return {
+    money: num(row.balance),
+    armor: num(row.armor_value),
+    helmet: bool(row.has_helmet),
+    kit: bool(row.has_defuser),
+    weapon: row.active_weapon_name ? String(row.active_weapon_name).slice(0, 40) : null,
+    utility: inv ? UTILITY_ORDER.filter((u) => codes.includes(u)) : null,
+    bomb: inv ? (codes.includes('c4') ? 1 : 0) : null,
+    best: inv ? (inv.find((n) => PRIMARY_NAMES.has(n)) ?? inv.find((n) => PISTOL_NAMES.has(n)) ?? null) : null,
+    score: num(row.score),
+  };
+}
+const sameEquipment = (a, b) => a.money === b.money && a.armor === b.armor && a.helmet === b.helmet && a.kit === b.kit && a.weapon === b.weapon
+  && a.bomb === b.bomb && String(a.utility) === String(b.utility) && a.best === b.best && a.score === b.score;
+
+const EMPTY_TOTALS = Object.freeze({ kills: 0, deaths: 0, assists: 0, headshots: 0, damage: 0 });
+// Scoreboard changes from one round's events, in tick order: kills (enemies
+// only), headshot kills, deaths (all), assists (not flash-only, enemies only)
+// and damage (health removed from enemies, capped at the victim's remaining
+// health). Shared by the replay scoreboard and the match stats.
+function statDeltas(inRound, idx, teamOf) {
+  const out = [];
+  const hp = new Map();
+  const add = (tick, player, stat, n) => { if (player != null && n) out.push({ tick, player, stat, n }); };
+  for (const e of inRound) {
+    if (e.event_name === 'player_hurt') {
+      const victim = idx(e.user_steamid);
+      const attacker = idx(e.attacker_steamid);
+      if (victim == null) continue;
+      const before = hp.has(victim) ? hp.get(victim) : 100;
+      const after = Math.max(0, Number(e.health) || 0);
+      const dealt = Math.max(0, Math.min(Number(e.dmg_health) || 0, before - after > 0 ? before - after : before));
+      hp.set(victim, after);
+      if (attacker != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) add(e.tick, attacker, 'damage', dealt);
+    } else if (e.event_name === 'player_death') {
+      const victim = idx(e.user_steamid);
+      const attacker = idx(e.attacker_steamid);
+      if (victim != null) add(e.tick, victim, 'deaths', 1);
+      if (attacker != null && victim != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) {
+        add(e.tick, attacker, 'kills', 1);
+        if (e.headshot) add(e.tick, attacker, 'headshots', 1);
+      }
+      const assister = idx(e.assister_steamid);
+      if (assister != null && !e.assistedflash && victim != null && teamOf.get(assister) !== teamOf.get(victim)) add(e.tick, assister, 'assists', 1);
+    }
+  }
+  return out;
+}
+
 // Pure: builds the demo summary and per-round replay data.
 // header: { map_name, server_name }, events: parseEvents output,
 // ticks: parseTicks output rows ({ tick, steamid, name, X, Y, Z, yaw, is_alive, health, team_num }).
@@ -188,6 +265,43 @@ function buildReplay({ header, events, ticks, flights = [] }) {
       });
     }
     last = null;
+
+    // Equipment and money (version 4): one entry per player whenever something
+    // changes, sampled with the positions. Fields the demo doesn't carry stay null.
+    const state = roster.map(() => []);
+    for (const t of sampleTicks) {
+      for (const row of byTick.get(t) || []) {
+        const i = slot.get(playerIndex(row.steamid));
+        if (i === undefined) continue;
+        const v = equipmentOf(row);
+        const prev = state[i][state[i].length - 1];
+        if (!prev || !sameEquipment(prev, v)) state[i].push({ t, ...v });
+      }
+    }
+    // Flashes: players whose flash_duration was set by a flashbang detonation.
+    const flashes = [];
+    for (const e of events) {
+      if (e.event_name !== 'flashbang_detonate' || !inRoundTick(r, e.tick)) continue;
+      const before = new Map((byTick.get(e.tick - FLASH_BEFORE) || []).map((x) => [x.steamid, Number(x.flash_duration) || 0]));
+      for (const row of byTick.get(e.tick + FLASH_AFTER) || []) {
+        const dur = Number(row.flash_duration);
+        const i = slot.get(playerIndex(row.steamid));
+        if (i === undefined || !(dur > 0) || !before.has(row.steamid) || Math.abs(dur - before.get(row.steamid)) < 1e-4) continue;
+        flashes.push({ tick: e.tick, player: playerIndex(row.steamid), by: playerIndex(e.user_steamid), duration: Math.round(dur * TICKRATE) });
+      }
+    }
+    // Team names (clan tags as the server knows them), by side for this round.
+    const teams = {};
+    for (const side of ['CT', 'T']) {
+      const names = new Map();
+      for (const t of sampleTicks.slice(0, 16)) {
+        for (const row of byTick.get(t) || []) {
+          if (sideOf(row.team_num) === side && row.team_clan_name) names.set(row.team_clan_name, (names.get(row.team_clan_name) || 0) + 1);
+        }
+      }
+      const best = [...names.entries()].sort((a, b) => b[1] - a[1])[0];
+      teams[side] = best ? String(best[0]).slice(0, 40) : null;
+    }
 
     const inRound = (e) => e.tick >= r.start_tick && e.tick <= r.end_tick;
     const place = (e, prefix) => {
@@ -266,11 +380,19 @@ function buildReplay({ header, events, ticks, flights = [] }) {
         continue;
       }
       if (e.event_name === 'player_death') {
+        const assister = e.assister_steamid ? playerIndex(e.assister_steamid) : null;
+        // Kill feed flags exactly as the event records them; absent ones are left out.
+        const flags = {};
+        for (const [from, to] of [['penetrated', 'penetrated'], ['noscope', 'noscope'], ['thrusmoke', 'through_smoke'], ['attackerblind', 'attacker_blind'], ['attackerinair', 'in_air']]) {
+          if (e[from] != null) flags[to] = Number(e[from]) > 0 || e[from] === true;
+        }
         timeline.push({
           tick: e.tick, type: 'kill',
           attacker: e.attacker_steamid ? playerIndex(e.attacker_steamid) : null,
           victim: playerIndex(e.user_steamid),
           weapon: e.weapon || null, headshot: Boolean(e.headshot),
+          ...(assister != null ? { assister, flash_assist: Boolean(e.assistedflash) } : {}),
+          ...flags,
           ...place(e, 'user'),
         });
       } else if (e.event_name === 'bomb_planted') {
@@ -286,6 +408,10 @@ function buildReplay({ header, events, ticks, flights = [] }) {
       }
     }
     timeline.push({ tick: r.result_tick, type: 'round_end', winner: r.winner, reason: r.reason });
+    // Damage the bomb actually did (player_hurt with weapon planted_c4).
+    const bombDamage = events.filter((e) => inRound(e) && e.event_name === 'player_hurt' && e.weapon === 'planted_c4' && playerIndex(e.user_steamid) != null)
+      .map((e) => ({ tick: e.tick, player: playerIndex(e.user_steamid), damage: Math.max(0, Number(e.dmg_health) || 0), armor: Math.max(0, Number(e.dmg_armor) || 0), health: Math.max(0, Number(e.health) || 0) }))
+      .sort((a, b) => a.tick - b.tick);
     timeline.sort((a, b) => a.tick - b.tick);
 
     return {
@@ -306,6 +432,12 @@ function buildReplay({ header, events, ticks, flights = [] }) {
         roster,
         tracks,
         events: timeline,
+        state,
+        flashes,
+        teams,
+        bomb_damage: bombDamage,
+        // Game units across the full radar width, for distances on the board.
+        units_per_radar: C.RADAR_TRANSFORMS[map].scale * C.RADAR_SIZE,
       },
     };
   });
@@ -319,10 +451,27 @@ function buildReplay({ header, events, ticks, flights = [] }) {
     for (const p of r.data.roster) if (!teamOf.has(p.player)) teamOf.set(p.player, p.side === 'CT' ? 'A' : 'B');
   }
   const score = { A: 0, B: 0 };
+  // Scoreboard totals: each round carries every roster player's totals before
+  // it and the changes during it (same definitions as the match stats below).
+  const totals = new Map();
+  const idxOf = (steamid) => playerIndex(steamid);
+  roundData.forEach((r, ri) => {
+    const round = rounds[ri];
+    const inRound = events.filter((e) => e.tick >= round.start_tick && e.tick <= round.end_tick).sort((a, b) => a.tick - b.tick);
+    const deltas = statDeltas(inRound, idxOf, teamOf);
+    r.data.stats_before = r.data.roster.map((p) => ({ ...(totals.get(p.player) || EMPTY_TOTALS) }));
+    r.data.stat_events = deltas;
+    for (const d of deltas) {
+      const cur = { ...(totals.get(d.player) || EMPTY_TOTALS) };
+      cur[d.stat] += d.n;
+      totals.set(d.player, cur);
+    }
+  });
   for (const r of roundData) {
     const ctVotes = r.data.roster.filter((p) => p.side === 'CT').map((p) => teamOf.get(p.player));
     const ctTeam = ctVotes.filter((x) => x === 'A').length >= ctVotes.filter((x) => x === 'B').length ? 'A' : 'B';
     const tTeam = ctTeam === 'A' ? 'B' : 'A';
+    r.data.score_before = { ct: score[ctTeam], t: score[tTeam] };
     if (r.winner === 'CT') score[ctTeam] += 1;
     if (r.winner === 'T') score[tTeam] += 1;
     r.ct_score = score[ctTeam];
@@ -371,29 +520,10 @@ function summarise({ map, events, rounds, roundData, players, teamOf, score }) {
   };
   rounds.forEach((r, i) => {
     for (const p of roundData[i].data.roster) row(p.player).rounds_played += 1;
-    const hp = new Map();
     const inRound = events.filter((e) => e.tick >= r.start_tick && e.tick <= r.end_tick).sort((a, b) => a.tick - b.tick);
-    for (const e of inRound) {
-      if (e.event_name === 'player_hurt') {
-        const victim = idx(e.user_steamid);
-        const attacker = idx(e.attacker_steamid);
-        if (victim == null) continue;
-        const before = hp.has(victim) ? hp.get(victim) : 100;
-        const after = Math.max(0, Number(e.health) || 0);
-        const dealt = Math.max(0, Math.min(Number(e.dmg_health) || 0, before - after > 0 ? before - after : before));
-        hp.set(victim, after);
-        if (attacker != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) row(attacker).damage += dealt;
-      } else if (e.event_name === 'player_death') {
-        const victim = idx(e.user_steamid);
-        const attacker = idx(e.attacker_steamid);
-        if (victim != null) row(victim).deaths += 1;
-        if (attacker != null && victim != null && attacker !== victim && teamOf.get(attacker) !== teamOf.get(victim)) {
-          row(attacker).kills += 1;
-          if (e.headshot) row(attacker).headshot_kills += 1;
-        }
-        const assister = idx(e.assister_steamid);
-        if (assister != null && !e.assistedflash && victim != null && teamOf.get(assister) !== teamOf.get(victim)) row(assister).assists += 1;
-      }
+    for (const d of statDeltas(inRound, idx, teamOf)) {
+      const key = { kills: 'kills', deaths: 'deaths', assists: 'assists', headshots: 'headshot_kills', damage: 'damage' }[d.stat];
+      row(d.player)[key] += d.n;
     }
   });
   const result = (team) => (team == null ? null : score.A === score.B ? 'D' : (score[team] > score[team === 'A' ? 'B' : 'A'] ? 'W' : 'L'));
@@ -455,13 +585,20 @@ function parseDemoFile(file) {
     throw incompatible(err);
   }
   const rounds = findRounds(events);
-  const wanted = [];
+  const wanted = new Set();
   for (const r of rounds) {
-    for (let tk = Math.ceil(r.start_tick / STEP) * STEP; tk <= r.end_tick; tk += STEP) wanted.push(tk);
+    for (let tk = Math.ceil(r.start_tick / STEP) * STEP; tk <= r.end_tick; tk += STEP) wanted.add(tk);
+  }
+  // Flash detection reads flash_duration either side of each detonation.
+  for (const e of events) {
+    if (e.event_name === 'flashbang_detonate' && rounds.some((r) => inRoundTick(r, e.tick))) {
+      wanted.add(e.tick - FLASH_BEFORE);
+      wanted.add(e.tick + FLASH_AFTER);
+    }
   }
   let ticks = [];
   try {
-    if (wanted.length) ticks = parser.parseTicks(file, ['X', 'Y', 'Z', 'yaw', 'is_alive', 'health', 'team_num'], wanted);
+    if (wanted.size) ticks = parser.parseTicks(file, ['X', 'Y', 'Z', 'yaw', 'is_alive', 'health', 'team_num', ...HUD_PROPS], [...wanted].sort((a, b) => a - b));
   } catch (err) {
     throw incompatible(err);
   }
@@ -472,4 +609,4 @@ function parseDemoFile(file) {
   return buildReplay({ header, events, ticks, flights });
 }
 
-module.exports = { parserVersion, STATS_VERSION, REPLAY_VERSION, SMOKE_TICKS, FIRE_TICKS, TRAIL_STEP, buildReplay, groupFlights, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };
+module.exports = { statDeltas, equipmentOf, HUD_PROPS, parserVersion, STATS_VERSION, REPLAY_VERSION, SMOKE_TICKS, FIRE_TICKS, TRAIL_STEP, buildReplay, groupFlights, findRounds, parseDemoFile, radarTransform, checkMagic, DemoError, TICKRATE, STEP };

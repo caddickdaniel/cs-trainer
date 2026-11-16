@@ -64,6 +64,7 @@ exports.LIMITS = {
   // Shared tactics use Player 1-5 slots.
   slots: 5,
   annotationsPerRound: 300,
+  roundNoteChars: 5000,
 };
 
 // Note text size on the board (board units; the board is 1000 units wide).

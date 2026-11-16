@@ -10,7 +10,7 @@ const NAV = [
   { to: '/team', label: 'Team', icon: 'team' },
   { to: '/recruiting', label: 'Recruiting', icon: 'search' },
   { to: '/tactics', label: 'Tactics', icon: 'tactics' },
-  { to: '/training', label: 'Training', icon: 'calendar' },
+  { to: '/training', label: 'Calendar', icon: 'calendar' },
   { to: '/demos', label: 'Demo Review', icon: 'demo' },
   { to: '/game', label: 'Game Mode', icon: 'game', className: 'nav-game' },
 ];

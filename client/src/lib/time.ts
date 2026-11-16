@@ -7,8 +7,27 @@ export function zoneLabel(date = new Date()) {
   return `${viewerTimeZone()}${name ? ` (${name})` : ''}`;
 }
 
-export const formatEventTime = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+// Dates are always shown as dd/mm/yyyy.
+const pad2 = (n: number) => String(n).padStart(2, '0');
+export const formatDMY = (d: Date) => `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+export const formatEventTime = (iso: string) => {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${formatDMY(d)}, ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+};
+// "2026-11-20" <-> "20/11/2026" for the event form. Returns null for an
+// invalid or impossible date (e.g. 31/02/2026).
+export const isoToDMY = (iso: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+};
+export function dmyToIso(text: string): string | null {
+  const m = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/.exec(text);
+  if (!m) return null;
+  const [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
 
 // "2026-11-20" + "18:30" in the viewer's zone -> ISO instant.
 export function toInstant(date: string, time: string) {

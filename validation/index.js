@@ -417,6 +417,8 @@ exports.shareCodeImport = z.object({
 });
 exports.demoPatch = z.object({ title: trimmed(120).min(1) });
 const annPoint = z.object({ x: coord, y: coord });
+// Text annotation size in board units (same range as tactic notes).
+const annotationSize = z.number().int().min(C.NOTE_SIZE.min).max(C.NOTE_SIZE.max);
 exports.annotation = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('drawing'),
@@ -430,7 +432,7 @@ exports.annotation = z.discriminatedUnion('kind', [
     round_number: z.number().int().min(1).max(200),
     tick: z.number().int().min(0),
     level: z.enum(C.LEVELS).optional().default('main'),
-    data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166') }),
+    data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166'), size: annotationSize.optional() }),
   }),
   // A smoke, flash, HE or molotov placed on the radar.
   z.object({
@@ -441,13 +443,26 @@ exports.annotation = z.discriminatedUnion('kind', [
     data: z.object({ x: coord, y: coord, utility: z.enum(['smoke', 'flash', 'he', 'molly']) }),
   }),
 ]);
-// Editing a utility annotation: move it, change its type or floor.
+// Editing an annotation: move a utility marker or text, change a marker's
+// type, or change a text's content and size.
 exports.annotationPatch = z.object({
+  text: trimmed(200).min(1).optional(),
+  size: annotationSize.optional(),
   x: coord.optional(),
   y: coord.optional(),
   utility: z.enum(['smoke', 'flash', 'he', 'molly']).optional(),
   level: z.enum(C.LEVELS).optional(),
 }).refine((p) => Object.keys(p).length > 0, 'Nothing to update');
+// Save notes and annotations (Demo Review). expected_version: the note version
+// the client loaded (0 when there was none), for conflict detection.
+exports.reviewSave = z.object({
+  notes: z.array(z.object({
+    round_number: z.number().int().min(1).max(200),
+    body: z.string().max(C.LIMITS.roundNoteChars).transform((s) => s.replace(/\s+$/, '')),
+    expected_version: z.number().int().min(0).optional(),
+  })).max(200).optional().default([]),
+  review_id: id.optional(),
+});
 exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
 exports.reviewCommand = z.object({
   action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),
