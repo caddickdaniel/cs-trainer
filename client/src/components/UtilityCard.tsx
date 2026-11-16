@@ -1,11 +1,25 @@
+import { useState } from 'react';
 import { KIT_ICON, UTILITY_ICON } from '../lib/constants';
 import type { GrenadeCounts, Loadout, Phase, PlayerRef, PlayerUtility } from '../lib/types';
 import { GRENADES, GRENADE_LABEL, describeCounts, refKey, utilityPlan } from '../lib/utility';
 
 // The CT defuse kit (a loadout item, never drawn on the radar). The text
-// label always goes with it so it reads at small sizes.
+// label always goes with it so it reads at small sizes. Uses, in order: CS2's
+// own pliers icon extracted from the local game install (npm run cs2:assets),
+// the transparent kit PNG (client/public/icons/defuse-kit.png), then an olive
+// pliers outline so the item is still marked.
+const KIT_SOURCES = ['/assets/cs2/equipment/defuser.svg', KIT_ICON];
 export function KitIcon({ size = 16 }: { size?: number }) {
-  return <img className="kit-icon" src={KIT_ICON} alt="" width={size} height={size} onError={(e) => { e.currentTarget.hidden = true; }} />;
+  const [attempt, setAttempt] = useState(0);
+  if (attempt >= KIT_SOURCES.length) {
+    return (
+      <svg className="kit-icon fallback" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#9aa05a" strokeWidth={2.2}
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-kit-fallback="">
+        <path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.1 7.9L20 20M8.1 16.1L20 4" />
+      </svg>
+    );
+  }
+  return <img className="kit-icon" src={KIT_SOURCES[attempt]} alt="" width={size} height={size} onError={() => setAttempt((n) => n + 1)} />;
 }
 
 function Counts({ counts, label }: { counts: GrenadeCounts; label: string }) {
@@ -57,15 +71,19 @@ export function UtilityCard({ u, phaseIndex }: { u: PlayerUtility; phaseIndex: n
 // IGL overview: everyone's utility at the start of the current phase.
 export function TeamUtility({ list, name }: { list: PlayerUtility[]; name: (u: PlayerUtility) => string }) {
   if (!list.length) return <p className="muted small">This tactic has no buy lists.</p>;
+  // Kits are CT only, so the kit column appears for CT tactics with a kit.
+  const anyKit = list.some((u) => u.kit);
   return (
-    <table className="table compact utility-table">
-      <thead><tr><th>Player</th>{GRENADES.map((g) => <th key={g} title={GRENADE_LABEL[g][1]}><img src={UTILITY_ICON[g]} alt={GRENADE_LABEL[g][1]} width="16" height="16" /></th>)}<th /></tr></thead>
+    <table className="table compact utility-table team-utility">
+      <thead><tr><th>Player</th>{GRENADES.map((g) => <th key={g} title={GRENADE_LABEL[g][1]}><img className="util-icon" src={UTILITY_ICON[g]} alt={GRENADE_LABEL[g][1]} width="16" height="16" /></th>)}
+        {anyKit ? <th title="Defuse kit (CT)"><KitIcon size={16} /><span className="sr-only">Defuse kit</span></th> : null}<th /></tr></thead>
       <tbody>
         {list.map((u) => (
           <tr key={`${u.user_id ?? 's'}${u.slot ?? ''}`} className={u.over.length ? 'over' : ''}>
             <td>{name(u)}</td>
             {GRENADES.map((g) => <td key={g}>{u.available[g]}{u.planned[g] ? <span className="muted"> (−{u.planned[g]})</span> : null}</td>)}
-            <td>{u.bomb ? <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /> : null}{u.kit ? <span className="kit-label" title="Buys a defuse kit"><KitIcon /> Kit</span> : null}{u.over.length ? <span className="error-text"> over plan</span> : null}</td>
+            {anyKit ? <td>{u.kit ? <span className="kit-label" title="Buys a defuse kit"><KitIcon size={16} /> Kit</span> : null}</td> : null}
+            <td>{u.bomb ? <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /> : null}{u.over.length ? <span className="error-text"> over plan</span> : null}</td>
           </tr>
         ))}
       </tbody>

@@ -255,6 +255,7 @@ const presentAnnotation = (a, names) => ({
   kind: a.kind,
   data: a.data,
   review_id: a.review_id,
+  saved: a.saved !== false,
   author: a.author_id ? { user_id: a.author_id, user_name: names.get(a.author_id) ?? null } : null,
   created_at: a.created_at,
 });
@@ -262,7 +263,8 @@ const presentAnnotation = (a, names) => ({
 async function listAnnotations(demoId, userId, roundNumber, reviewId = null) {
   await loadDemo(demoId, userId);
   let q = db('demo_annotations').where('demo_id', demoId).orderBy([{ column: 'tick' }, { column: 'annotation_id' }]);
-  q = reviewId ? q.where('review_id', reviewId) : q.whereNull('review_id');
+  // Saved annotations, plus this user's own unsaved drafts.
+  q = reviewId ? q.where('review_id', reviewId) : q.whereNull('review_id').where((w) => w.where('saved', true).orWhere('author_id', userId));
   if (roundNumber) q = q.where('round_number', roundNumber);
   const rows = await q;
   const names = await userNames(rows.map((r) => r.author_id));
@@ -288,6 +290,8 @@ async function insertAnnotation(trx, demo, userId, body, reviewId = null) {
     level: body.level,
     kind: body.kind,
     data: JSON.stringify(body.data),
+    // A draft until its author saves (see saveReview).
+    saved: false,
   }).returning('*');
   return row;
 }
@@ -301,9 +305,12 @@ async function createAnnotation(demoId, userId, body) {
 
 // Applies an edit to a utility annotation row (shared by solo and live reviews).
 async function applyAnnotationPatch(trx, row, patch) {
-  if (row.kind !== 'utility') throw badRequest('Only utility markers can be moved or changed; remove and redraw other annotations', 'not_editable');
+  if (row.kind === 'drawing') throw badRequest('Drawings cannot be changed; remove and redraw them', 'not_editable');
+  if (row.kind === 'utility' && (patch.text !== undefined || patch.size !== undefined)) throw badRequest('Utility markers have no text', 'not_editable');
+  if (row.kind === 'text' && patch.utility) throw badRequest('Text has no utility type', 'not_editable');
   const data = { ...row.data, ...(patch.x !== undefined ? { x: patch.x } : {}), ...(patch.y !== undefined ? { y: patch.y } : {}),
-    ...(patch.utility ? { utility: patch.utility } : {}) };
+    ...(patch.utility ? { utility: patch.utility } : {}), ...(patch.text !== undefined ? { text: patch.text } : {}),
+    ...(patch.size !== undefined ? { size: patch.size } : {}) };
   const [updated] = await trx('demo_annotations').where('annotation_id', row.annotation_id)
     .update({ data: JSON.stringify(data), ...(patch.level ? { level: patch.level } : {}) }).returning('*');
   return updated;
@@ -312,7 +319,7 @@ async function applyAnnotationPatch(trx, row, patch) {
 async function updateAnnotation(demoId, annotationId, userId, patch) {
   const { access } = await loadDemo(demoId, userId);
   const row = await db('demo_annotations').where({ demo_id: demoId, annotation_id: annotationId }).whereNull('review_id').first();
-  if (!row) throw notFound('Annotation not found');
+  if (!row || (!row.saved && row.author_id !== userId)) throw notFound('Annotation not found');
   if (row.author_id !== userId && !access.canLead) throw forbidden('You can only change your own annotations');
   const updated = await applyAnnotationPatch(db, row, patch);
   return { annotation: presentAnnotation(updated, await userNames([updated.author_id])) };
@@ -321,13 +328,79 @@ async function updateAnnotation(demoId, annotationId, userId, patch) {
 async function deleteAnnotation(demoId, annotationId, userId) {
   const { access } = await loadDemo(demoId, userId);
   const row = await db('demo_annotations').where({ demo_id: demoId, annotation_id: annotationId }).whereNull('review_id').first();
-  if (!row) throw notFound('Annotation not found');
+  if (!row || (!row.saved && row.author_id !== userId)) throw notFound('Annotation not found');
   if (row.author_id !== userId && !access.canLead) throw forbidden('You can only remove your own annotations');
   await db('demo_annotations').where('annotation_id', annotationId).del();
   return { deleted: true };
 }
 
+// ---- Round notes and saving --------------------------------------------------
+
+async function presentNotes(rows) {
+  const names = await userNames(rows.map((r) => r.updated_by));
+  return rows.map((n) => ({
+    round_number: n.round_number,
+    body: n.body,
+    version: n.version,
+    updated_by: n.updated_by ? { user_id: n.updated_by, user_name: names.get(n.updated_by) ?? null } : null,
+    updated_at: n.updated_at,
+  }));
+}
+
+async function listNotes(demoId, userId) {
+  await loadDemo(demoId, userId);
+  const rows = await db('demo_round_notes').where('demo_id', demoId).orderBy('round_number');
+  return { notes: await presentNotes(rows) };
+}
+
+// Saves round notes and this user's unsaved annotations in one transaction.
+// Notes use compare-and-set on version: a note someone else saved since this
+// user loaded it is reported back (409) instead of being overwritten. With
+// review_id, the IGL also keeps that live review's drawings: they become
+// saved annotations of the demo (shown when it is reopened or reviewed again).
+async function saveReview(demoId, userId, { notes = [], review_id: reviewId = null }) {
+  const { demo } = await loadDemo(demoId, userId);
+  if (demo.status !== 'ready') throw conflict('This demo is not ready yet', 'demo_not_ready');
+  const rounds = new Set((await db('demo_rounds').where('demo_id', demoId).select('round_number')).map((r) => r.round_number));
+  for (const n of notes) if (!rounds.has(n.round_number)) throw badRequest('That round is not in this demo', 'round_not_found');
+  let review = null;
+  if (reviewId != null) {
+    review = await db('review_sessions').where({ review_id: reviewId, demo_id: demoId }).first();
+    if (!review) throw notFound('Review not found');
+    await require('./access').requireIgl(review.team_id, userId);
+    if (review.status !== 'active') throw conflict('This review has ended', 'review_ended');
+  }
+  return db.transaction(async (trx) => {
+    const conflicts = [];
+    for (const n of notes) {
+      const current = await trx('demo_round_notes').where({ demo_id: demoId, round_number: n.round_number }).forUpdate().first();
+      if (current && n.expected_version != null && current.version !== n.expected_version) { conflicts.push(current); continue; }
+      if (!current && n.expected_version != null && n.expected_version !== 0) { conflicts.push({ round_number: n.round_number, body: '', version: 0 }); continue; }
+      if (current) {
+        if (current.body === n.body) continue;
+        await trx('demo_round_notes').where('note_id', current.note_id)
+          .update({ body: n.body, version: current.version + 1, updated_by: userId, updated_at: trx.fn.now() });
+      } else {
+        await trx('demo_round_notes').insert({ demo_id: demoId, round_number: n.round_number, body: n.body, updated_by: userId });
+      }
+    }
+    if (conflicts.length) {
+      throw conflict('Someone else saved notes for this round since you opened it. Their version is shown; copy your changes in again.',
+        'notes_conflict', { notes: await presentNotes(conflicts.filter((c) => c.note_id)), rounds: conflicts.map((c) => c.round_number) });
+    }
+    const own = await trx('demo_annotations').where({ demo_id: demoId, author_id: userId, saved: false }).whereNull('review_id').update({ saved: true });
+    let live = 0;
+    if (review) {
+      live = await trx('demo_annotations').where({ review_id: review.review_id }).update({ review_id: null, saved: true });
+      await trx('review_sessions').where('review_id', review.review_id).update({ version: trx.raw('version + 1'), updated_at: trx.fn.now() });
+    }
+    const rows = await trx('demo_round_notes').where('demo_id', demoId).orderBy('round_number');
+    return { notes: await presentNotes(rows), saved_annotations: own + live };
+  });
+}
+
 module.exports = {
+  listNotes, saveReview, presentNotes,
   listDemos, getDemo, roundData, upload, importShareCode, renameDemo, retryDemo, deleteDemo,
   listAnnotations, createAnnotation, updateAnnotation, applyAnnotationPatch, deleteAnnotation, insertAnnotation, presentAnnotation, userNames, loadDemo,
 };

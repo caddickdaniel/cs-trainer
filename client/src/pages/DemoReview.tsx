@@ -2,14 +2,16 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { LEVEL_LABEL, mapLevels, mapName, type Level } from '../lib/constants';
+import { LEVEL_LABEL, mapLevels, mapName, NOTE_SIZE, type Level } from '../lib/constants';
 import { formatDateTime, useDocumentTitle, useLoad } from '../lib/hooks';
-import { BLAST_SHOW_TICKS, clockTick, FLASH_SHOW_TICKS, flightsAt, frameAt, recordedAt, roundTime, RECORDED_LABEL, timelineRows, type Clock } from '../lib/replay';
+import { BLAST_SHOW_TICKS, bombDamageAt, BOMB_ESTIMATE, clockTick, detonationAt, estimatedRadiusFor, FLASH_SHOW_TICKS, flashAmount, flightsAt, frameAt, killFeedAt, playbackText, recordedAt, roundTime, RECORDED_LABEL, shockwaveFrame, timelineRows, type Clock } from '../lib/replay';
 import { isTyping } from '../lib/shortcuts';
-import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayEvent, ReplayRound } from '../lib/types';
+import type { Annotation, DemoDetail, DemoSummary, LiveReview, Point, ReplayEvent, ReplayRound, RoundNote } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
 import { MapBackground, UtilityGlyph } from '../components/MapBoard';
+import { KillFeed, ReplayHud, ReplayScoreboard } from '../components/ReplayHud';
+import { weaponLabel } from '../lib/cs2Assets';
 import { UTILITY_ICON } from '../lib/constants';
 
 const SIZE = 1000;
@@ -157,7 +159,8 @@ function DemoLibrary({ teamId }: { teamId: number }) {
         </div>
         {progress !== null ? <progress className="upload-progress" value={progress} max={1} aria-label="Upload progress" /> : null}
         <div className="row wrap share-code-row">
-          <input aria-label="Match share code" placeholder="or paste a match share code: CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" value={shareCode}
+          <span className="muted small share-code-label">Or import a match share code</span>
+          <input className="share-code-input" aria-label="Match share code" placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" value={shareCode} spellCheck={false} autoComplete="off"
             maxLength={200} onChange={(e) => setShareCode(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') importCode(); }} />
           <button type="button" className="btn" disabled={!shareCode.trim() || importing} onClick={importCode}>{importing ? 'Importing…' : 'Import match'}</button>
         </div>
@@ -340,11 +343,12 @@ export function DemoPage() {
   return <Replay demo={demo} teamId={team.team_id} canControlReview={detail.data.can_control_review} />;
 }
 
-// Desktop replay layout: annotation tools | square radar with the round
-// timeline above it | rounds and players. The radar takes the largest square
-// that fits the window height and leaves the right pane its width; the right
-// pane sits directly beside the radar. Below the breakpoint everything stacks.
-const REPLAY_COLS = { tools: 150, side: 320, minSide: 280, gap: 16, stackBelow: 1101 };
+// Desktop replay layout: playback and annotation tools | HUD, square radar and
+// round timeline | rounds, notes and annotations. The radar takes the largest
+// square that fits the window height with the HUD above it and the timeline
+// below; the right pane sits directly beside the radar. Below the breakpoint
+// everything stacks.
+const REPLAY_COLS = { tools: 172, side: 320, minSide: 280, gap: 14, stackBelow: 1101 };
 function useReplayColumns() {
   const [layout, setLayout] = useState<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ board: number; height: number } | null>(null);
@@ -355,19 +359,27 @@ function useReplayColumns() {
       const frame = layout.querySelector('.replay-centre .board-frame');
       const top = (frame ?? layout).getBoundingClientRect().top + window.scrollY;
       const layoutTop = layout.getBoundingClientRect().top + window.scrollY;
+      // Everything under the radar in the centre column (the timeline).
+      let below = 0;
+      layout.querySelectorAll('.replay-centre > .board-frame ~ *').forEach((el) => { below += (el as HTMLElement).offsetHeight + 6; });
       const byWidth = layout.clientWidth - REPLAY_COLS.tools - REPLAY_COLS.side - REPLAY_COLS.gap * 2;
-      const board = Math.max(320, Math.floor(Math.min(byWidth, window.innerHeight - top - 16)));
-      // The side panes scroll inside the height of the controls, timeline and radar.
-      const height = Math.max(320, Math.floor(top - layoutTop + board));
+      const board = Math.max(320, Math.floor(Math.min(byWidth, window.innerHeight - top - below - 12)));
+      // The side panes scroll inside the height of the HUD, radar and timeline.
+      const height = Math.max(320, Math.floor(top - layoutTop + board + below));
       setSize((s) => (s && s.board === board && s.height === height ? s : { board, height }));
     };
     measure();
     window.addEventListener('resize', measure);
-    // The timeline grows when a round's events load: watch everything above the radar too.
+    // The HUD and timeline appear when a round loads: watch them too.
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
     ro?.observe(layout);
-    layout.querySelectorAll('.replay-centre > :not(.board-frame)').forEach((el) => ro?.observe(el));
-    return () => { window.removeEventListener('resize', measure); ro?.disconnect(); };
+    const watched = new Set<Element>();
+    const watch = () => layout.querySelectorAll('.replay-centre > :not(.board-frame)').forEach((el) => { if (!watched.has(el)) { watched.add(el); ro?.observe(el); } });
+    watch();
+    const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(() => { watch(); measure(); }) : null;
+    const centre = layout.querySelector('.replay-centre');
+    if (centre) mo?.observe(centre, { childList: true });
+    return () => { window.removeEventListener('resize', measure); ro?.disconnect(); mo?.disconnect(); };
   }, [layout]);
   const style = size == null ? undefined : {
     gridTemplateColumns: `${REPLAY_COLS.tools}px ${size.board}px minmax(${REPLAY_COLS.minSide}px, ${REPLAY_COLS.side}px)`,
@@ -377,7 +389,7 @@ function useReplayColumns() {
 }
 
 function TimelineGlyph({ ev }: { ev: ReplayEvent }) {
-  if (ev.type === 'kill') return <span className="tl-glyph kill"><Icon name="skull" size={14} /></span>;
+  if (ev.type === 'kill') return <span className="tl-glyph kill"><Icon name="skull" size={13} /></span>;
   if (ev.type === 'plant') return <span className="tl-glyph plant"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
   if (ev.type === 'explode') return <span className="tl-glyph explode"><img src="/icons/bomb.png" alt="" width="10" height="13" /></span>;
   if (ev.type === 'defuse') return <span className="tl-glyph defuse"><Icon name="defuse" size={13} /></span>;
@@ -389,7 +401,8 @@ function TimelineGlyph({ ev }: { ev: ReplayEvent }) {
 // round clock's 0:00) to the end of the round: an icon above each event's
 // moment (proportional to elapsed round time), stacked in rows where events are
 // close, details on hover or keyboard focus, and the playback slider below.
-const TL_ICON = 18;
+const TL_ICON = 16;
+const TL_ROW = TL_ICON + 1;
 function EventTimeline({ info, events, annotations, tick, canControl, describe, onSeek, onJump }: {
   info: { start_tick: number; end_tick: number }; events: ReplayEvent[]; annotations: Annotation[]; tick: number; canControl: boolean;
   describe: (ev: ReplayEvent) => string; onSeek: (t: number) => void; onJump: (ev: ReplayEvent) => void;
@@ -406,17 +419,17 @@ function EventTimeline({ info, events, annotations, tick, canControl, describe, 
   }, [el]);
   const span = info.end_tick - info.start_tick || 1;
   const frac = (t: number) => Math.min(1, Math.max(0, (t - info.start_tick) / span));
-  const rows = timelineRows(events.map((ev) => frac(ev.tick) * width), TL_ICON + 2);
+  const rows = timelineRows(events.map((ev) => frac(ev.tick) * width), TL_ROW, 2);
   const rowCount = Math.max(1, ...rows.map((r) => r + 1));
   return (
     <div className="event-timeline" ref={setEl}>
-      <div className="tl-icons" style={{ height: rowCount * (TL_ICON + 2) }} role="list" aria-label="Round events">
+      <div className="tl-icons" style={{ height: rowCount * TL_ROW }} role="list" aria-label="Round events">
         {events.map((ev, i) => {
           const f = frac(ev.tick);
           const text = describe(ev);
           return (
             <button key={`${ev.type}${ev.tick}-${i}`} type="button" role="listitem" className={`tl-ev ${ev.type}${ev.tick <= tick ? ' past' : ''}`}
-              style={{ left: `${f * 100}%`, top: rows[i] * (TL_ICON + 2) }} aria-label={text} aria-disabled={!canControl || undefined}
+              style={{ left: `${f * 100}%`, top: rows[i] * TL_ROW }} aria-label={text} aria-disabled={!canControl || undefined}
               data-event={ev.type} onClick={() => { if (canControl) onJump(ev); }}>
               <TimelineGlyph ev={ev} />
               <span className={`tl-tip${f < 0.2 ? ' from-left' : f > 0.8 ? ' from-right' : ''}`} aria-hidden="true">{text}</span>
@@ -436,6 +449,32 @@ function EventTimeline({ info, events, annotations, tick, canControl, describe, 
 type Mode = 'solo' | 'control' | 'follow';
 type Tool = 'none' | 'draw' | 'text' | UtilityKind;
 const isUtilityTool = (t: Tool): t is UtilityKind => UTILITY_KINDS.some(([k]) => k === t);
+// The Text tool's editor: a new text (annotation_id null) or an existing one.
+interface TextEdit { annotation_id: number | null; x: number; y: number; level: Level; tick: number; text: string; size: number }
+type SaveState = { status: 'idle' | 'saving' | 'saved' | 'error'; message?: string };
+
+// Blends a side colour towards white (flashed players), keeping the hue visible.
+function towardsWhite(hex: string, amount: number) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = (shift: number) => Math.round(((n >> shift) & 255) + (255 - ((n >> shift) & 255)) * amount);
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+
+// Multi-line annotation text with a dark outline (same look as tactic notes).
+function AnnotationText({ x, y, text, size, color, placeholder }: { x: number; y: number; text: string; size: number; color: string; placeholder?: boolean }) {
+  const lines = (text || (placeholder ? 'Text' : '')).split('\n');
+  const startY = -((lines.length - 1) * size * 1.2) / 2 + size * 0.35;
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={size} fontWeight="700" fill={placeholder && !text ? '#ffffff88' : color}
+      stroke="#000" strokeWidth={Math.max(3, size / 5)} paintOrder="stroke" strokeLinejoin="round">
+      {lines.map((line, i) => <tspan key={i} x={x} y={y + startY + i * size * 1.2}>{line || ' '}</tspan>)}
+    </text>
+  );
+}
+const textBox = (text: string, size: number) => {
+  const lines = (text || 'Text').split('\n');
+  return { w: Math.max(...lines.map((l) => l.length), 2) * size * 0.6 + 16, h: lines.length * size * 1.2 + 10 };
+};
 
 function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: number; canControlReview: boolean }) {
   const { user } = useAuth();
@@ -452,6 +491,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   }));
   const roundNumber = mode === 'solo' ? solo.round : liveHere!.round_number;
   const info = demo.rounds.find((r) => r.round_number === roundNumber) ?? firstRound;
+  const roundIndex = demo.rounds.findIndex((r) => r.round_number === roundNumber);
   const tickrate = demo.tickrate ?? 64;
   // Live: while playing, position = server anchor + elapsed (on the server's
   // clock); otherwise the server's computed position (paused, or stopped at
@@ -468,25 +508,61 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const levels = mapLevels(demo.map);
   const [level, setLevel] = useState<Level>('main');
   const [tool, setTool] = useState<Tool>('none');
-  // moving: the utility marker that the next map click moves.
   // Recorded utility from the demo (each viewer can hide it; it is derived
   // from the shared playback position, so everyone in a live review sees the same).
   const [showRecorded, setShowRecorded] = useState(true);
+  // The expanded scoreboard (per viewer; toggling never touches playback).
+  const [showScoreboard, setShowScoreboard] = useState(false);
+  // Display options (per viewer, never touch playback): kill feed, bomb
+  // detonation shockwave and the estimated bomb damage area with its duration.
+  const [showKillFeed, setShowKillFeed] = useState(true);
+  const [showShockwave, setShowShockwave] = useState(true);
+  const [showDamageArea, setShowDamageArea] = useState(true);
+  const [damageSeconds, setDamageSeconds] = useState(5);
+  // The kill picked in the kill feed: killer and victim are highlighted around it.
+  const [selectedKill, setSelectedKill] = useState<ReplayEvent | null>(null);
+  // moving: the utility marker or text that the next map click moves.
   const [moving, setMoving] = useState<number | null>(null);
-  const [text, setText] = useState('');
+  const [textEdit, setTextEdit] = useState<TextEdit | null>(null);
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const { setLayout, style: layoutStyle } = useReplayColumns();
 
-  // Personal/team annotations outside a live review.
+  // Saved annotations plus this user's unsaved drafts (outside a live review).
   const notes = useLoad(
     () => api.get<{ annotations: Annotation[] }>(`/demos/${demo.demo_id}/annotations?round=${roundNumber}`),
     [demo.demo_id, roundNumber]
   );
   const annotations = mode === 'solo' ? notes.data?.annotations ?? [] : liveHere!.annotations;
   const canAnnotate = mode !== 'follow';
+
+  // ---- Round notes ----
+  // Saved notes come from the server (reloaded on each round change) or from
+  // this browser's last save, whichever is newer. Edits are kept per round
+  // until saved, so switching rounds never loses them while the page is open.
+  const notesLoad = useLoad(() => api.get<{ notes: RoundNote[] }>(`/demos/${demo.demo_id}/notes`), [demo.demo_id, roundNumber]);
+  const [savedLocal, setSavedLocal] = useState<Record<number, RoundNote>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
+  const [annotationsDirty, setAnnotationsDirty] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
+  const savedNote = (n: number): RoundNote | null => {
+    const server = notesLoad.data?.notes.find((x) => x.round_number === n) ?? null;
+    const local = savedLocal[n] ?? null;
+    const live = mode !== 'solo' && liveHere?.note && liveHere.note.round_number === n ? liveHere.note : null;
+    return [server, local, live].reduce<RoundNote | null>((best, x) => (x && (!best || x.version > best.version) ? x : best), null);
+  };
+  const noteText = noteDrafts[roundNumber] ?? savedNote(roundNumber)?.body ?? '';
+  const dirtyRounds = Object.keys(noteDrafts).map(Number).filter((n) => noteDrafts[n] !== (savedNote(n)?.body ?? ''));
+  const unsavedHere = annotations.filter((a) => !a.saved && (mode === 'control' ? a.review_id != null : a.author?.user_id === user?.user_id));
+  const dirty = dirtyRounds.length > 0 || annotationsDirty || unsavedHere.length > 0;
+  useEffect(() => {
+    if (!dirtyRounds.length) return undefined;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirtyRounds.length]);
 
   // Solo playback stops at the end of the round.
   if (mode === 'solo' && solo.playing && atEnd) setSolo({ ...solo, playing: false, anchorTick: info.end_tick, anchorAt: now });
@@ -520,6 +596,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     round: (n: number) => {
       const r = demo.rounds.find((x) => x.round_number === n);
       if (!r) return;
+      setTextEdit(null);
+      setMoving(null);
+      setSelectedKill(null);
       if (mode === 'solo') setSolo({ ...solo, round: n, playing: false, anchorTick: r.freeze_end_tick ?? r.start_tick, anchorAt: Date.now() });
       else sendLive({ action: 'round', round_number: n });
     },
@@ -562,7 +641,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     }
   };
   const endLive = async () => {
-    if (!liveHere || !window.confirm('End the live review for everyone?')) return;
+    if (!liveHere) return;
+    const unsavedLive = liveHere.annotations.some((a) => a.review_id != null);
+    if (!window.confirm(unsavedLive ? 'End the live review for everyone? Live drawings you have not saved will be discarded.' : 'End the live review for everyone?')) return;
     try {
       const res = await api.post<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/end`);
       sync.adopt(res.review.status === 'active' ? res.review : null);
@@ -578,9 +659,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     return { x: Math.min(1, Math.max(0, Math.round((p.x / SIZE) * 10000) / 10000)), y: Math.min(1, Math.max(0, Math.round((p.y / SIZE) * 10000) / 10000)) };
   };
-  const saveAnnotation = async (body: Record<string, unknown>) => {
+  const saveAnnotation = async (body: Record<string, unknown>, at: { tick: number; level: Level } = { tick, level }) => {
     setError(null);
-    const payload = { ...body, round_number: roundNumber, tick: Math.round(tick), level };
+    const payload = { ...body, round_number: roundNumber, tick: Math.round(at.tick), level: at.level };
     try {
       if (mode === 'solo') {
         await api.post(`/demos/${demo.demo_id}/annotations`, payload);
@@ -589,9 +670,13 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
         const res = await api.post<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/annotations`, payload);
         sync.adopt(res.review);
       }
-    } catch (err) { setError(errorMessage(err)); }
+      setAnnotationsDirty(true);
+      setSaveState({ status: 'idle' });
+      return true;
+    } catch (err) { setError(errorMessage(err)); return false; }
   };
-  // Moves a utility marker or changes its type (live: the IGL's change reaches everyone following).
+  // Moves a marker or text, or changes a marker's type or a text's content and size
+  // (live: the IGL's change reaches everyone following).
   const editAnnotation = async (a: Annotation, patch: Record<string, unknown>) => {
     setError(null);
     try {
@@ -599,7 +684,8 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
         const res = await api.patch<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/annotations/${a.annotation_id}`, patch);
         sync.adopt(res.review);
       }
-    } catch (err) { setError(errorMessage(err)); }
+      return true;
+    } catch (err) { setError(errorMessage(err)); return false; }
   };
   const removeAnnotation = async (a: Annotation) => {
     try {
@@ -607,8 +693,31 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
         const res = await api.delete<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/annotations/${a.annotation_id}`);
         sync.adopt(res.review);
       }
+      if (textEdit?.annotation_id === a.annotation_id) setTextEdit(null);
     } catch (err) { setError(errorMessage(err)); }
   };
+  // Who may change an annotation here: in a live review the IGL changes the
+  // live layer; outside one, authors change their own (as before).
+  const canEdit = (a: Annotation) => (mode === 'control' ? a.review_id != null : mode === 'solo' && a.author?.user_id === user?.user_id);
+
+  const commitText = async () => {
+    if (!textEdit) return;
+    const text = textEdit.text.trim();
+    if (!text) { setError('Type some text first, or cancel.'); return; }
+    let ok: boolean;
+    if (textEdit.annotation_id == null) {
+      ok = await saveAnnotation({ kind: 'text', data: { x: textEdit.x, y: textEdit.y, text, size: textEdit.size } }, { tick: textEdit.tick, level: textEdit.level });
+    } else {
+      const a = annotations.find((x) => x.annotation_id === textEdit.annotation_id);
+      ok = a ? await editAnnotation(a, { text, size: textEdit.size }) : false;
+      if (ok) setAnnotationsDirty(true);
+    }
+    if (ok) setTextEdit(null);
+  };
+  const openText = (a: Annotation) => setTextEdit({
+    annotation_id: a.annotation_id, x: a.data.x ?? 0.5, y: a.data.y ?? 0.5, level: a.level ?? 'main', tick: a.tick, text: a.data.text ?? '', size: a.data.size ?? NOTE_SIZE.default,
+  });
+
   const onDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (!canAnnotate) return;
     if (moving != null) {
@@ -626,9 +735,10 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
       return;
     }
     if (tool === 'text') {
-      if (!text.trim()) { setError('Type the text first, then click the map to place it.'); return; }
-      saveAnnotation({ kind: 'text', data: { x: p.x, y: p.y, text: text.trim() } });
-      setText('');
+      // Like a tactic note: place it, then type. Clicking elsewhere while a
+      // new text is open moves it there.
+      if (textEdit && textEdit.annotation_id == null) setTextEdit({ ...textEdit, x: p.x, y: p.y, level });
+      else setTextEdit({ annotation_id: null, x: p.x, y: p.y, level, tick: Math.round(tick), text: '', size: NOTE_SIZE.default });
       return;
     }
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
@@ -646,8 +756,34 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     setDraft(null);
   };
 
+  // ---- Save notes and annotations ----
+  const save = async () => {
+    setError(null);
+    setSaveState({ status: 'saving' });
+    const body: Record<string, unknown> = {
+      notes: dirtyRounds.map((n) => ({ round_number: n, body: noteDrafts[n], expected_version: savedNote(n)?.version ?? 0 })),
+      ...(mode === 'control' && liveHere ? { review_id: liveHere.review_id } : {}),
+    };
+    const keep = (list: RoundNote[]) => setSavedLocal((cur) => ({ ...cur, ...Object.fromEntries(list.map((n) => [n.round_number, n])) }));
+    try {
+      const res = await api.post<{ notes: RoundNote[]; saved_annotations: number }>(`/demos/${demo.demo_id}/save`, body);
+      keep(res.notes);
+      setNoteDrafts((cur) => Object.fromEntries(Object.entries(cur).filter(([n]) => !dirtyRounds.includes(Number(n)))));
+      setAnnotationsDirty(false);
+      if (mode === 'solo') await notes.reload(); else sync.refetch();
+      notesLoad.reload();
+      const parts = [dirtyRounds.length ? `notes for ${dirtyRounds.length === 1 ? `round ${dirtyRounds[0]}` : `${dirtyRounds.length} rounds`}` : null,
+        res.saved_annotations ? `${res.saved_annotations} annotation${res.saved_annotations === 1 ? '' : 's'}` : null].filter(Boolean);
+      setSaveState({ status: 'saved', message: `Saved ${parts.length ? parts.join(' and ') : '(nothing had changed)'} at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` });
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'notes_conflict') keep((err.body.notes as RoundNote[]) ?? []);
+      setSaveState({ status: 'error', message: `Not saved: ${errorMessage(err)}` });
+    }
+  };
+
   const players = useMemo(() => new Map(demo.players.map((p) => [p.index, p.name])), [demo.players]);
-  const visibleAnnotations = annotations.filter((a) => a.tick <= tick + 1 && (a.level ?? 'main') === level);
+  const nameOf = useCallback((p: number) => players.get(p) ?? `Player ${p + 1}`, [players]);
+  const visibleAnnotations = annotations.filter((a) => a.tick <= tick + 1 && (a.level ?? 'main') === level && a.annotation_id !== textEdit?.annotation_id);
   const kills = round ? round.events.filter((ev) => ev.type === 'kill' && ev.tick <= tick) : [];
   // Recorded utility and bomb state at this exact tick (see recordedAt).
   const rec = round && showRecorded ? recordedAt(round.events, tick) : null;
@@ -662,7 +798,11 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const describe = (ev: ReplayEvent) => {
     const at = roundTime(info, ev.tick, tickrate);
     if (ev.type === 'kill') {
-      return `${at} Kill: ${ev.attacker != null ? players.get(ev.attacker) ?? '?' : 'World'} killed ${ev.victim != null ? players.get(ev.victim) ?? '?' : '?'}${ev.weapon ? ` (${ev.weapon}${ev.headshot ? ', headshot' : ''})` : ''}`;
+      const mods = [ev.headshot ? 'headshot' : null, ev.penetrated ? 'wallbang' : null, ev.noscope ? 'no-scope' : null, ev.through_smoke ? 'through smoke' : null,
+        ev.attacker_blind ? 'while blind' : null, ev.in_air ? 'in the air' : null].filter(Boolean);
+      const assist = ev.assister != null ? `, ${ev.flash_assist ? 'flash assist' : 'assist'} ${players.get(ev.assister) ?? '?'}` : '';
+      const killer = ev.attacker != null ? players.get(ev.attacker) ?? '?' : ev.weapon === 'planted_c4' ? 'The bomb' : 'World';
+      return `Round ${roundNumber} ${at} Kill: ${killer} killed ${ev.victim != null ? players.get(ev.victim) ?? '?' : '?'}${ev.weapon ? ` (${weaponLabel(ev.weapon)}${mods.length ? `, ${mods.join(', ')}` : ''})` : ''}${assist}`;
     }
     if (ev.type === 'plant' || ev.type === 'defuse') return `${at} ${RECORDED_LABEL[ev.type]}${who(ev) ? ` by ${who(ev)}` : ''}`;
     if (ev.type === 'explode') return `${at} Bomb exploded`;
@@ -680,25 +820,46 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     { id: 'text', label: 'Text', icon: <Icon name="text" /> },
     ...UTILITY_KINDS.map(([k, label]) => ({ id: k as Tool, label, icon: <img src={UTILITY_ICON[k]} alt="" width="18" height="18" /> })),
   ];
+  const playing = clock.playing && !atEnd;
+  // ---- Kill feed, kill highlight and bomb detonation (all from the tick) ----
+  const killFeed = round && showKillFeed ? killFeedAt(round.events, tick, tickrate) : [];
+  const sideOfPlayer = (pl: number | null | undefined) => (pl == null ? null : sideOf.get(pl) ?? null);
+  const slotOfPlayer = (pl: number | null | undefined) => (round && pl != null ? round.roster.findIndex((r) => r.player === pl) : -1);
+  const pickKill = (ev: ReplayEvent) => {
+    setSelectedKill(ev);
+    // Seeks without changing play/pause; following viewers only get the highlight.
+    if (canControl) control.seek(ev.tick);
+  };
+  const killHighlight = (() => {
+    if (!round || !selectedKill || Math.abs(tick - selectedKill.tick) > 3 * tickrate) return null;
+    const killerSlot = slotOfPlayer(selectedKill.attacker);
+    const killer = killerSlot >= 0 ? frameAt(round, killerSlot, selectedKill.tick) : null;
+    const victimSlot = slotOfPlayer(selectedKill.victim);
+    const victimFrame = victimSlot >= 0 ? frameAt(round, victimSlot, selectedKill.tick - 1) : null;
+    const victim = selectedKill.x != null ? { x: selectedKill.x, y: selectedKill.y!, level: selectedKill.level ?? 'main' } : victimFrame;
+    const fade = 1 - Math.abs(tick - selectedKill.tick) / (3 * tickrate);
+    return { killer, victim, fade, players: [selectedKill.attacker, selectedKill.victim].filter((x): x is number => x != null) };
+  })();
+  const detonation = round ? detonationAt(round.events, tick, tickrate) : null;
+  const shock = detonation && showShockwave ? shockwaveFrame(detonation.elapsed) : null;
+  const damageArea = detonation && showDamageArea && detonation.elapsed < damageSeconds ? detonation : null;
+  const unitsPerBoard = (round?.units_per_radar ?? 5000) / SIZE;
+  const bombHits = round && detonation && detonation.elapsed < damageSeconds ? bombDamageAt(round, tick) : [];
+  const prevRound = demo.rounds[roundIndex - 1];
+  const nextRound = demo.rounds[roundIndex + 1];
+  const textSize = (n: number) => Math.min(NOTE_SIZE.max, Math.max(NOTE_SIZE.min, n));
 
   return (
     <div className="stack replay-page">
-      <div className="page-head">
-        <div>
-          <p className="eyebrow"><Link to="/demos">Demo Review</Link></p>
-          <h1>{demo.title}</h1>
-          <p className="muted">{mapName(demo.map)} · {demo.rounds.length} rounds · round {roundNumber}
-            {info.winner ? <> · won by <strong>{info.winner}</strong>{info.reason ? ` (${info.reason.replace(/_/g, ' ')})` : ''}</> : null}
-            {info.ct_score != null ? ` · score after round: CT side ${info.ct_score} – ${info.t_score} T side` : ''}</p>
-        </div>
-        <div className="row">
-          {mode === 'solo' && canControlReview && !liveReview ? <button type="button" className="btn primary" onClick={startLive}><Icon name="live" /> Start live review</button> : null}
-          {mode === 'control' ? <button type="button" className="btn ghost danger" onClick={endLive}><Icon name="stop" /> End live review</button> : null}
-        </div>
+      <div className="replay-head">
+        <h1>{demo.title}</h1>
+        <p className="muted small">{mapName(demo.map)} · {demo.rounds.length} rounds · round {roundNumber}
+          {info.winner ? <> · won by <strong>{info.winner}</strong>{info.reason ? ` (${info.reason.replace(/_/g, ' ')})` : ''}</> : null}
+          {info.ct_score != null ? ` · after the round: CT ${info.ct_score} – ${info.t_score} T` : ''}</p>
       </div>
 
       {liveHere ? (
-        <div className="live-banner" role="status">
+        <div className="live-banner compact" role="status">
           <Badge tone="red">LIVE</Badge>
           {mode === 'control' ? <span>You're leading this review. Everyone on the team sees your playback and drawings.</span>
             : mode === 'follow' ? <span>Following {liveHere.igl?.user_name ?? 'the IGL'}. Playback, round and drawings are controlled by the IGL.</span>
@@ -708,32 +869,83 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           {mode === 'solo' ? <button type="button" className="btn small" onClick={() => setWatchSolo(false)}>Rejoin live</button> : null}
         </div>
       ) : liveReview ? (
-        <div className="live-banner"><Badge tone="red">LIVE</Badge> A live review of “{liveReview.demo.title}” is running.
+        <div className="live-banner compact"><Badge tone="red">LIVE</Badge> A live review of “{liveReview.demo.title}” is running.
           <Link className="btn small" to={`/demos/${liveReview.demo.demo_id}?live=1`}>Join</Link></div>
       ) : null}
       <Alert>{error ?? roundError}</Alert>
 
       <div className={`replay-layout${layoutStyle ? '' : ' stacked'}`} ref={setLayout} style={layoutStyle}>
-        <aside className="tool-rail replay-tools" aria-label="Annotation tools and view options">
+        <aside className="tool-rail replay-tools" aria-label="Playback, annotation tools and view options">
+          <div className="playback-group" role="group" aria-label="Playback">
+            <div className="playback-row">
+              <button type="button" className="btn primary small" disabled={!canControl || busy} onClick={toggle} aria-label={playing ? 'Pause' : atEnd ? 'Replay round' : 'Play'}>
+                <Icon name={playing ? 'pause' : 'play'} size={16} /> {playing ? 'Pause' : atEnd ? 'Replay' : 'Play'}
+              </button>
+              <select aria-label="Playback speed" value={clock.speed} disabled={!canControl || busy} onChange={(e) => control.speed(Number(e.target.value))}>
+                {SPEEDS.map((s) => <option key={s} value={s}>{s}×</option>)}
+              </select>
+            </div>
+            <div className="playback-pos" title="Playback position since the end of freeze time (the in-game round clock is in the HUD)">
+              <span className="muted small">Position</span> <output aria-label="Playback time">{playbackText(info, tick, tickrate)}</output>
+            </div>
+            <div className="playback-row round-nav">
+              <button type="button" className="btn ghost small" aria-label="Previous round" disabled={!canControl || busy || !prevRound} onClick={() => prevRound && control.round(prevRound.round_number)}>
+                <Icon name="left" size={14} />
+              </button>
+              <span className="small">Round <strong>{roundNumber}</strong> / {demo.rounds.length}</span>
+              <button type="button" className="btn ghost small" aria-label="Next round" disabled={!canControl || busy || !nextRound} onClick={() => nextRound && control.round(nextRound.round_number)}>
+                <Icon name="right" size={14} />
+              </button>
+            </div>
+            {mode === 'solo' && canControlReview && !liveReview ? <button type="button" className="btn small" onClick={startLive}><Icon name="live" size={14} /> Start live review</button> : null}
+            {mode === 'control' ? <button type="button" className="btn ghost small danger" onClick={endLive}><Icon name="stop" size={14} /> End live review</button> : null}
+          </div>
           {canAnnotate ? (
             <>
               <div className="toolbar vertical" role="toolbar" aria-label="Annotation tools" aria-orientation="vertical">
                 {annotationTools.map((t) => (
                   <button key={t.id} type="button" className={tool === t.id ? 'on' : ''} aria-pressed={tool === t.id} data-tool={t.id}
-                    onClick={() => setTool(t.id)} title={t.id === 'none' ? 'View only (no annotation)' : `${t.label}: click the map to add it at the current moment`}>
+                    onClick={() => { setTool(t.id); if (t.id !== 'text') setTextEdit(null); }}
+                    title={t.id === 'none' ? 'View only (no annotation)' : t.id === 'text' ? 'Text: click the map to place it, then type (click a text to edit it)' : `${t.label}: click the map to add it at the current moment`}>
                     <span className="tool-icon" aria-hidden="true">{t.icon}</span>{t.label}
                   </button>
                 ))}
               </div>
-              {tool === 'text' ? <input aria-label="Annotation text" maxLength={200} placeholder="Type, then click the map" value={text} onChange={(e) => setText(e.target.value)} /> : null}
-              {moving != null ? <span className="muted small">Click the map to move the marker. <button type="button" className="btn ghost small" onClick={() => setMoving(null)}>Cancel</button></span> : null}
-              <p className="muted small hint">{tool === 'none' ? 'Choose a tool to annotate.' : 'Click the map.'} Annotations are saved at {roundTime(info, tick, tickrate)} and appear from then on.</p>
+              {textEdit ? (
+                <div className="text-editor" role="group" aria-label={textEdit.annotation_id == null ? 'New text' : 'Edit text'}>
+                  <textarea rows={3} maxLength={200} aria-label="Annotation text" placeholder="Type the text" autoFocus value={textEdit.text}
+                    onChange={(e) => setTextEdit({ ...textEdit, text: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commitText(); } if (e.key === 'Escape') setTextEdit(null); }} />
+                  <div className="row tight">
+                    <button type="button" className="btn small" aria-label="Smaller text" disabled={textEdit.size <= NOTE_SIZE.min}
+                      onClick={() => setTextEdit({ ...textEdit, size: textSize(textEdit.size - NOTE_SIZE.step) })}><Icon name="down" size={14} /></button>
+                    <span className="small" aria-live="polite">Size {textEdit.size}</span>
+                    <button type="button" className="btn small" aria-label="Larger text" disabled={textEdit.size >= NOTE_SIZE.max}
+                      onClick={() => setTextEdit({ ...textEdit, size: textSize(textEdit.size + NOTE_SIZE.step) })}><Icon name="up" size={14} /></button>
+                  </div>
+                  <div className="row tight">
+                    <button type="button" className="btn primary small" disabled={!textEdit.text.trim()} onClick={commitText}>{textEdit.annotation_id == null ? 'Add' : 'Update'}</button>
+                    <button type="button" className="btn ghost small" onClick={() => setTextEdit(null)}>Cancel</button>
+                    {textEdit.annotation_id != null ? (
+                      <button type="button" className="btn ghost small danger" aria-label="Delete text" onClick={() => {
+                        const a = annotations.find((x) => x.annotation_id === textEdit.annotation_id);
+                        if (a) removeAnnotation(a);
+                      }}><Icon name="trash" size={14} /></button>
+                    ) : null}
+                  </div>
+                  <p className="muted small hint">At {roundTime(info, textEdit.tick, tickrate)}{levels.length > 1 ? `, ${LEVEL_LABEL[textEdit.level].toLowerCase()}` : ''}. Click the map to move a new text.</p>
+                </div>
+              ) : null}
+              {moving != null ? <span className="muted small">Click the map to move it. <button type="button" className="btn ghost small" onClick={() => setMoving(null)}>Cancel</button></span> : null}
+              {!textEdit ? <p className="muted small hint">{tool === 'none' ? 'Choose a tool to annotate.' : tool === 'text' ? 'Click the map to place text.' : 'Click the map.'} Added at {roundTime(info, tick, tickrate)}.</p> : null}
               {mode === 'control' ? (
-                <button type="button" className="btn ghost small danger" disabled={busy || !annotations.length}
-                  onClick={() => { if (window.confirm('Clear the live drawings for this round?')) sendLive({ action: 'clear' }); }}>Clear round</button>
+                <button type="button" className="btn ghost small danger" disabled={busy || !annotations.some((a) => a.review_id != null)}
+                  onClick={() => { if (window.confirm('Clear the unsaved live drawings for this round?')) sendLive({ action: 'clear' }); }}>Clear live drawings</button>
               ) : null}
             </>
           ) : <p className="muted small hint">Following the IGL: annotation tools are with them.</p>}
+          <button type="button" className={`btn small scoreboard-toggle${showScoreboard ? ' on' : ''}`} aria-pressed={showScoreboard} aria-controls="replay-scoreboard"
+            onClick={() => setShowScoreboard((v) => !v)}><Icon name="scoreboard" size={14} /> Scoreboard</button>
           {levels.length > 1 ? (
             <div className="segmented" role="group" aria-label="Radar floor">
               {levels.map((l) => <button key={l} type="button" className={level === l ? 'on' : ''} aria-pressed={level === l} onClick={() => setLevel(l)}>{LEVEL_LABEL[l]}</button>)}
@@ -742,34 +954,55 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           <label className="inline-check small" title="Smokes, flashes, HEs, molotovs, plants and defusals recorded in the demo">
             <input type="checkbox" checked={showRecorded} onChange={(e) => setShowRecorded(e.target.checked)} /> Recorded utility
           </label>
+          <fieldset className="display-options">
+            <legend className="small muted">Display</legend>
+            <label className="inline-check small"><input type="checkbox" checked={showKillFeed} onChange={(e) => setShowKillFeed(e.target.checked)} /> Kill feed</label>
+            <label className="inline-check small"><input type="checkbox" checked={showShockwave} onChange={(e) => setShowShockwave(e.target.checked)} /> Bomb shockwave</label>
+            <label className="inline-check small" title="Estimated damage around the bomb when it explodes (an approximation; recorded damage is shown on players)">
+              <input type="checkbox" checked={showDamageArea} onChange={(e) => setShowDamageArea(e.target.checked)} /> Bomb damage area</label>
+            {showDamageArea ? (
+              <label className="inline small">for
+                <select aria-label="Bomb damage area duration" value={damageSeconds} onChange={(e) => setDamageSeconds(Number(e.target.value))}>
+                  {[3, 5, 10, 20].map((n) => <option key={n} value={n}>{n} s</option>)}
+                </select>
+              </label>
+            ) : null}
+          </fieldset>
           <div className="replay-legend small muted">
             <span><span className="legend-swatch recorded" aria-hidden="true" /> Recorded in the demo (dashed, thrower's side colour)</span>
-            <span><span className="legend-swatch flight" aria-hidden="true" /> Grenade in the air (recorded path)</span>
-            <span><span className="legend-swatch annotation" aria-hidden="true" /> Team annotations (solid yellow)</span>
+            <span><span className="legend-swatch flight" aria-hidden="true" /> Grenade in the air</span>
+            <span><span className="legend-swatch annotation" aria-hidden="true" /> Team annotations</span>
+            <span><span className="legend-swatch flashed" aria-hidden="true" /> Flashed player</span>
           </div>
         </aside>
 
         <div className="replay-centre">
-          <div className="replay-controls">
-            <button type="button" className="btn primary" disabled={!canControl || busy} onClick={toggle} aria-label={clock.playing && !atEnd ? 'Pause' : 'Play'}>
-              <Icon name={clock.playing && !atEnd ? 'pause' : 'play'} /> {clock.playing && !atEnd ? 'Pause' : atEnd ? 'Replay' : 'Play'}
-            </button>
-            <span className="big" aria-live="off">{roundTime(info, tick, tickrate)}</span>
-            <label className="inline">Speed
-              <select value={clock.speed} disabled={!canControl || busy} onChange={(e) => control.speed(Number(e.target.value))}>
-                {SPEEDS.map((s) => <option key={s} value={s}>{s}×</option>)}
-              </select>
-            </label>
-            <span className="muted small">Round {roundNumber}</span>
-          </div>
-          <EventTimeline info={{ start_tick: info.freeze_end_tick ?? info.start_tick, end_tick: info.end_tick }} events={timelineEvents} annotations={annotations} tick={tick} canControl={canControl}
-            describe={describe} onSeek={control.seek} onJump={jump} />
+          {round ? <ReplayHud round={round} info={info} tick={tick} tickrate={tickrate} name={nameOf} roundNumber={roundNumber}
+            highlight={[...(killHighlight?.players ?? []), ...bombHits.map((d) => d.player)]} /> : <div className="cs2-hud placeholder" aria-hidden="true" />}
           <div className="board-frame">
             <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} className={`board${tool !== 'none' && canAnnotate ? ' editable' : ''}`} role="img"
               aria-label={`Replay of round ${roundNumber}`} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
               style={{ cursor: canAnnotate && tool !== 'none' ? 'crosshair' : undefined, touchAction: tool !== 'none' ? 'none' : undefined }}
               fontFamily="system-ui, sans-serif">
               <MapBackground map={demo.map ?? ''} level={level} />
+              {damageArea && damageArea.level === level ? (() => {
+                // Estimated damage area (analysis aid): radius where the estimate drops to 1 HP, with stops at 100 and 50 HP.
+                const rMax = estimatedRadiusFor(1);
+                const fade = Math.min(1, (damageSeconds - damageArea.elapsed) / 1);
+                return (
+                  <g pointerEvents="none" data-bomb-damage-area="" opacity={fade}>
+                    <defs>
+                      <radialGradient id="bomb-damage-gradient">
+                        <stop offset="0" stopColor="#ff2a1a" stopOpacity="0.55" />
+                        <stop offset={estimatedRadiusFor(100) / rMax} stopColor="#ff7a1a" stopOpacity="0.4" />
+                        <stop offset={estimatedRadiusFor(50) / rMax} stopColor="#ffc21a" stopOpacity="0.28" />
+                        <stop offset="1" stopColor="#ffe066" stopOpacity="0" />
+                      </radialGradient>
+                    </defs>
+                    <circle cx={damageArea.x * SIZE} cy={damageArea.y * SIZE} r={rMax / unitsPerBoard} fill="url(#bomb-damage-gradient)" />
+                  </g>
+                );
+              })() : null}
               {kills.filter((k) => k.x != null && (k.level ?? 'main') === level).map((k, i) => (
                 <g key={`k${i}`} transform={`translate(${k.x! * SIZE},${k.y! * SIZE})`} opacity="0.85" pointerEvents="none">
                   <path d="M-8,-8 L8,8 M8,-8 L-8,8" stroke="#ff5a5f" strokeWidth="4" strokeLinecap="round" />
@@ -843,22 +1076,54 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   })}
                 </g>
               ) : null}
+              {shock && detonation && detonation.level === level ? (
+                <g pointerEvents="none" transform={`translate(${detonation.x * SIZE},${detonation.y * SIZE})`} data-shockwave={detonation.elapsed.toFixed(2)}>
+                  {shock.flash > 0 ? <circle r={18 + 30 * (1 - shock.flash)} fill="#fff3b0" opacity={shock.flash} /> : null}
+                  {shock.flash > 0 ? <circle r={10 + 14 * (1 - shock.flash)} fill="#ff9a1f" opacity={shock.flash} /> : null}
+                  <circle r={Math.max(4, shock.ring * (BOMB_ESTIMATE.radius / unitsPerBoard))} fill="none" stroke="#ffb347" strokeWidth={6 - 4 * shock.ring} opacity={Math.max(0, shock.ringOpacity)} />
+                  {shock.secondRing > 0 ? <circle r={shock.secondRing * 0.7 * (BOMB_ESTIMATE.radius / unitsPerBoard)} fill="none" stroke="#fff" strokeWidth="2"
+                    opacity={Math.max(0, 0.5 * (1 - shock.secondRing))} /> : null}
+                </g>
+              ) : null}
+              {killHighlight && killHighlight.killer && killHighlight.victim && killHighlight.killer.level === level ? (
+                <g pointerEvents="none" opacity={0.4 + 0.6 * killHighlight.fade} data-kill-highlight="">
+                  <line x1={killHighlight.killer.x * SIZE} y1={killHighlight.killer.y * SIZE} x2={killHighlight.victim.x * SIZE} y2={killHighlight.victim.y * SIZE}
+                    stroke="#fff" strokeWidth="2.5" strokeDasharray="7 5" />
+                </g>
+              ) : null}
+              {killHighlight ? [killHighlight.killer, killHighlight.victim].map((pt, i) => (pt && pt.level === level ? (
+                <circle key={`kh${i}`} cx={pt.x * SIZE} cy={pt.y * SIZE} r="20" fill="none" stroke={i === 0 ? '#ffffff' : '#ff5a5f'} strokeWidth="3"
+                  opacity={killHighlight.fade} pointerEvents="none" />
+              ) : null)) : null}
               {round ? round.roster.map((p, i) => {
                 const f = frameAt(round, i, tick);
                 if (!f || (f.x === 0 && f.y === 0)) return null;
                 const other = f.level !== level;
                 const color = SIDE_COLOR[p.side];
                 const a = (f.yaw * Math.PI) / 180;
-                const name = players.get(p.player) ?? `Player ${p.player + 1}`;
+                const name = nameOf(p.player);
+                // Flashed: the marker turns white and fades back over the
+                // recorded flash duration; the side-coloured ring, view line
+                // and name keep it identifiable.
+                const flash = f.alive ? flashAmount(round, p.player, tick) : 0;
                 return (
-                  <g key={p.player} transform={`translate(${f.x * SIZE},${f.y * SIZE})`} opacity={other ? 0.25 : f.alive ? 1 : 0.45} pointerEvents="none">
+                  <g key={p.player} transform={`translate(${f.x * SIZE},${f.y * SIZE})`} opacity={other ? 0.25 : f.alive ? 1 : 0.45} pointerEvents="none"
+                    data-marker={p.player} data-flash={flash > 0 ? flash.toFixed(2) : undefined}>
                     {f.alive ? (
                       <>
                         <line x1="0" y1="0" x2={Math.cos(a) * 22} y2={-Math.sin(a) * 22} stroke={color} strokeWidth="3" />
-                        <circle r="10" fill={color} stroke="#111" strokeWidth="2.5" />
+                        {flash > 0 ? <circle r="15" fill="#fff" opacity={0.35 * flash} /> : null}
+                        <circle r="10" fill={flash > 0 ? towardsWhite(color, flash) : color} stroke={flash > 0 ? color : '#111'} strokeWidth={flash > 0 ? 3 : 2.5} />
                         <text y="-15" textAnchor="middle" fontSize="13" fontWeight="600" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{name}</text>
                       </>
                     ) : <path d="M-7,-7 L7,7 M7,-7 L-7,7" stroke={color} strokeWidth="3" />}
+                    {bombHits.filter((d) => d.player === p.player).map((d) => (
+                      <g key={`bd${d.tick}`} data-bomb-hit={d.damage}>
+                        <circle r="16" fill="none" stroke="#ff7a1a" strokeWidth="2.5" />
+                        <text y="30" textAnchor="middle" fontSize="13" fontWeight="800" fill="#ffb347" stroke="#000" strokeWidth="3" paintOrder="stroke">
+                          −{d.damage}{d.health === 0 ? ' C4 kill' : ` (${d.health} HP)`}</text>
+                      </g>
+                    ))}
                   </g>
                 );
               }) : null}
@@ -869,21 +1134,57 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                   <UtilityGlyph kind={a.data.utility ?? 'smoke'} color="#ffd166" r={16} />
                 </g>
               ))}
-              {visibleAnnotations.filter((a) => a.kind !== 'utility').map((a) => (a.kind === 'drawing' ? (
+              {visibleAnnotations.filter((a) => a.kind === 'drawing').map((a) => (
                 <polyline key={a.annotation_id} points={(a.data.points ?? []).map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')}
                   fill="none" stroke={a.data.color ?? '#ffd166'} strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
-              ) : (
-                <text key={a.annotation_id} x={(a.data.x ?? 0) * SIZE} y={(a.data.y ?? 0) * SIZE} textAnchor="middle" fontSize="22" fontWeight="700"
-                  fill={a.data.color ?? '#ffd166'} stroke="#000" strokeWidth="4" paintOrder="stroke" pointerEvents="none">{a.data.text}</text>
-              )))}
+              ))}
+              {visibleAnnotations.filter((a) => a.kind === 'text').map((a) => {
+                const size = a.data.size ?? NOTE_SIZE.default;
+                const editable = tool === 'text' && canAnnotate && canEdit(a);
+                const { w, h } = textBox(a.data.text ?? '', size);
+                const x = (a.data.x ?? 0) * SIZE;
+                const y = (a.data.y ?? 0) * SIZE;
+                return (
+                  <g key={a.annotation_id} data-text-annotation={a.annotation_id} opacity={moving === a.annotation_id ? 0.4 : 1}
+                    pointerEvents={editable ? 'all' : 'none'} style={editable ? { cursor: 'text' } : undefined}
+                    onPointerDown={editable ? (e) => { e.stopPropagation(); openText(a); } : undefined}>
+                    {editable ? <rect x={x - w / 2} y={y - h / 2} width={w} height={h} fill="transparent" stroke="#ffffff55" strokeDasharray="4 4" rx="4" /> : null}
+                    <AnnotationText x={x} y={y} text={a.data.text ?? ''} size={size} color={a.data.color ?? '#ffd166'} />
+                  </g>
+                );
+              })}
+              {textEdit && textEdit.level === level ? (() => {
+                const { w, h } = textBox(textEdit.text, textEdit.size);
+                const x = textEdit.x * SIZE;
+                const y = textEdit.y * SIZE;
+                return (
+                  <g pointerEvents="none" data-text-editing="">
+                    <rect x={x - w / 2} y={y - h / 2} width={w} height={h} fill="#00000055" stroke="#fff" strokeWidth="2" strokeDasharray="8 6" rx="4" />
+                    <AnnotationText x={x} y={y} text={textEdit.text} size={textEdit.size} color="#ffd166" placeholder />
+                  </g>
+                );
+              })() : null}
               {draft ? <polyline points={draft.map((p) => `${p.x * SIZE},${p.y * SIZE}`).join(' ')} fill="none" stroke="#ffd166" strokeWidth="5"
                 strokeDasharray="10 6" strokeLinecap="round" pointerEvents="none" /> : null}
             </svg>
+            {round && killFeed.length ? (
+              <KillFeed entries={killFeed} side={sideOfPlayer} name={nameOf} describe={describe} onSelect={pickKill} selected={selectedKill} />
+            ) : null}
+            {damageArea ? (
+              <p className="bomb-estimate-note" role="note">Estimated bomb damage area (CS:GO formula: {BOMB_ESTIMATE.damage} damage, {BOMB_ESTIMATE.radius}-unit radius, no armour or cover).
+                {' '}Not what the game calculated{bombHits.length ? '; recorded bomb damage is shown on the players.' : '; no bomb damage was recorded for any player.'}</p>
+            ) : null}
           </div>
-          {!round && !roundError ? <p className="muted small">Loading round…</p> : null}
+          {round ? (
+            <EventTimeline info={{ start_tick: info.freeze_end_tick ?? info.start_tick, end_tick: info.end_tick }} events={timelineEvents} annotations={annotations} tick={tick} canControl={canControl}
+              describe={describe} onSeek={control.seek} onJump={jump} />
+          ) : !roundError ? <p className="muted small">Loading round…</p> : null}
         </div>
 
-        <aside className="replay-side" aria-label="Rounds, players and events">
+        {showScoreboard && round ? (
+          <div id="replay-scoreboard" className="cs2-scoreboard-layer"><ReplayScoreboard round={round} tick={tick} name={nameOf} onClose={() => setShowScoreboard(false)} /></div>
+        ) : null}
+        <aside className="replay-side" aria-label="Rounds, notes and annotations">
           <Panel title="Rounds">
             <div className="round-strip">
               {demo.rounds.map((r) => (
@@ -893,72 +1194,69 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               ))}
             </div>
           </Panel>
-          {round ? (
-            <Panel title="Players">
-              <div className="scoreboard">
-                {(['CT', 'T'] as const).map((side) => (
-                  <div key={side}>
-                    <strong className={side.toLowerCase()}>{side}</strong>
-                    {round.roster.map((p, i) => (p.side === side ? (
-                      <div key={p.player} className={`${side.toLowerCase()}${frameAt(round, i, tick)?.alive ? '' : ' dead'}`}>
-                        {players.get(p.player)} <span className="muted">{frameAt(round, i, tick)?.hp || ''}</span>
-                      </div>
-                    ) : null))}
-                  </div>
-                ))}
+          <Panel title={`Round ${roundNumber} notes`} className="round-notes">
+            <textarea aria-label={`Notes for round ${roundNumber}`} value={noteText} maxLength={5000} readOnly={!canAnnotate}
+              placeholder={canAnnotate ? 'Notes for this round: what happened, what to fix, calls to practise…' : 'No saved notes for this round yet.'}
+              onChange={(e) => { const body = e.target.value; setNoteDrafts((cur) => ({ ...cur, [roundNumber]: body })); setSaveState({ status: 'idle' }); }} />
+            {(() => {
+              const s = savedNote(roundNumber);
+              return s ? <p className="muted small">Last saved by {s.updated_by?.user_name ?? 'a teammate'} {formatDateTime(s.updated_at)}</p> : null;
+            })()}
+            {canAnnotate ? (
+              <div className="save-row">
+                <button type="button" className="btn primary small" disabled={saveState.status === 'saving' || !dirty} onClick={save}>
+                  <Icon name="check" size={14} /> {saveState.status === 'saving' ? 'Saving…' : 'Save notes and annotations'}
+                </button>
+                <span className={`small ${saveState.status === 'error' ? 'error-text' : saveState.status === 'saved' ? 'ok-text' : 'muted'}`} role="status">
+                  {saveState.message ?? (dirty ? `Unsaved: ${[dirtyRounds.length ? `notes (${dirtyRounds.map((n) => `R${n}`).join(', ')})` : null,
+                    unsavedHere.length || annotationsDirty ? (mode === 'control' ? 'live drawings' : 'annotations') : null].filter(Boolean).join(' and ')}` : 'Everything is saved.')}
+                </span>
               </div>
-            </Panel>
-          ) : null}
-          <Panel title="Events">
-            {round ? (
-              <ul className="event-feed">
-                {round.events.filter((ev) => showRecorded || !RECORDED_UTILITY.includes(ev.type)).map((ev, i) => (
-                  <li key={i}>
-                    <button type="button" className={ev.tick <= tick ? 'past' : ''} disabled={!canControl} onClick={() => jump(ev)}>
-                      <span className="muted">{roundTime(info, ev.tick, tickrate)}</span>{' '}
-                      {ev.type === 'kill' ? <>{ev.attacker != null ? players.get(ev.attacker) : 'World'} ✕ {ev.victim != null ? players.get(ev.victim) : '?'} <span className="muted">({ev.weapon}{ev.headshot ? ', HS' : ''})</span></>
-                        : ev.type === 'plant' ? <>Bomb planted{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
-                          : ev.type === 'defuse' ? <>Bomb defused{ev.player != null ? ` by ${players.get(ev.player)}` : ''}</>
-                            : ev.type === 'explode' ? <>Bomb exploded{ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
-                              : RECORDED_UTILITY.includes(ev.type) ? (
-                                <><span className={`rec-dot ${ev.type}`} aria-hidden="true" />{utilityName(ev)}
-                                  {who(ev) ? <> · <strong>{who(ev)}</strong></> : ''}
-                                  {ev.throw_tick != null ? <span className="muted"> (thrown {roundTime(info, ev.throw_tick, tickrate)}{ev.end_tick != null ? `, ${secs(ev.end_tick - ev.tick)} s` : ''})</span>
-                                    : ev.end_tick != null ? <span className="muted"> ({secs(ev.end_tick - ev.tick)} s)</span> : null}
-                                  {ev.x == null ? <span className="muted"> (no position recorded)</span> : null}</>
-                              )
-                              : <>Round end: {ev.winner} win{ev.reason ? ` (${ev.reason.replace(/_/g, ' ')})` : ''}</>}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : <Loading />}
+            ) : null}
           </Panel>
-          <Panel title={mode === 'solo' ? 'Annotations this round' : 'Live drawings this round'}>
+          <Panel title={mode === 'solo' ? 'Annotations this round' : 'Annotations and live drawings'}>
             {annotations.length ? (
               <ul className="event-feed">
                 {annotations.map((a) => (
                   <li key={a.annotation_id} className="row space">
                     <button type="button" disabled={!canControl} onClick={() => control.seek(a.tick)}>
                       <span className="muted">{roundTime(info, a.tick, tickrate)}</span> {a.kind === 'text' ? `“${a.data.text}”`
-                        : a.kind === 'utility' ? <><img src={UTILITY_ICON[a.data.utility ?? 'smoke']} alt="" width="14" height="14" /> {UTILITY_KINDS.find(([k]) => k === a.data.utility)?.[1] ?? 'Utility'}{a.level === 'lower' ? ' (lower)' : ''}</> : 'Drawing'}
+                        : a.kind === 'utility' ? <><img src={UTILITY_ICON[a.data.utility ?? 'smoke']} alt="" width="14" height="14" /> {UTILITY_KINDS.find(([k]) => k === a.data.utility)?.[1] ?? 'Utility'}</> : 'Drawing'}
+                      {a.level === 'lower' ? ' (lower)' : ''}
                       {a.author ? <span className="muted"> · {a.author.user_name}</span> : null}
+                      {!a.saved ? <span className="unsaved-tag">{a.review_id != null ? 'live' : 'unsaved'}</span> : null}
                     </button>
-                    {a.kind === 'utility' && (mode === 'control' || (mode === 'solo' && a.author?.user_id === user?.user_id)) ? (
+                    {canEdit(a) && a.kind === 'utility' ? (
                       <span className="row tight">
                         <select aria-label="Utility type" value={a.data.utility} onChange={(e) => editAnnotation(a, { utility: e.target.value })}>
                           {UTILITY_KINDS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                         </select>
-                        <button type="button" className="btn ghost small" onClick={() => setMoving(a.annotation_id)}>Move</button>
                       </span>
                     ) : null}
-                    {(mode === 'control' || (mode === 'solo' && a.author?.user_id === user?.user_id))
-                      ? <button type="button" className="btn ghost small" aria-label="Remove annotation" onClick={() => removeAnnotation(a)}><Icon name="close" size={14} /></button> : null}
+                    {canEdit(a) && a.kind === 'text' ? (
+                      <button type="button" className="btn ghost small" onClick={() => { setTool('text'); openText(a); }}>Edit</button>
+                    ) : null}
+                    {canEdit(a) && a.kind !== 'drawing' ? <button type="button" className="btn ghost small" onClick={() => setMoving(a.annotation_id)}>Move</button> : null}
+                    {canEdit(a) ? <button type="button" className="btn ghost small" aria-label="Remove annotation" onClick={() => removeAnnotation(a)}><Icon name="close" size={14} /></button> : null}
                   </li>
                 ))}
               </ul>
             ) : <p className="muted small">None yet.{canAnnotate ? ' Choose a tool on the left to add one at the current moment.' : ''}</p>}
           </Panel>
+          <details className="panel-details">
+            <summary>Round events</summary>
+            {round ? (
+              <ul className="event-feed">
+                {round.events.filter((ev) => showRecorded || !RECORDED_UTILITY.includes(ev.type)).map((ev, i) => (
+                  <li key={i}>
+                    <button type="button" className={ev.tick <= tick ? 'past' : ''} disabled={!canControl} onClick={() => jump(ev)}>
+                      {ev.type === 'round_end' ? <>{roundTime(info, ev.tick, tickrate)} Round end: {ev.winner} win{ev.reason ? ` (${ev.reason.replace(/_/g, ' ')})` : ''}</> : describe(ev)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <Loading />}
+          </details>
         </aside>
       </div>
     </div>

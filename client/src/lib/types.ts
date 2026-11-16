@@ -403,6 +403,14 @@ export interface ReplayEvent {
   trail?: { t: number[]; x: number[]; y: number[]; l: number[] };
   attacker?: number | null;
   victim?: number | null;
+  // Kill feed details (replay version 5), present only when the demo records them.
+  assister?: number;
+  flash_assist?: boolean;
+  penetrated?: boolean;
+  noscope?: boolean;
+  through_smoke?: boolean;
+  attacker_blind?: boolean;
+  in_air?: boolean;
   player?: number | null;
   weapon?: string | null;
   headshot?: boolean;
@@ -425,6 +433,40 @@ export interface ReplayRound {
   roster: { player: number; side: 'T' | 'CT' }[];
   tracks: { x: number[]; y: number[]; l: number[]; yaw: number[]; hp: number[] }[];
   events: ReplayEvent[];
+  // Replay version 4 (HUD and scoreboard); absent in older replay data.
+  // state: per roster slot, an entry whenever equipment or money changed.
+  state?: EquipmentEntry[][];
+  // Players blinded by a flashbang: when, by whom and for how long (ticks).
+  flashes?: { tick: number; player: number; by: number | null; duration: number }[];
+  teams?: { CT: string | null; T: string | null };
+  score_before?: { ct: number; t: number };
+  // Scoreboard totals per roster slot before the round, and changes during it.
+  stats_before?: StatTotals[];
+  stat_events?: { tick: number; player: number; stat: keyof StatTotals; n: number }[];
+  // Replay version 5: damage the bomb actually did, and game units across the radar.
+  bomb_damage?: { tick: number; player: number; damage: number; armor: number; health: number }[];
+  units_per_radar?: number;
+}
+export interface EquipmentEntry {
+  t: number;
+  money: number | null;
+  armor: number | null;
+  helmet: 0 | 1 | null;
+  kit: 0 | 1 | null;
+  weapon: string | null;
+  utility: ('he' | 'flash' | 'smoke' | 'molly' | 'inc' | 'decoy')[] | null;
+  bomb: 0 | 1 | null;
+  // Version 5: best weapon (primary, else pistol) as named in the inventory, and the in-game score.
+  best?: string | null;
+  score?: number | null;
+}
+export interface StatTotals { kills: number; deaths: number; assists: number; headshots: number; damage: number }
+export interface RoundNote {
+  round_number: number;
+  body: string;
+  version: number;
+  updated_by: UserRef | null;
+  updated_at: string;
 }
 export interface Annotation {
   annotation_id: number;
@@ -432,8 +474,10 @@ export interface Annotation {
   tick: number;
   level: Level;
   kind: 'drawing' | 'text' | 'utility';
-  data: { points?: Point[]; x?: number; y?: number; text?: string; color?: string; utility?: 'smoke' | 'flash' | 'he' | 'molly' };
+  data: { points?: Point[]; x?: number; y?: number; text?: string; size?: number; color?: string; utility?: 'smoke' | 'flash' | 'he' | 'molly' };
   review_id: number | null;
+  // false: a draft only its author (or the live review it was made in) sees until saved.
+  saved: boolean;
   author: UserRef | null;
   created_at: string;
 }
@@ -454,6 +498,8 @@ export interface LiveReview {
   igl: UserRef | null;
   can_control: boolean;
   annotations: Annotation[];
+  // The saved notepad for the round under review (null when nobody has written one).
+  note: RoundNote | null;
 }
 
 // ---- Player Stats -----------------------------------------------------------------

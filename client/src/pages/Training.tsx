@@ -4,7 +4,7 @@ import { api, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { EVENT_KINDS, EVENT_LABEL } from '../lib/constants';
 import { useDocumentTitle, useLoad } from '../lib/hooks';
-import { formatEventTime, toInstant, toLocalParts, viewerTimeZone, zoneLabel } from '../lib/time';
+import { dmyToIso, formatDMY, formatEventTime, isoToDMY, toInstant, toLocalParts, viewerTimeZone, zoneLabel } from '../lib/time';
 import type { DemoSummary, TeamEvent } from '../lib/types';
 import { Alert, Badge, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
@@ -18,6 +18,12 @@ function monthGrid(year: number, month: number) {
 }
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+// YYYY-MM-DD in local time (the ?date= parameter and the event form's date).
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const parseDay = (s: string | null) => {
+  const m = s ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(s) : null;
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+};
 
 type Draft = { kind: TeamEvent['kind']; title: string; date: string; time: string; opponent: string; notes: string; demo_id: number | null };
 
@@ -27,7 +33,23 @@ function EventForm({ initial, onSubmit, onCancel, busy, demos }: {
   initial: Draft; onSubmit: (d: Draft) => void; onCancel: () => void; busy: boolean; demos: DemoSummary[];
 }) {
   const [d, setD] = useState(initial);
-  const submit = (e: FormEvent) => { e.preventDefault(); onSubmit(d); };
+  // Double-clicking another day while adding an event moves the new event there.
+  const [lastDate, setLastDate] = useState(initial.date);
+  // The date as typed (dd/mm/yyyy); d.date holds it as yyyy-mm-dd once valid.
+  const [dateText, setDateText] = useState(isoToDMY(initial.date));
+  const [dateError, setDateError] = useState<string | null>(null);
+  if (initial.date !== lastDate) {
+    setLastDate(initial.date);
+    setD({ ...d, date: initial.date });
+    setDateText(isoToDMY(initial.date));
+    setDateError(null);
+  }
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const iso = dmyToIso(dateText);
+    if (!iso) { setDateError('Enter the date as dd/mm/yyyy, for example 20/11/2026.'); return; }
+    onSubmit({ ...d, date: iso });
+  };
   return (
     <form className="form compact" onSubmit={submit}>
       <div className="segmented" role="group" aria-label="Event type">
@@ -37,7 +59,9 @@ function EventForm({ initial, onSubmit, onCancel, busy, demos }: {
       </div>
       <label>Title<input required maxLength={80} value={d.title} onChange={(e) => setD({ ...d, title: e.target.value })} /></label>
       <div className="grid2">
-        <label>Date<input type="date" required value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })} /></label>
+        <label>Date (dd/mm/yyyy)<input required inputMode="numeric" placeholder="dd/mm/yyyy" maxLength={10} value={dateText} aria-invalid={dateError ? true : undefined}
+          onChange={(e) => { setDateText(e.target.value); setDateError(null); const iso = dmyToIso(e.target.value); if (iso) setD({ ...d, date: iso }); }} />
+          {dateError ? <span className="error-text">{dateError}</span> : null}</label>
         <label>Start time<input type="time" required value={d.time} onChange={(e) => setD({ ...d, time: e.target.value })} /></label>
       </div>
       <p className="muted small">Times are in your time zone: {zoneLabel()}.</p>
@@ -71,6 +95,7 @@ function Calendar({ teamId }: { teamId: number }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedId = Number(params.get('event')) || null;
+  const selectedDay = parseDay(params.get('date'));
   const events = useMemo(() => data.data?.events ?? [], [data.data]);
   const byDay = useMemo(() => {
     const map = new Map<string, TeamEvent[]>();
@@ -97,7 +122,7 @@ function Calendar({ teamId }: { teamId: number }) {
         : await api.post<{ event: TeamEvent }>(`/teams/${teamId}/events`, body);
       setEditing(null);
       await data.reload();
-      setParams({ event: String(res.event.event_id) });
+      setParams({ event: String(res.event.event_id), date: toLocalParts(res.event.starts_at).date });
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -127,14 +152,53 @@ function Calendar({ teamId }: { teamId: number }) {
     return { kind: 'training', title: '', date: date ?? toLocalParts(new Date().toISOString()).date, time: '19:00', opponent: '', notes: '', demo_id: null };
   };
 
+  // Click (or Enter on a focused day): select that date and show its events
+  // in the right-hand pane. While adding an event, the form moves to that date.
+  const selectDay = (day: Date) => {
+    const date = isoDay(day);
+    if (day.getMonth() !== cursor.m || day.getFullYear() !== cursor.y) setCursor({ y: day.getFullYear(), m: day.getMonth() });
+    if (editing && !editing.event) setEditing({ date });
+    setParams({ date });
+  };
+  // Double-click: select the day and open a new event on that date (owners).
+  const addOnDay = (day: Date) => {
+    selectDay(day);
+    if (canManage) setEditing({ date: isoDay(day) });
+  };
+  const eventDetails = (ev: TeamEvent, heading = false) => (
+    <div className="cal-event-details" key={ev.event_id}>
+      {heading ? <h3>{ev.title}</h3> : null}
+      <p><Badge tone={eventTone(ev.kind)}>{EVENT_LABEL[ev.kind]}</Badge></p>
+      <p className="big">{formatEventTime(ev.starts_at)}</p>
+      <p className="muted small">Your time ({zoneLabel(new Date(ev.starts_at))}). Entered in {ev.time_zone}.</p>
+      {ev.opponent ? <p><strong>Opponent:</strong> {ev.opponent}</p> : null}
+      {ev.notes ? <p className="bio">{ev.notes}</p> : null}
+      {ev.kind === 'demo_review' ? (
+        ev.demo ? (
+          <p><Link className="btn" to={`/demos/${ev.demo.demo_id}`}><Icon name="demo" /> Open demo: {ev.demo.title}</Link>
+            {ev.demo.status !== 'ready' ? <span className="muted small"> ({ev.demo.status})</span> : null}</p>
+        ) : <p className="muted small">No demo linked{ev.demo_id ? ' (the linked demo was deleted)' : ''}.</p>
+      ) : null}
+      {canManage ? (
+        <div className="row">
+          <button type="button" className="btn" onClick={() => setEditing({ event: ev })}><Icon name="edit" /> Edit</button>
+          <button type="button" className="btn ghost danger" onClick={() => remove(ev)}><Icon name="trash" /> Remove</button>
+        </div>
+      ) : null}
+    </div>
+  );
+  const dayEvents = selectedDay ? byDay.get(dayKey(selectedDay)) ?? [] : [];
+  const openEvent = (e: TeamEvent) => setParams({ event: String(e.event_id), date: toLocalParts(e.starts_at).date });
+
   return (
     <div className="stack">
       <div className="page-head">
         <div>
-          <h1>Training</h1>
+          <h1>Calendar</h1>
           <p className="muted">Shown in your time zone: {zoneLabel()}</p>
         </div>
-        {canManage ? <button type="button" className="btn primary" onClick={() => setEditing({})}><Icon name="plus" /> Add event</button> : null}
+        <button type="button" className="btn primary" disabled={!canManage} title={canManage ? undefined : 'Only the team owner can add events'}
+          onClick={() => setEditing({ date: selectedDay ? isoDay(selectedDay) : undefined })}><Icon name="plus" /> Add event</button>
       </div>
       <Alert>{error ?? data.error}</Alert>
       <div className="board-layout">
@@ -151,13 +215,17 @@ function Calendar({ teamId }: { teamId: number }) {
               const items = byDay.get(dayKey(day)) ?? [];
               const outside = day.getMonth() !== cursor.m;
               const isToday = dayKey(day) === dayKey(today);
+              const isSelected = selectedDay != null && dayKey(day) === dayKey(selectedDay);
               return (
-                <div key={day.toISOString()} role="gridcell" className={`cal-day${outside ? ' outside' : ''}${isToday ? ' today' : ''}`}
-                  onDoubleClick={() => canManage && setEditing({ date: toLocalParts(day.toISOString()).date })}>
+                <div key={day.toISOString()} role="gridcell" tabIndex={0} aria-selected={isSelected}
+                  aria-label={`${day.toLocaleDateString(undefined, { weekday: 'long' })} ${formatDMY(day)}${isToday ? ', today' : ''}${items.length ? `, ${items.length} event${items.length === 1 ? '' : 's'}` : ''}`}
+                  className={`cal-day${outside ? ' outside' : ''}${isToday ? ' today' : ''}${isSelected ? ' selected' : ''}`} data-date={isoDay(day)}
+                  onClick={() => selectDay(day)} onDoubleClick={() => addOnDay(day)}
+                  onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); selectDay(day); } }}>
                   <span className="cal-num">{day.getDate()}</span>
                   {items.map((e) => (
                     <button key={e.event_id} type="button" className={`cal-event ${e.kind}${e.event_id === selectedId ? ' on' : ''}`}
-                      onClick={() => setParams({ event: String(e.event_id) })}>
+                      onClick={(ev) => { ev.stopPropagation(); openEvent(e); }} onDoubleClick={(ev) => ev.stopPropagation()}>
                       {new Date(e.starts_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} {e.title}
                     </button>
                   ))}
@@ -167,7 +235,7 @@ function Calendar({ teamId }: { teamId: number }) {
           </div>
           <p className="muted small">
             <span className="legend-dot training" /> Training <span className="legend-dot game" /> Game <span className="legend-dot demo_review" /> Demo Review
-            {canManage ? ' · Double-click a day to add an event there.' : ''}
+            {canManage ? ' · Click a day to see it; double-click to add an event on it.' : ' · Click a day to see what is on it. Only the team owner can add events.'}
           </p>
         </Panel>
         <div className="stack">
@@ -177,24 +245,14 @@ function Calendar({ teamId }: { teamId: number }) {
                 demos={demoList.data?.demos ?? []} />
             </Panel>
           ) : selected ? (
-            <Panel title={selected.title} actions={<button type="button" className="btn ghost small" onClick={() => setParams({})}>Close</button>}>
-              <p><Badge tone={eventTone(selected.kind)}>{EVENT_LABEL[selected.kind]}</Badge></p>
-              <p className="big">{formatEventTime(selected.starts_at)}</p>
-              <p className="muted small">Your time ({zoneLabel(new Date(selected.starts_at))}). Entered in {selected.time_zone}.</p>
-              {selected.opponent ? <p><strong>Opponent:</strong> {selected.opponent}</p> : null}
-              {selected.notes ? <p className="bio">{selected.notes}</p> : null}
-              {selected.kind === 'demo_review' ? (
-                selected.demo ? (
-                  <p><Link className="btn" to={`/demos/${selected.demo.demo_id}`}><Icon name="demo" /> Open demo: {selected.demo.title}</Link>
-                    {selected.demo.status !== 'ready' ? <span className="muted small"> ({selected.demo.status})</span> : null}</p>
-                ) : <p className="muted small">No demo linked{selected.demo_id ? ' (the linked demo was deleted)' : ''}.</p>
-              ) : null}
-              {canManage ? (
-                <div className="row">
-                  <button type="button" className="btn" onClick={() => setEditing({ event: selected })}><Icon name="edit" /> Edit</button>
-                  <button type="button" className="btn ghost danger" onClick={() => remove(selected)}><Icon name="trash" /> Remove</button>
-                </div>
-              ) : null}
+            <Panel title={selected.title} actions={<button type="button" className="btn ghost small" onClick={() => setParams(selectedDay ? { date: isoDay(selectedDay) } : {})}>Close</button>}>
+              {eventDetails(selected)}
+            </Panel>
+          ) : selectedDay ? (
+            <Panel title={`${selectedDay.toLocaleDateString(undefined, { weekday: 'long' })} ${formatDMY(selectedDay)}`} className="cal-day-pane"
+              actions={<button type="button" className="btn ghost small" onClick={() => setParams({})}>Close</button>}>
+              {dayEvents.length ? dayEvents.map((e) => eventDetails(e, true)) : <p className="muted">Nothing booked on this day.</p>}
+              {canManage ? <button type="button" className="btn" onClick={() => setEditing({ date: isoDay(selectedDay) })}><Icon name="plus" /> Add event on this day</button> : null}
             </Panel>
           ) : null}
           <Panel title="Upcoming">
@@ -202,7 +260,7 @@ function Calendar({ teamId }: { teamId: number }) {
               <ul className="plain-list">
                 {upcoming.map((e) => (
                   <li key={e.event_id}>
-                    <button type="button" className="linkish" onClick={() => setParams({ event: String(e.event_id) })}>{e.title}</button>
+                    <button type="button" className="linkish" onClick={() => openEvent(e)}>{e.title}</button>
                     {' '}<span className="muted small">{EVENT_LABEL[e.kind]} · {formatEventTime(e.starts_at)}</span>
                   </li>
                 ))}
@@ -216,9 +274,10 @@ function Calendar({ teamId }: { teamId: number }) {
   );
 }
 
+// The team calendar (route /training, shown as Calendar).
 export function TrainingPage() {
-  useDocumentTitle('Training');
+  useDocumentTitle('Calendar');
   const { active_team: team } = useAuth();
-  if (!team) return <NeedsTeam what="Training calendars" />;
+  if (!team) return <NeedsTeam what="Calendars" />;
   return <Calendar teamId={team.team_id} />;
 }

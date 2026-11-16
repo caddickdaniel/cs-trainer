@@ -129,7 +129,7 @@ describe('phase 7', () => {
 
     it('attaches the throw, the thrower position and the path up to detonation', () => {
       const replay = buildReplay(demo());
-      expect(REPLAY_VERSION).to.equal(3);
+      expect(REPLAY_VERSION).to.be.at.least(3);
       const ev = replay.rounds[0].data.events;
       const smoke = ev.find((e) => e.type === 'smoke');
       expect(smoke.throw_tick).to.equal(250);

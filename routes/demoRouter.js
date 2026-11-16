@@ -59,4 +59,18 @@ demoRouter.route('/:demo_id/annotations/:annotation_id')
   }))
   .all(handle405);
 
+// Round notes (shared per round) and the explicit save of notes and annotations.
+demoRouter.route('/:demo_id/notes')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await demos.listNotes(demoId(req), me(req)));
+  }))
+  .all(handle405);
+
+demoRouter.route('/:demo_id/save')
+  .post(asyncHandler(async (req, res) => {
+    res.status(200).send(await demos.saveReview(demoId(req), me(req), v.reviewSave.parse(req.body)));
+  }))
+  .all(handle405);
+
 module.exports = demoRouter;

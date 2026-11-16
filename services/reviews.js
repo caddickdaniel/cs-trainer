@@ -36,9 +36,12 @@ async function present(review, userId, trx = db) {
     review.started_by ? trx('users').where('user_id', review.started_by).first('user_id', 'user_name') : null,
   ]);
   const at = nowMs();
+  // This review's live drawings plus the demo's saved annotations for the round.
   const annotations = await trx('demo_annotations')
-    .where({ review_id: review.review_id, round_number: review.round_number })
+    .where({ demo_id: review.demo_id, round_number: review.round_number })
+    .where((w) => w.where('review_id', review.review_id).orWhere((x) => x.whereNull('review_id').where('saved', true)))
     .orderBy([{ column: 'tick' }, { column: 'annotation_id' }]);
+  const note = await trx('demo_round_notes').where({ demo_id: review.demo_id, round_number: review.round_number }).first();
   const names = await demos.userNames(annotations.map((a) => a.author_id));
   const position = positionAt(review, round, demo.tickrate || 64, at);
   return {
@@ -60,6 +63,7 @@ async function present(review, userId, trx = db) {
     igl: igl || null,
     can_control: Boolean(access && access.canControl),
     annotations: annotations.map((a) => demos.presentAnnotation(a, names)),
+    note: note ? (await demos.presentNotes([note]))[0] : null,
   };
 }
 
