@@ -73,4 +73,23 @@ demoRouter.route('/:demo_id/save')
   }))
   .all(handle405);
 
+// Replay Inspector: first-person captures (see services/captures.js).
+const captures = require('../services/captures');
+demoRouter.route('/:demo_id/captures')
+  .get(asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await captures.list(demoId(req), me(req)));
+  }))
+  .post(asyncHandler(async (req, res) => {
+    res.status(202).send(await captures.request(demoId(req), me(req), v.captureRequest.parse(req.body)));
+  }))
+  .all(handle405);
+demoRouter.route('/:demo_id/captures/:capture_id/media/:name')
+  .get(asyncHandler(async (req, res) => {
+    const file = await captures.mediaFile(demoId(req), me(req), v.parseId(req.params.capture_id, 'capture_id'), req.params.name);
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.sendFile(file);
+  }))
+  .all(handle405);
+
 module.exports = demoRouter;

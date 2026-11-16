@@ -11,3 +11,4 @@ tools/cs2-asset-extraction/bin/
 tools/cs2-asset-extraction/work/
 # Icons extracted from your own CS2 install (Valve artwork; rebuild with npm run cs2:assets)
 client/public/assets/cs2/
+__pycache__/

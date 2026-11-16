@@ -488,6 +488,14 @@ exports.reviewSave = z.object({
   })).max(200).optional().default([]),
   review_id: id.optional(),
 });
+// Replay Inspector capture request: an event in a round of a demo the user can access.
+exports.captureRequest = z.object({
+  kind: z.enum(['kill', 'utility']),
+  round_number: z.number().int().min(1).max(200),
+  event_index: z.number().int().min(0).max(5000),
+  // Capture again even if media already exists.
+  retry: z.boolean().optional(),
+}).strict();
 exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
 exports.reviewCommand = z.object({
   action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),
