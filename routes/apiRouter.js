@@ -38,6 +38,15 @@ module.exports = ({ authLimiter }) => {
 
   // Everything below requires a signed-in user.
   apiRouter.use(requireAuth);
+  // Lineup catalogue for the tactics editor's picker (Phase 15): attributed
+  // links to individual CSNADES.gg lineups, with radar positions.
+  apiRouter.get('/lineups', (req, res) => {
+    const map = String(req.query.map || '');
+    const lineups = require('../domain/lineups');
+    if (!lineups.MAPS.includes(map)) return res.status(400).send({ message: 'Unknown map', code: 'bad_map' });
+    res.set('Cache-Control', 'private, max-age=600');
+    return res.status(200).send({ map, source: lineups.SOURCE, lineups: lineups.list({ map }) });
+  });
   apiRouter.use('/teams', teamRouter);
   apiRouter.use('/tactics', tacticRouter);
   apiRouter.use('/users', userRouter);

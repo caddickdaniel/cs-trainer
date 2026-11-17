@@ -11,6 +11,7 @@ const paths: Record<string, string> = {
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
   up: 'M12 19V5M6 11l6-6 6 6',
   down: 'M12 5v14M6 13l6 6 6-6',
+  target: 'M12 2v5M12 17v5M2 12h5M17 12h5M12 8a4 4 0 1 0 0 8 4 4 0 1 0 0-8z',
   plus: 'M12 5v14M5 12h14',
   check: 'M5 12l5 5 9-10',
   copy: 'M8 8h11v12H8zM5 16V4h11',

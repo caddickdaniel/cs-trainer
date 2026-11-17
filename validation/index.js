@@ -251,6 +251,16 @@ const marker = z.object({
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
   // Utility only (Phase 14): position in the thrower's order for this phase.
   seq: z.number().int().min(0).max(99).optional(),
+  // Utility only (Phase 15): the catalogue lineup this throw was placed from
+  // (an attributed link to that exact lineup on CSNADES.gg).
+  lineup: z.object({
+    id: z.string().regex(/^[a-z0-9-]{1,80}$/),
+    title: trimmed(120),
+    url: z.string().max(300).url().refine((u) => u.startsWith('https://csnades.gg/'), 'Lineup links must point to CSNADES.gg'),
+    source: z.literal('CSNADES.gg'),
+    technique: z.string().max(20).optional(),
+    instructions: trimmed(400).optional(),
+  }).strict().optional(),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
   message: 'Only utility and note markers can have lineup screenshots',
   path: ['images'],
@@ -283,9 +293,11 @@ const hold = z.object({
   length: z.number().finite().min(0.02).max(0.6),
 });
 
-// Drop and pickup (Phase 14): a player leaves a utility item on the map, or
-// picks up a specific earlier drop (drop_id). Both take a place in the
-// player's order for the phase (seq).
+// Drop (Phase 15): a player leaves a utility item at a point on the map; it
+// takes a place in their order for the phase (seq). Teammates pick drops up
+// by passing over them on their routes (domain/utility simulatePhase), so
+// there are no pickup annotations; Phase 14 pickups are accepted and
+// discarded so boards saved by that version still load and save.
 const action = z.object({
   id: clientId,
   type: z.enum(['drop', 'pickup']),
@@ -297,15 +309,14 @@ const action = z.object({
   y: coord,
   level,
   seq: z.number().int().min(0).max(99).optional(),
-}).refine((a) => a.user_id != null || a.slot != null, 'A drop or pickup needs a player or a player slot')
-  .refine((a) => a.type !== 'drop' || a.kind, { message: 'Choose the item being dropped', path: ['kind'] })
-  .refine((a) => a.type !== 'pickup' || a.drop_id, { message: 'Choose the dropped item to pick up', path: ['drop_id'] });
+}).refine((a) => a.user_id != null || a.slot != null, 'A drop needs a player or a player slot')
+  .refine((a) => a.type !== 'drop' || a.kind, { message: 'Choose the item being dropped', path: ['kind'] });
 
 const board = z.object({
   markers: z.array(marker).max(C.LIMITS.markers).default([]),
   routes: z.array(route).max(C.LIMITS.routes).default([]),
   holds: z.array(hold).max(C.LIMITS.holds).default([]),
-  actions: z.array(action).max(C.LIMITS.actions).default([]),
+  actions: z.array(action).max(C.LIMITS.actions).default([]).transform((list) => list.filter((a) => a.type === 'drop')),
 }).superRefine((b, ctx) => {
   const ids = [...b.markers, ...b.routes, ...b.holds, ...b.actions].map((x) => x.id);
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Board item ids must be unique' });
@@ -388,8 +399,7 @@ const tacticDocumentBase = z.object({
 const checkLevels = (doc, ctx) => {
   if (doc.side !== 'T' && doc.bomb_carrier) ctx.addIssue({ code: 'custom', path: ['bomb_carrier'], message: 'Only T tactics have a bomb carrier' });
   if (doc.side !== 'CT') doc.loadouts.forEach((l, i) => { if (l.kit) ctx.addIssue({ code: 'custom', path: ['loadouts', i, 'kit'], message: 'Defuse kits are CT only' }); });
-  // Drops and pickups across phases: a pickup takes an existing earlier drop,
-  // after it, and each drop once.
+  // Every drop needs its own id across the tactic.
   for (const e of U.actionErrors(doc.phases)) {
     ctx.addIssue({ code: 'custom', path: ['phases', e.phase, 'board', 'actions', e.id], message: e.message });
   }
@@ -538,13 +548,24 @@ exports.captureRequest = z.object({
   retry: z.boolean().optional(),
 }).strict();
 exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
+// The host's Replay Inspector selection (Phase 15): an event by round and
+// index (stable identities), and the victim or lineup tab chosen in a group.
+const inspectSelection = z.object({
+  round_number: z.number().int().min(1),
+  event_index: z.number().int().min(0).max(5000),
+  kind: z.enum(['kill', 'utility']),
+  victim: z.number().int().min(0).max(5000).nullable().optional(),
+  lineup: z.number().int().min(0).max(5000).nullable().optional(),
+}).strict();
 exports.reviewCommand = z.object({
-  action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),
+  action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed', 'inspect']),
   tick: z.number().finite().min(0).optional(),
   round_number: z.number().int().min(1).optional(),
   speed: z.union([z.literal(0.5), z.literal(1), z.literal(2), z.literal(4)]).optional(),
+  inspect: inspectSelection.nullable().optional(),
   expected_version: z.number().int().positive(),
 }).refine((c) => c.action !== 'seek' || c.tick !== undefined, 'tick is required for seek')
+  .refine((c) => c.action !== 'inspect' || c.inspect !== undefined, 'inspect is required (null clears it)')
   .refine((c) => c.action !== 'round' || c.round_number !== undefined, 'round_number is required to change round')
   .refine((c) => c.action !== 'speed' || c.speed !== undefined, 'speed is required');
 exports.startSession = z.object({ tactic_id: id });

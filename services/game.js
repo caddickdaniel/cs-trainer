@@ -58,7 +58,7 @@ async function present(session, userId, canControl, trx = db) {
   const phase = snap.phases[session.current_phase];
   const mine = phase.assignments.find((a) => a.user_id === userId) || null;
   // Sessions started before buy lists existed have none.
-  const plan = utilityPlan({ loadouts: snap.loadouts || [], phases: snap.phases, side: snap.tactic.side, bomb: snap.bomb_carrier || null });
+  const plan = utilityPlan({ loadouts: snap.loadouts || [], phases: snap.phases, side: snap.tactic.side, bomb: snap.bomb_carrier || null, map: snap.tactic.map });
   const [startedBy, endedBy, igl, tactics, assigned, roles] = await Promise.all([
     userName(trx, session.started_by),
     userName(trx, session.ended_by),

@@ -71,16 +71,18 @@ function buildSnapshot(tactic, phases, { includeImages }) {
         // Throw paths and throw order travel with the tactic.
         if (m.path && m.path.length) out.path = m.path.map((pt) => ({ x: pt.x, y: pt.y }));
         if (m.seq != null) out.seq = m.seq;
+        // The attributed lineup reference (Phase 15) travels too.
+        if (m.lineup) out.lineup = { ...m.lineup };
         return out;
       }),
       routes: p.board.routes.map((r) => ({
         id: r.id, level: r.level || 'main', user_id: null, slot: slotOf(r), color: r.color, points: r.points,
       })),
       holds: (p.board.holds || []).map((h) => ({ id: h.id, marker_id: h.marker_id, angle: h.angle, spread: h.spread, length: h.length })),
-      // Drops and pickups keep their links (drop_id) and order; players become slots.
-      actions: (p.board.actions || []).map((x) => ({
-        id: x.id, type: x.type, user_id: null, slot: slotOf(x), x: x.x, y: x.y, level: x.level || 'main',
-        ...(x.kind ? { kind: x.kind } : {}), ...(x.drop_id ? { drop_id: x.drop_id } : {}), ...(x.seq != null ? { seq: x.seq } : {}),
+      // Drops keep their position, floor and order; players become slots.
+      actions: (p.board.actions || []).filter((x) => x.type === 'drop').map((x) => ({
+        id: x.id, type: 'drop', user_id: null, slot: slotOf(x), x: x.x, y: x.y, level: x.level || 'main',
+        ...(x.kind ? { kind: x.kind } : {}), ...(x.seq != null ? { seq: x.seq } : {}),
       })),
     },
     assignments: p.assignments
@@ -334,7 +336,7 @@ async function importShared(shareId, userId, { team_id: teamId, tactic_name: nam
         })),
         routes: p.board.routes.map((r) => ({ ...r, user_id: null })),
         holds: p.board.holds || [],
-        actions: (p.board.actions || []).map((x) => ({ ...x, user_id: null })),
+        actions: (p.board.actions || []).filter((x) => x.type === 'drop').map((x) => ({ ...x, user_id: null })),
       },
       assignments: p.assignments.map((a) => ({ user_id: null, slot: a.slot, instruction: a.instruction, utility: a.utility, reference_url: null })),
     }));

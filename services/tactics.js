@@ -61,8 +61,9 @@ function normaliseBoard(board) {
     markers: (b.markers || []).map((m) => ({ slot: null, ...m })),
     routes: (b.routes || []).map((r) => ({ slot: null, ...r })),
     holds: b.holds || [],
-    // Drop and pickup actions (Phase 14); older boards have none.
-    actions: (b.actions || []).map((a) => ({ slot: null, ...a })),
+    // Drops (Phase 15; pickups follow from routes, so Phase 14 pickup
+    // annotations are left out). Older boards have none.
+    actions: (b.actions || []).filter((a) => a.type === 'drop').map((a) => ({ slot: null, ...a })),
   };
 }
 

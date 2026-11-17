@@ -5,15 +5,15 @@ import { useAuth } from '../lib/auth';
 import { ECONOMY_LABEL, mapName, roleLabel } from '../lib/constants';
 import { useDocumentTitle, useLoad } from '../lib/hooks';
 import type { Marker, Phase, RosterEntry, TacticDocument } from '../lib/types';
-import { describeCounts, groundDrops, refKey, utilityPlan, type PlayerPlan } from '../lib/utility';
+import { describeCounts, issueText, itemWord, phasePlan, phaseSteps, refKey, type Grenade, type PhaseSim, type PlayerPlan } from '../lib/utility';
 import { FlyingUtility, PlayPhaseBar, usePhasePlayback } from '../components/PhasePlayer';
 import type { Level } from '../lib/constants';
-import { Alert, Badge, Loading, Panel, SideBadge } from '../components/ui';
+import { Alert, Loading, Panel, SideBadge } from '../components/ui';
 import { MapBoard } from '../components/MapBoard';
 import { Icon } from '../components/Icons';
 import { ShareDialog } from './SharedTactics';
-import { PhaseInstructions } from '../components/PhaseInstructions';
-import { PlayerColorsProvider } from '../lib/playerColors';
+import { PlayerColorsProvider, usePlayerColors } from '../lib/playerColors';
+import { UtilityIcon } from '../components/UtilityIcon';
 import { BuyListSummary } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
 
@@ -27,18 +27,19 @@ export function TacticViewPage() {
   const [levelChoice, setLevelChoice] = useState<{ phase: number; level: Level } | null>(null);
   const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
   const [sharing, setSharing] = useState(false);
-  // Player browser: the chosen player stays selected across phases.
-  const [viewing, setViewing] = useState<number | null>(null);
+  // Player cards: whose All instructions are open (kept across phases).
+  const [openCards, setOpenCards] = useState<Set<string>>(new Set());
   useDocumentTitle(doc.data?.tactic.tactic_name ?? 'Tactic');
   const phasesForPlan = doc.data?.tactic.phases;
-  const plan = useMemo(() => utilityPlan(doc.data?.tactic.loadouts ?? [], phasesForPlan ?? [], doc.data?.tactic.side), [doc.data?.tactic.loadouts, phasesForPlan, doc.data?.tactic.side]);
-  const pb = usePhasePlayback(phasesForPlan ?? [], Math.min(index, Math.max(0, (phasesForPlan?.length ?? 1) - 1)), doc.data?.tactic.map ?? 'practice_yard', plan);
+  const tplan = useMemo(() => phasePlan(doc.data?.tactic.loadouts ?? [], phasesForPlan ?? [], doc.data?.tactic.side, doc.data?.tactic.map,
+    doc.data?.tactic.side === 'T' ? doc.data?.tactic.bomb_carrier : null), [doc.data?.tactic.loadouts, phasesForPlan, doc.data?.tactic.side, doc.data?.tactic.map, doc.data?.tactic.bomb_carrier]);
+  const plan = tplan.players;
+  const pb = usePhasePlayback(phasesForPlan ?? [], Math.min(index, Math.max(0, (phasesForPlan?.length ?? 1) - 1)), tplan);
 
   if (doc.loading && !doc.data) return <Loading />;
   if (!doc.data) return <Panel title="Tactic"><Alert>{doc.error}</Alert><Link className="btn" to="/tactics">Back</Link></Panel>;
   const { tactic, roster, can_edit: canEdit } = doc.data;
   const phase = tactic.phases[Math.min(index, tactic.phases.length - 1)];
-  const players = roster.map((r) => r.user_id);
   const phaseIndex = Math.min(index, tactic.phases.length - 1);
   const map = tactic.map ?? 'practice_yard';
   const level = phase
@@ -80,18 +81,18 @@ export function TacticViewPage() {
               <LevelSwitch map={map} level={level} board={phase.board} onChange={(l) => setLevelChoice({ phase: phaseIndex, level: l })} />
               <PlayPhaseBar pb={pb} side={tactic.side}
                 name={(key) => (key.startsWith('u') ? roster.find((r) => `u${r.user_id}` === key)?.user_name ?? 'Former player' : `Player ${key.slice(1)}`)} />
-              <MapBoard board={pb.frame?.board ?? phase.board} map={map} level={level} players={roster} highlightUserId={viewing}
+              <MapBoard board={pb.frame?.board ?? phase.board} map={map} level={level} players={roster} highlightUserId={user?.user_id ?? null} playing={pb.playing}
                 onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for ${phase.name}`} bomb={tactic.side === 'T' ? tactic.bomb_carrier : null} side={tactic.side}
-                ground={pb.playing ? [] : groundDrops(tactic.phases, phaseIndex)} overlay={<FlyingUtility frame={pb.frame} side={tactic.side} />} />
+                ground={pb.frame ? pb.frame.ground : tplan.grounds[phaseIndex] ?? []} overlay={<FlyingUtility frame={pb.frame} side={tactic.side} />} />
             </div>
             <Panel title={phase.name}>
               {phase.notes ? <p>{phase.notes}</p> : null}
-              <PlayerBrowser roster={roster} phase={phase} phaseIndex={phaseIndex} plan={plan} side={tactic.side} viewing={viewing} onView={setViewing} />
-              <h3>All instructions</h3>
-              <PhaseInstructions assignments={phase.assignments} players={players} highlight={viewing ?? user?.user_id} />
-              {phase.assignments.some((a) => a.user_id === user?.user_id) ? <Badge tone="gold">Your instruction is highlighted</Badge> : null}
+              <h3>Players</h3>
+              <PlayerCards roster={roster} phases={tactic.phases} phaseIndex={phaseIndex} plan={plan} sim={tplan.sims[phaseIndex] ?? null} side={tactic.side}
+                me={user?.user_id ?? null} open={openCards}
+                onToggle={(k) => setOpenCards((cur) => { const n = new Set(cur); if (n.has(k)) n.delete(k); else n.add(k); return n; })} />
               <h3>Utility</h3>
-              <BuyListSummary loadouts={tactic.loadouts ?? []} bomb={tactic.bomb_carrier} phases={tactic.phases} phaseIndex={phaseIndex} side={tactic.side}
+              <BuyListSummary loadouts={tactic.loadouts ?? []} bomb={tactic.bomb_carrier} phases={tactic.phases} phaseIndex={phaseIndex} side={tactic.side} plan={plan}
                 name={(r) => (r.user_id != null ? roster.find((x) => x.user_id === r.user_id)?.user_name ?? 'Former player' : `Player ${r.slot}`)} />
               {lineups.length ? (
                 <>
@@ -111,39 +112,73 @@ export function TacticViewPage() {
   );
 }
 
-// Any team member can click through the team's players to read each one's
-// role and their instruction for the phase shown (read only: viewing grants
-// no editing or Game Mode control). The choice stays across phases.
-function PlayerBrowser({ roster, phase, phaseIndex, plan, side, viewing, onView }: {
-  roster: RosterEntry[]; phase: Phase; phaseIndex: number; plan: Map<string, PlayerPlan>; side: string | null;
-  viewing: number | null; onView: (id: number | null) => void;
+// Phase overview: a card per player. Any team member can open a player's
+// All instructions to read their role, instruction and utility for the phase
+// shown (read only: no editing or Game Mode control). Open cards stay open
+// when the phase changes.
+function PlayerCards({ roster, phases, phaseIndex, plan, sim, side, me, open, onToggle }: {
+  roster: RosterEntry[]; phases: Phase[]; phaseIndex: number; plan: Map<string, PlayerPlan>; sim: PhaseSim | null; side: string | null;
+  me: number | null; open: Set<string>; onToggle: (key: string) => void;
 }) {
-  if (!roster.length) return null;
-  const who = roster.find((r) => r.user_id === viewing) ?? null;
-  const a = who ? phase.assignments.find((x) => x.user_id === who.user_id) : null;
-  const at = who ? plan.get(refKey({ user_id: who.user_id, slot: null }) ?? '')?.phases[phaseIndex] : undefined;
+  const colorOf = usePlayerColors();
+  const phase = phases[phaseIndex];
+  const slots = [...new Set(phases.flatMap((p) => [...p.board.markers, ...p.assignments, ...(p.board.actions ?? [])])
+    .filter((i) => i.user_id == null && i.slot).map((i) => i.slot as number))].sort((a, b) => a - b);
+  const former = phase.assignments.filter((a) => a.user_id != null && !roster.some((r) => r.user_id === a.user_id));
+  const cards = [
+    ...roster.map((r) => ({ key: `u${r.user_id}`, ref: { user_id: r.user_id, slot: null }, name: r.user_name, role: roleLabel(r.player_role) || 'No role set' })),
+    ...former.map((a) => ({ key: `u${a.user_id}`, ref: { user_id: a.user_id, slot: null }, name: a.user_name ?? 'Former player', role: 'No longer on the team' })),
+    ...slots.map((n) => ({ key: `s${n}`, ref: { user_id: null, slot: n }, name: `Player ${n}`, role: 'Unmapped player slot' })),
+  ];
+  if (!cards.length) return <p className="muted small">No players yet.</p>;
+  const earlier = new Set(phases.slice(0, phaseIndex).flatMap((p) => p.board.markers.map((m) => m.id)));
+  const steps = phaseSteps(phase.board, earlier);
+  const kindOf = (id: string, type: string) => (type === 'throw' ? phase.board.markers.find((m) => m.id === id)?.kind : (phase.board.actions ?? []).find((a) => a.id === id)?.kind) as Grenade | undefined;
   return (
-    <div className="player-browser">
-      <div className="row tight wrap" role="group" aria-label="Show a player's role and instructions">
-        {roster.map((r) => (
-          <button key={r.user_id} type="button" className={`btn small${viewing === r.user_id ? ' primary' : ' ghost'}`} aria-pressed={viewing === r.user_id}
-            onClick={() => onView(viewing === r.user_id ? null : r.user_id)}>{r.user_name}</button>
-        ))}
-      </div>
-      {who ? (
-        <div className="player-browser__card" aria-live="polite">
-          <p><strong>{who.user_name}</strong> · {roleLabel(who.player_role) || 'No role set'}</p>
-          {a && (a.instruction || a.utility) ? (
-            <>
-              {a.instruction ? <p>{a.instruction}</p> : null}
-              {a.utility ? <p className="muted">Utility: {a.utility}</p> : null}
-            </>
-          ) : <p className="muted">No instructions for {who.user_name} in {phase.name}.</p>}
-          {at && (describeCounts(at.used) || describeCounts(at.dropped) || describeCounts(at.picked)) ? (
-            <p className="muted small">This phase: {[describeCounts(at.used, side) && `throws ${describeCounts(at.used, side)}`, describeCounts(at.dropped, side) && `drops ${describeCounts(at.dropped, side)}`, describeCounts(at.picked, side) && `picks up ${describeCounts(at.picked, side)}`].filter(Boolean).join('; ')}.</p>
-          ) : null}
-        </div>
-      ) : <p className="muted small">Choose a player to see their role and instructions for this phase.</p>}
-    </div>
+    <ul className="player-cards">
+      {cards.map((c) => {
+        const a = phase.assignments.find((x) => refKey(x) === c.key);
+        const p = plan.get(c.key);
+        const at = p?.phases[phaseIndex];
+        const mine = steps.filter((s) => s.key === c.key);
+        const picks = (sim?.pickups ?? []).filter((x) => x.key === c.key);
+        const over = (p?.over ?? []).filter((o) => o.phase === phaseIndex);
+        const isOpen = open.has(c.key);
+        const id = `card-${c.key}`;
+        return (
+          <li key={c.key} className={`player-card${c.ref.user_id != null && c.ref.user_id === me ? ' mine' : ''}`} data-player-card={c.key}>
+            <div className="player-card__head">
+              <span className="dot" style={{ background: colorOf(c.ref) }} />
+              <span className="player-card__name"><strong>{c.name}</strong><span className="muted small">{c.role}</span></span>
+              <button type="button" className={`btn small${isOpen ? ' primary' : ' ghost'}`} aria-expanded={isOpen} aria-controls={id} onClick={() => onToggle(c.key)}>
+                All instructions</button>
+            </div>
+            {!isOpen && a?.instruction ? <p className="player-card__peek small">{a.instruction}</p> : null}
+            {isOpen ? (
+              <div className="player-card__body" id={id} aria-live="polite">
+                <p className="small"><span className="muted">Role:</span> {c.role}</p>
+                {a && (a.instruction || a.utility) ? (
+                  <>
+                    {a.instruction ? <p>{a.instruction}</p> : null}
+                    {a.utility ? <p className="muted">Utility note: {a.utility}</p> : null}
+                  </>
+                ) : <p className="muted">No instructions for {c.name} in {phase.name}.</p>}
+                {mine.length ? (
+                  <ol className="player-card__steps small" aria-label={`${c.name}'s utility in order`}>
+                    {mine.map((s) => {
+                      const k = kindOf(s.id, s.type);
+                      return <li key={s.id}>{k ? <UtilityIcon kind={k} side={side} size={14} label="" /> : null} {s.type === 'throw' ? 'Throw' : 'Drop'} {k ? itemWord(k, side) : 'item'}</li>;
+                    })}
+                  </ol>
+                ) : <p className="muted small">No utility to throw or drop in this phase.</p>}
+                {picks.map((x) => <p key={x.id} className="small ok-text">Picks up a dropped {itemWord(x.kind, side)} on their route.</p>)}
+                {at ? <p className="muted small">{phaseIndex === 0 ? 'Buys' : 'Carries at the start'}: {describeCounts(at.start, side) || 'no grenades'}.</p> : null}
+                {over.map((o, i) => <p key={i} className="error-text small">{issueText(o, side)}</p>)}
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

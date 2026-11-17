@@ -7,9 +7,10 @@ import {
   type Level,
 } from '../lib/constants';
 import { useDocumentTitle } from '../lib/hooks';
-import type { Assignment, Board, Hold, LineupImage, Loadout, Marker, Phase, PlayerColor, PlayerColorId, PlayerRef, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
-import { BUY_LIMITS, GRENADES, MAX_GRENADES, PRICES, buyCost, describeCounts, emptyLoadout, grenadeTotal, groundDrops, issueText, itemLabel, money, priceOf, refKey, utilityPlan, type PlayerPlan } from '../lib/utility';
-import { UtilityActions, placeDrop, ownerSeq, type Placing } from '../components/UtilityActions';
+import type { Assignment, Board, BoardAction, Hold, LineupImage, Loadout, Marker, Phase, PlayerColor, PlayerColorId, PlayerRef, Point, RosterEntry, RosterResponse, Route, TacticFields } from '../lib/types';
+import { BUY_LIMITS, GRENADES, MAX_GRENADES, PRICES, buyCost, describeCounts, emptyLoadout, grenadeTotal, issueText, itemLabel, money, phasePlan, priceOf, refKey, type Grenade, type PlayerPlan, type TacticPlan } from '../lib/utility';
+import { PlayerUtilityOrder, ownerSeq, placeDrop } from '../components/UtilityActions';
+import { applyLineup, nearLineups, LINEUP_TOLERANCE, TECHNIQUE_LABEL, type LineupEntry, type LineupPlan } from '../lib/lineups';
 import { FlyingUtility, PlayPhaseBar, usePhasePlayback } from '../components/PhasePlayer';
 import { Alert, Loading, NeedsTeam, Panel } from '../components/ui';
 import { Icon } from '../components/Icons';
@@ -19,7 +20,7 @@ import { UtilityIcon } from '../components/UtilityIcon';
 import { PLAYER_PALETTE, PlayerColorsProvider, applyTeamColors, assignColor, autoAssign, colorFor, colorKey } from '../lib/playerColors';
 import { useEditorSplit } from '../lib/useEditorSplit';
 import { draftHasWork, otherDrafts, switchMapDraft, type MapDrafts } from '../lib/mapDrafts';
-import { LevelSwitch } from '../components/Lineups';
+import { LevelSwitch, LineupLink } from '../components/Lineups';
 import type { DocumentResponse } from './TacticView';
 
 const emptyBoard = (): Board => ({ markers: [], routes: [], holds: [] });
@@ -247,9 +248,9 @@ function HoldControls({ hold, anchorName, set, onDelete }: {
   );
 }
 
-function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId, map }: {
+function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId, map, side }: {
   phase: Phase; selectedId: string | null; roster: RosterEntry[]; slots: number[]; onBoard: (b: Board) => void; onClear: () => void;
-  teamId: number; map: string;
+  teamId: number; map: string; side: string;
 }) {
   const holds = boardHolds(phase.board);
   const levels = mapLevels(map);
@@ -273,8 +274,26 @@ function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId,
         onDelete={() => { onBoard({ ...phase.board, holds: holds.filter((h) => h.id !== hold.id) }); onClear(); }} />
     );
   }
+  const drop = (phase.board.actions ?? []).find((a) => a.id === selectedId && a.type === 'drop');
+  if (drop) {
+    const setDrop = (patch: Partial<BoardAction>) => onBoard({ ...phase.board, actions: (phase.board.actions ?? []).map((a) => (a.id === drop.id ? { ...a, ...patch } : a)) });
+    return (
+      <div className="form compact" data-drop-inspector={drop.id}>
+        <PlayerPicker label="Dropped by" value={drop} roster={roster} slots={slots} onChange={(w) => setDrop({ user_id: w.user_id, slot: w.slot })} />
+        <label>Item
+          <select value={drop.kind ?? 'flash'} onChange={(e) => setDrop({ kind: e.target.value as BoardAction['kind'] })}>
+            {GRENADES.map((g) => <option key={g} value={g}>{itemLabel(g, side)}</option>)}
+          </select>
+        </label>
+        {levelSelect(drop.level, (l) => setDrop({ level: l }))}
+        <p className="muted small">Drag the drop to move it. A teammate whose route passes over it after it lands picks it up during Play Phase.</p>
+        <button type="button" className="btn ghost small danger" onClick={() => { onBoard({ ...phase.board, actions: (phase.board.actions ?? []).filter((a) => a.id !== drop.id) }); onClear(); }}>
+          <Icon name="trash" /> Remove drop</button>
+      </div>
+    );
+  }
   if (!marker && !route) {
-    return <p className="muted small">Select a marker, route or hold to edit it. Arrow keys nudge the selected marker; Delete removes it.</p>;
+    return <p className="muted small">Select a marker, route, hold or drop to edit it. Arrow keys nudge the selected marker; Delete removes it.</p>;
   }
   const playerSelect = (value: { user_id: number | null; slot?: number | null }, onChange: (v: Who) => void) => (
     <PlayerPicker value={value} roster={roster} slots={slots} onChange={onChange} />
@@ -285,6 +304,12 @@ function Inspector({ phase, selectedId, roster, slots, onBoard, onClear, teamId,
     const fromPct = (s: string) => Math.min(1, Math.max(0, Number(s) / 100 || 0));
     return (
       <div className="form compact">
+        {marker.lineup ? (
+          <div className="lineup-ref-edit">
+            <LineupLink m={marker} />
+            <button type="button" className="btn ghost small" onClick={() => set({ lineup: undefined })}>Remove lineup link</button>
+          </div>
+        ) : null}
         <label>Type
           <select value={marker.kind} onChange={(e) => {
             const kind = e.target.value as Marker['kind'];
@@ -411,8 +436,9 @@ function ColorPicker({ who, name, colors, onChange, teamColor }: { who: Who; nam
   );
 }
 
-function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, loadouts, bomb, plan, colors, onLoadouts, onBomb, onColors }: {
+function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, loadouts, bomb, plan, colors, onLoadouts, onBomb, onColors, tplan, earlier, onBoard }: {
   phase: Phase; phaseIndex: number; roster: RosterEntry[]; slots: number[]; onChange: (a: Assignment[]) => void;
+  tplan: TacticPlan; earlier: Set<string>; onBoard: (b: Board) => void;
   side: string; loadouts: Loadout[]; bomb: PlayerRef | null; plan: Map<string, PlayerPlan>; colors: PlayerColor[];
   onLoadouts: (l: Loadout[]) => void; onBomb: (b: PlayerRef | null) => void; onColors: (c: PlayerColor[]) => void;
 }) {
@@ -437,6 +463,8 @@ function InstructionsForm({ phase, phaseIndex, roster, slots, onChange, side, lo
           {side === 'T' && refKey(bomb) === whoValue(who) ? <span className="bomb-tag"><img src="/icons/bomb.png" alt="" width="12" height="16" /> Bomb</span> : null}</legend>
         <label>Instruction<textarea rows={3} maxLength={2000} value={a?.instruction ?? ''} onChange={(e) => set(who, { instruction: e.target.value })}
           placeholder="What this player does in this phase" /></label>
+        <PlayerUtilityOrder who={who} board={phase.board} earlier={earlier} side={side} plan={plan.get(whoValue(who))} sim={tplan.sims[phaseIndex]} ground={tplan.grounds[phaseIndex]}
+          phaseIndex={phaseIndex} roster={roster} onBoard={onBoard} />
         {a && legacy ? (
           <div className="legacy-note small">
             <span className="muted">From an older version of this tactic (kept when you save):</span>
@@ -641,6 +669,7 @@ export function TacticEditorPage() {
           markers: phase.board.markers.filter((m) => m.id !== selectedId),
           routes: phase.board.routes.filter((r) => r.id !== selectedId),
           holds: boardHolds(phase.board).filter((h) => h.id !== selectedId && h.marker_id !== selectedId),
+          actions: (phase.board.actions ?? []).filter((a) => a.id !== selectedId),
         } });
         setSelectedId(null);
       }
@@ -653,12 +682,39 @@ export function TacticEditorPage() {
   const loadouts = useMemo(() => fields.loadouts ?? [], [fields.loadouts]);
   const bomb = fields.side === 'T' ? fields.bomb_carrier ?? null : null;
   const slots = useMemo(() => unmappedSlots(phases, [...loadouts, bomb]), [phases, loadouts, bomb]);
-  const plan = useMemo(() => utilityPlan(loadouts, phases, fields.side), [loadouts, phases, fields.side]);
-  // Drop being placed with the next map click (Utility order panel).
-  const [placing, setPlacing] = useState<Placing | null>(null);
-  const ground = useMemo(() => groundDrops(phases, Math.min(index, phases.length - 1)), [phases, index]);
+  // One simulation for inventory carryover, route pickups and Play Phase.
+  const tplan = useMemo(() => phasePlan(loadouts, phases, fields.side, fields.map, bomb), [loadouts, phases, fields.side, fields.map, bomb]);
+  const plan = tplan.players;
+  // Drop tool: who drops what with the next map click.
+  const [dropWho, setDropWho] = useState('');
+  const [dropKind, setDropKind] = useState<Grenade>('flash');
+  const ground = tplan.grounds[Math.min(index, phases.length - 1)] ?? [];
+  // Lineup picker (Phase 15): catalogue for the map, then type + player,
+  // a click on the landing area, a matching origin, and a confirmation.
+  const [catalogue, setCatalogue] = useState<{ map: string; lineups: LineupEntry[] } | null>(null);
+  useEffect(() => {
+    if (tool !== 'lineup' || !fields.map || catalogue?.map === fields.map) return undefined;
+    let cancelled = false;
+    api.get<{ map: string; lineups: LineupEntry[] }>(`/lineups?map=${encodeURIComponent(fields.map)}`)
+      .then((r) => { if (!cancelled) setCatalogue(r); })
+      .catch(() => { if (!cancelled) setCatalogue({ map: fields.map, lineups: [] }); });
+    return () => { cancelled = true; };
+  }, [tool, fields.map, catalogue?.map]);
+  const [pickKind, setPickKind] = useState<'smoke' | 'flash' | 'molly' | 'he'>('smoke');
+  const [pickWho, setPickWho] = useState('');
+  const [pick, setPick] = useState<{ landing: Point; phase: number; level: Level } | null>(null);
+  const [pickPlan, setPickPlan] = useState<{ entry: LineupEntry; plan: LineupPlan } | null>(null);
+  const pickFor = pick && pick.phase === index && pick.level === level ? pick : null;
+  const matches = pickFor && catalogue && catalogue.map === fields.map
+    ? nearLineups(catalogue.lineups, pickFor.landing, { utility: pickKind, side: fields.side, level }) : [];
+  const pickerWho = parseWho(pickWho || whoValue(active));
+  const pickerName = pickerWho.user_id != null ? roster.find((r) => r.user_id === pickerWho.user_id)?.user_name ?? 'Player' : pickerWho.slot ? `Player ${pickerWho.slot}` : '';
+  const chooseLineup = (e: LineupEntry) => {
+    if (!pickerName) { setError('Choose the player who throws it, then pick the lineup.'); return; }
+    setPickPlan({ entry: e, plan: applyLineup(phase.board, e, pickerWho, pickerName, newId, ownerSeq(phase.board, pickerWho)) });
+  };
   // Play Phase preview (read-only while it runs).
-  const pb = usePhasePlayback(phases, Math.min(index, phases.length - 1), fields.map, plan);
+  const pb = usePhasePlayback(phases, Math.min(index, phases.length - 1), tplan);
   // Team colours (Team tab) over the tactic's own, for new tactics too.
   const colors = useMemo(() => applyTeamColors(fields.player_colors ?? [], roster), [fields.player_colors, roster]);
   const { setLayout, stacked, style: splitStyle, dividerProps } = useEditorSplit();
@@ -696,7 +752,7 @@ export function TacticEditorPage() {
           })),
           routes: p.board.routes.map((r) => ({ ...r, level: r.level ?? 'main', user_id: clean(r.user_id), slot: slotOf(r) })),
           holds: boardHolds(p.board).filter((h) => p.board.markers.some((m) => m.id === h.marker_id && m.kind === 'player')),
-          actions: (p.board.actions ?? []).filter((a) => (a.user_id != null ? memberIds.has(a.user_id) : Boolean(a.slot)))
+          actions: (p.board.actions ?? []).filter((a) => a.type === 'drop' && (a.user_id != null ? memberIds.has(a.user_id) : Boolean(a.slot)))
             .map((a) => ({ ...a, level: a.level ?? 'main', user_id: clean(a.user_id), slot: slotOf(a) })),
         },
         assignments: p.assignments
@@ -788,12 +844,14 @@ export function TacticEditorPage() {
 
   // Line icons for tools without a supplied symbol; the grenade tools reuse
   // the supplied utility icons.
-  const TOOL_ICON: Record<string, string> = { select: 'select', route: 'route', hold: 'hold', player: 'player', note: 'note' };
+  const TOOL_ICON: Record<string, string> = { select: 'select', route: 'route', hold: 'hold', player: 'player', note: 'note', drop: 'down', lineup: 'target' };
   const tools: { id: Tool; label: string }[] = [
     { id: 'select', label: 'Select / move' },
     { id: 'route', label: 'Draw route' },
     { id: 'hold', label: 'Hold' },
     ...MARKER_KINDS.map((k) => ({ id: k as Tool, label: MARKER_LABEL[k] })),
+    { id: 'drop', label: 'Drop item' },
+    { id: 'lineup', label: 'Lineup picker' },
   ];
 
   return (
@@ -893,6 +951,64 @@ export function TacticEditorPage() {
                 <button type="button" className="btn ghost small" disabled={!draft.length} onClick={() => setDraft([])}>Cancel</button>
               </div>
             </div>
+          ) : tool === 'lineup' ? (
+            <div className="stack tight hint lineup-picker">
+              <label>Utility
+                <select aria-label="Lineup utility type" value={pickKind} onChange={(e) => { setPickKind(e.target.value as typeof pickKind); setPickPlan(null); }}>
+                  {(['smoke', 'flash', 'molly', 'he'] as const).map((g) => <option key={g} value={g}>{itemLabel(g, fields.side)}</option>)}
+                </select>
+              </label>
+              <label>Thrown by
+                <select aria-label="Player throwing the lineup" value={pickWho || whoValue(active)} onChange={(e) => { setPickWho(e.target.value); setPickPlan(null); }}>
+                  <option value="">Choose a player…</option>
+                  {roster.map((r) => <option key={r.user_id} value={`u${r.user_id}`}>{r.user_name}</option>)}
+                  {slots.map((n) => <option key={n} value={`s${n}`}>Player {n}</option>)}
+                </select>
+              </label>
+              {!pickFor ? <span className="muted small">Click roughly where the {itemLabel(pickKind, fields.side).toLowerCase()} should land ({fields.side} side, {LEVEL_LABEL[level]} floor).</span>
+                : !catalogue ? <span className="muted small">Loading lineups…</span>
+                  : !matches.length ? <span className="muted small" role="status">No {fields.side} {itemLabel(pickKind, fields.side).toLowerCase()} lineups land there on this floor. Click another spot.</span>
+                    : (
+                      <ul className="lineup-matches" aria-label="Matching throw origins">
+                        {matches.map((e) => (
+                          <li key={e.id}>
+                            <button type="button" className={`btn small${pickPlan?.entry.id === e.id ? ' primary' : ' ghost'}`} onClick={() => chooseLineup(e)}>{e.title}</button>
+                            <span className="muted small">{TECHNIQUE_LABEL[e.technique] ?? e.technique}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+              {pickPlan ? (
+                <div className="lineup-confirm" role="group" aria-label="Apply lineup">
+                  <strong className="small">{pickPlan.entry.title}</strong>
+                  {pickPlan.entry.instructions ? <span className="small">{TECHNIQUE_LABEL[pickPlan.entry.technique] ?? pickPlan.entry.technique}: {pickPlan.entry.instructions}</span> : null}
+                  <a className="small" href={pickPlan.entry.url} target="_blank" rel="noreferrer noopener">View lineup on CSNADES.gg</a>
+                  <ul className="small">{pickPlan.plan.changes.map((c) => <li key={c}>{c}</li>)}</ul>
+                  {pickPlan.plan.conflicts.map((c) => <p key={c} className="small warn-text" role="alert">{c}</p>)}
+                  <div className="row tight">
+                    <button type="button" className="btn primary small" onClick={() => { setPhase({ board: pickPlan.plan.board }); setPickPlan(null); setPick(null); }}>Apply lineup</button>
+                    <button type="button" className="btn ghost small" onClick={() => setPickPlan(null)}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+              <span className="muted small">Lineups link to CSNADES.gg; positions come from a small test set.</span>
+            </div>
+          ) : tool === 'drop' ? (
+            <div className="stack tight hint drop-tool">
+              <label>Dropped by
+                <select aria-label="Player dropping the item" value={dropWho || whoValue(active)} onChange={(e) => setDropWho(e.target.value)}>
+                  <option value="">Choose a player…</option>
+                  {roster.map((r) => <option key={r.user_id} value={`u${r.user_id}`}>{r.user_name}</option>)}
+                  {slots.map((n) => <option key={n} value={`s${n}`}>Player {n}</option>)}
+                </select>
+              </label>
+              <label>Item
+                <select aria-label="Item to drop" value={dropKind} onChange={(e) => setDropKind(e.target.value as Grenade)}>
+                  {GRENADES.map((g) => <option key={g} value={g}>{itemLabel(g, fields.side)}</option>)}
+                </select>
+              </label>
+              <span className="muted small">Click the map where the item is dropped ({LEVEL_LABEL[level]} floor). A teammate whose route then passes over it picks it up.</span>
+            </div>
           ) : <p className="muted small hint">{tool === 'select'
             ? 'Drag markers or route handles to move them. Dotted lines join each player to their utility.'
             : tool === 'hold'
@@ -907,10 +1023,34 @@ export function TacticEditorPage() {
           <PlayPhaseBar pb={pb} side={fields.side}
             name={(key) => (key.startsWith('u') ? roster.find((r) => `u${r.user_id}` === key)?.user_name ?? 'Former player' : `Player ${key.slice(1)}`)} />
           <MapBoard board={pb.frame?.board ?? phase.board} map={fields.map} level={level} players={roster} onChange={pb.playing ? undefined : (b) => setPhase({ board: b })} tool={tool} side={fields.side}
-            overlay={<FlyingUtility frame={pb.frame} side={fields.side} />}
+            overlay={<>
+              <FlyingUtility frame={pb.frame} side={fields.side} />
+              {tool === 'lineup' && pickFor && !pb.playing ? (
+                <g data-layer="lineup-picker">
+                  <circle cx={pickFor.landing.x * 1000} cy={pickFor.landing.y * 1000} r={LINEUP_TOLERANCE * 1000} fill="#ffd36a18" stroke="#ffd36a" strokeWidth="2" strokeDasharray="6 5" pointerEvents="none" />
+                  {matches.map((e) => (
+                    <g key={e.id} data-lineup-origin={e.id} style={{ cursor: 'pointer' }} onPointerDown={(ev) => { ev.stopPropagation(); chooseLineup(e); }}>
+                      <polyline points={[e.start, e.release, e.landing].map((p) => `${p.x * 1000},${p.y * 1000}`).join(' ')} fill="none" stroke={pickPlan?.entry.id === e.id ? '#ffd36a' : '#ffffffaa'} strokeWidth="3" strokeDasharray="8 6" />
+                      <circle cx={e.start.x * 1000} cy={e.start.y * 1000} r="13" fill={pickPlan?.entry.id === e.id ? '#ffd36a' : '#111'} stroke="#ffd36a" strokeWidth="3" />
+                      {e.moving ? <circle cx={e.release.x * 1000} cy={e.release.y * 1000} r="7" fill="#ffd36a" /> : null}
+                      <text x={e.start.x * 1000} y={e.start.y * 1000 - 18} textAnchor="middle" fontSize="15" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{e.title}</text>
+                    </g>
+                  ))}
+                </g>
+              ) : null}
+            </>}
             selectedId={selectedId} onSelect={setSelectedId} activePlayer={active.user_id} activeSlot={active.slot} draftRoute={draft} onDraftRoute={setDraft}
-            label={`Editable board for ${phase.name}`} bomb={bomb} ground={pb.playing ? [] : ground}
-            onPlace={placing ? (at) => { setPhase({ board: placeDrop(phase.board, placing, at, level, ownerSeq(phase.board, placing.who)) }); setPlacing(null); } : undefined} />
+            label={`Editable board for ${phase.name}`} bomb={bomb} ground={pb.frame ? pb.frame.ground : ground} playing={pb.playing}
+            onPlace={tool === 'lineup' && !pb.playing ? (at) => { setPick({ landing: at, phase: index, level }); setPickPlan(null); }
+              : tool === 'drop' && !pb.playing ? (at) => {
+              const who = parseWho(dropWho || whoValue(active));
+              if (!who.user_id && !who.slot) { setError('Choose who drops the item, then click the map.'); return; }
+              if ((phase.board.actions ?? []).length >= LIMITS.actions) { setError(`A phase can have up to ${LIMITS.actions} drops.`); return; }
+              setError(null);
+              const next = placeDrop(phase.board, who, dropKind, at, level);
+              setPhase({ board: next });
+              setSelectedId(next.actions![next.actions!.length - 1].id);
+            } : undefined} />
         </div>
         {!stacked ? <div className="split-divider" {...dividerProps}><span aria-hidden="true" /></div> : null}
         <div className="stack editor-side">
@@ -930,7 +1070,7 @@ export function TacticEditorPage() {
           </Panel>
           <Panel title="Selected item">
             <Inspector phase={phase} selectedId={selectedId} roster={roster} slots={slots} onBoard={(b) => setPhase({ board: b })}
-              onClear={() => setSelectedId(null)} teamId={teamId ?? 0} map={fields.map} />
+              onClear={() => setSelectedId(null)} teamId={teamId ?? 0} map={fields.map} side={fields.side} />
           </Panel>
           {slots.length ? (
             <Panel title="Map player slots">
@@ -947,13 +1087,11 @@ export function TacticEditorPage() {
               }} />
             </Panel>
           ) : null}
-          <Panel title="Utility order, drops and pickups">
-            <UtilityActions phases={phases} index={Math.min(index, phases.length - 1)} roster={roster} slots={slots} side={fields.side} plan={plan}
-              onBoard={(b) => setPhase({ board: b })} placing={placing} setPlacing={setPlacing} />
-          </Panel>
           <Panel title="Player instructions" className="scroll-panel">
             {overPlans ? <Alert kind="warn">This plan uses more utility than {overPlans === 1 ? 'a player buys' : 'players buy'} ({overPlans} issue{overPlans === 1 ? '' : 's'}). Check the buy lists below.</Alert> : null}
             <InstructionsForm phase={phase} phaseIndex={Math.min(index, phases.length - 1)} roster={roster} slots={slots} onChange={(a) => setPhase({ assignments: a })}
+              tplan={tplan} earlier={new Set(phases.slice(0, Math.min(index, phases.length - 1)).flatMap((p) => p.board.markers.map((m) => m.id)))}
+              onBoard={(b) => setPhase({ board: b })}
               side={fields.side} loadouts={loadouts} bomb={bomb} plan={plan} colors={colors}
               onColors={(c) => { setFields({ ...fields, player_colors: c }); touch(); }}
               onLoadouts={(l) => { setFields({ ...fields, loadouts: l }); touch(); }}

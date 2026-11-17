@@ -1201,6 +1201,88 @@ Lower settings and 720p saved only output size, not wall-clock time: seeking (CP
 - Clipboard restore covers text only; images or files on the clipboard are lost during a capture.
 - Share/import with drops and pickups is covered by API tests, not checked by hand in the browser.
 
+## Phase 15: route pickups, lineup picker, grouped captures, shared inspector
+
+### Tactics
+- **Drops on the radar:** the **Drop item** tool in the map toolbar. Pick who drops what from the dropdowns, then click the map; the drop saves its position, floor and player with the phase. Select a drop to move it, change it or remove it.
+- **Route-based pickups:** there are no manual pickups any more. A teammate whose route passes within reach of a dropped item (96 game units) on the same floor, after it lands, picks it up if they can carry it.
+  - **Order:** when several players reach one item, the earliest takes it; exact ties go to the player key.
+  - **Before the drop:** a route that crosses before the item is dropped leaves it there.
+  - **Carry limits:** a player who can't carry the item passes it, and it stays.
+  - **Later phases:** uncollected items stay on the map into later phases.
+  - **Old data:** Phase 14 pickup annotations are accepted and discarded.
+- **One simulation for everything:** `simulatePhase` / `phasePlan` in `domain/utility.js` (mirrored in `client/src/lib/utility.ts`, parity-tested) drives Play Phase, the phase-to-phase inventory, the editor's pickup notes and Game Mode's utility. So replaying a phase, stepping back or reloading always gives the same numbers.
+- **Throw order in Player Instructions:** each player's card lists their throws and drops in order, with ↑ / ↓ to reorder. Only `seq` changes, so each marker keeps its player and throw path, also through share and import. Pickups made on that player's route and any problems are listed underneath.
+- **Phase overview:**
+  - **Player cards:** each player has a card with an **All instructions** control (role, instruction, utility in order, pickups, what they carry). Any teammate can use it; open cards stay open across phases.
+  - **Utility table:** fixed-width grenade columns with the icon in the header and the count beneath. A dash means none. −thrown, ↓dropped, +picked up this phase.
+- **Hold cones** pulse gently during Play Phase; the outline and direction stay solid.
+- **Lineup picker** (Lineup picker tool):
+  1. Choose the utility and the player, then click roughly where it should land.
+  2. Matching throw origins are drawn on the radar and listed: same map, floor, utility and T/CT side, landing within 5% of the radar width of the click.
+  3. Choose one: the confirmation lists every change before you apply it (player moved or placed at the start, the throw added at the landing). For running or run-jump throws it adds the run-up from start to release as the player's route, replacing their routes in that phase, and says so.
+  - **Attribution:** the throw keeps an attributed **View lineup on CSNADES.gg** link to that exact entry. It's shown in the editor, the tactic view and Game Mode, and travels through share and import.
+- **Lineup catalogue (`domain/lineups.js`, `GET /api/lineups?map=`):** a small manually supplied test set on Ancient:
+  - Top Mid from T Spawn (standing jump throw);
+  - Top Mid from T Spawn 1 (run-jump);
+  - Elbow from CT Spawn (standing jump throw).
+
+  The links are to individual CSNADES entries, checked by hand. Radar positions come from real throws in `spirit-vs-g2-m3-ancient`, not from CSNADES. Nothing else from CSNADES is copied; bulk import waits for their confirmation. Which numbered "Top Mid from T Spawn" variant matches our run-jump throw exactly still needs confirming.
+- Local trial data: `node scripts/seed-phase15-demo.js`, after the Phase 14 seed (development only).
+
+### Replay Inspector and live review
+- **Grouped events** (`services/capturePlan.js`):
+  - **Grouping rule:** nearby events by one player in a round are grouped when each is within **3 s** of the previous one and the whole group spans at most **8 s**.
+  - **Kills:** grouped kills need the same killer and the same capture settings (X-ray). They share one continuous Killer POV clip, from 1 s before the first kill to 1 s after the last. Each kill keeps its own Victim POV clip, shown as tabs below.
+  - **Throws:** grouped throws share one throw clip, and each keeps its own lineup still and tab.
+  - **Stable identities:** the shared clip is recorded once and hard-linked into every member capture, so each event keeps its identity and its own media. Single events and older captures play as before.
+  - **Opening a group:** choosing any member from the timeline opens the shared clip a second before that event and selects its tab.
+  - **In the Ancient demo:** 16 kill groups and 62 throw groups. Verified live: zont1x's three kills in round 17, sh1ro's and tN1R's doubles in round 3, and donk's molotov + HE in round 3.
+- **Shared selection in live review:**
+  - **Host:** the host's selected event and its victim / lineup tab are part of the review state (`review_sessions.inspect`). They travel with the host's seek, or on their own without moving playback.
+  - **Followers and late joiners:** they get them from the normal sync and fetch the team-scoped media. Pending or uncaptured media shows per slot ("Not captured yet", "Capturing…") while the radar replay continues.
+  - **Peeking:** a follower can look at another event locally until the host picks a new one.
+- **Lineup still timing** (`services/throwSetup.js`, per-tick samples from `workers/demo-throws-child.js`):
+  - **What it picks:** the still is the player's stable aim before the throw's setup movement (jump, run-up), not the tick before release.
+  - **Standing throws** keep the tick before release.
+  - **No still moment:** when there is none within 3 s, the tick before release is kept and the inspector says so.
+  - **Verified live** (POV and tick confirmed from CS2's log):
+    - standing (zont1x, round 3): same frame as before;
+    - jump (sh1ro, round 17): ground-level aim 13 ticks earlier instead of mid-air;
+    - running (donk, round 17): aim from the run start;
+    - run-jump (sh1ro, round 3): aim at the start position, 31 ticks before release, instead of airborne at the release point.
+  - **Across the demo's 391 throws:** 222 have a reliable setup frame; the rest are mostly mid-fight molotovs and flashes thrown on the move.
+- **Crosshair zoom:** 1×, 2×, 4×, 6× and 8× around the frame centre with the thin green crosshair. At 720p, roof edge, tile rows and foliage stay recognisable to 6×; 8× is soft.
+
+### Capture speed (17 Nov 2026, RTX 4090, `tools/cs2-capture/bench15.py` and the website)
+- **Frame grabbing:**
+  - **Cause:** Phase 13's ~40 grabs/s limit was the per-frame `pgrep` check (~6 ms), not the window.
+  - **Now:** with a cached PID, grabs run at 210–217/s (XGetImage) and up to 274/s with the new MIT-SHM grabber. The grabber is checked against XGetImage on start: mean difference 0.18.
+- **Kill footage at 2× (round 17, 6 kills, 10 clips, grouped):**
+
+| | 1× | 2× (60+ grabs/s retimed to 30 fps) |
+|---|---|---|
+| Wall-clock (seek, POV, recording, encoding) | 56.6 s | 46.3 s (−18%) |
+| Recording | 30.5 s | 19.9 s |
+| Decoded frames | 60/60 per clip | 60/60 per clip |
+| Distinct frames, worst clip | 97% | 83% |
+| Worst lag | 0.08 ticks | 2.07 ticks (≈1 output frame) |
+| Death camera frame in victim clips | 30, 30, 24, 30, 30, 37 | 30, 29, 24, 30, 30, 37 |
+
+  - **Round 3 at 2×:** five segments dropped to 62% distinct frames and 3.5 ticks of lag. The new automatic check (under 75% distinct or over 3 ticks → record again at 1×) caught them, but recording twice cost more than 2× saved.
+  - **Decision:** 2× stays **opt-in** (`CAPTURE_KILL_TIMESCALE=2`, with the 1× fallback); the proven 1× path is the default. Utility always records at 1×, in its own segments.
+- **Website, Capture this round:**
+  - **Round 17 (Kills & Utility):** 11/11 in **95.4 s** total, with kills at 2× and no fallbacks. Phase 14: 121 s; Phase 13: 271 s.
+  - **Round 3 (Kills & Utility):** 16/16 in 151.8 s, including five 2× fallbacks.
+  - **Seek fix:** the first round 3 run lost a throw to a seek CS2 interrupted with its own resync (skip to the tick before, resume) before reporting the tick. Seeks now detect that and seek again; the rerun had no failures and 2.4 s of idle time.
+- **Estimates:** capture estimates are unchanged (Phase 14 figures). These runs mixed 2× attempts and fallbacks, so they don't give a clean per-event figure for the 1× default.
+
+### Still needed / not verified
+- The lineup catalogue is a three-entry test set; more entries (and every map) need supplied data or CSNADES's permission.
+- Share / import with lineup references is covered by API tests, not checked by hand in the browser.
+- Game Mode shows the lineup link through the same gallery as the tactic view; not checked by hand in a live Game Mode session.
+- A run-jump or running throw with no still moment in the 3 s before release keeps the tick-before-release still, with the limitation shown.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

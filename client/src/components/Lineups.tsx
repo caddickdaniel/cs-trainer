@@ -1,3 +1,4 @@
+import { TECHNIQUE_LABEL } from '../lib/lineups';
 import { useEffect, useRef } from 'react';
 import { imageUrl } from '../lib/api';
 import { LEVEL_LABEL, MARKER_LABEL, mapLevels, type Level } from '../lib/constants';
@@ -33,8 +34,22 @@ export function preferredLevel(map: string, board: Board, userId?: number | null
   return lower > pool.length - lower ? 'lower' : 'main';
 }
 
+// Markers with lineup screenshots or a catalogue lineup reference (Phase 15).
 export const lineupMarkers = (board: Board, userId?: number | null) =>
-  board.markers.filter((m) => m.images?.length && (userId === undefined || m.user_id === userId));
+  board.markers.filter((m) => (m.images?.length || m.lineup) && (userId === undefined || m.user_id === userId));
+
+// The attributed link to the exact lineup on CSNADES.gg, with its technique.
+export function LineupLink({ m }: { m: Marker }) {
+  if (!m.lineup) return null;
+  return (
+    <p className="lineup-ref small" data-lineup-ref={m.lineup.id}>
+      <strong>{m.lineup.title}</strong>
+      {m.lineup.technique ? <span className="muted"> · {TECHNIQUE_LABEL[m.lineup.technique] ?? m.lineup.technique}</span> : null}
+      {m.lineup.instructions ? <span className="lineup-ref__how">{m.lineup.instructions}</span> : null}
+      <a href={m.lineup.url} target="_blank" rel="noreferrer noopener">View lineup on CSNADES.gg</a>
+    </p>
+  );
+}
 
 export function markerTitle(m: Marker) {
   return `${MARKER_LABEL[m.kind]}${m.label ? ` · ${m.label}` : ''}`;
@@ -48,6 +63,7 @@ export function LineupGallery({ markers, onOpen, large = false }: { markers: Mar
       {markers.map((m) => (
         <figure key={m.id} className="lineup">
           <figcaption><strong>{markerTitle(m)}</strong>{m.level === 'lower' ? <span className="muted"> · lower</span> : null}</figcaption>
+          <LineupLink m={m} />
           <div className="lineup-images">
             {(m.images ?? []).map((img, i) => (
               <button key={img.image_id} type="button" className="lineup-thumb" onClick={() => onOpen(m, i)}

@@ -1,7 +1,8 @@
-// Mirrors domain/utility.js (keep in sync; spec/phase14.spec.js compares
-// them): per-player buy lists, prices, drops and pickups, and the utility
-// each player has at the start of every phase. Type imports only, so the
-// server tests can load it.
+// Mirrors domain/utility.js (keep in sync; spec/phase14.spec.js and
+// spec/phase15.spec.js compare them): per-player buy lists, prices, drops,
+// route pickups, and the utility each player has at the start of every
+// phase, from the same simulation Play Phase animates. Type imports only, so
+// the server tests can load it.
 import type { Board, GrenadeCounts, Loadout, Phase, PlayerRef } from './types';
 
 export const GRENADES = ['smoke', 'flash', 'molly', 'he', 'decoy'] as const;
@@ -20,6 +21,8 @@ export const GRENADE_LABEL: Record<Grenade, [string, string]> = {
 export const itemLabel = (kind: Grenade, side?: string | null, plural = false) =>
   (kind === 'molly' && side === 'CT' ? (plural ? 'Incendiaries' : 'Incendiary') : GRENADE_LABEL[kind][plural ? 1 : 0]);
 
+// The item name inside a sentence: lower case, except HE.
+export const itemWord = (kind: Grenade, side?: string | null, plural = false) => (kind === 'he' ? (plural ? 'HEs' : 'HE') : itemLabel(kind, side, plural).toLowerCase());
 const empty = (): GrenadeCounts => ({ smoke: 0, flash: 0, molly: 0, he: 0, decoy: 0 });
 export const refKey = (r: { user_id: number | null; slot?: number | null } | null | undefined) =>
   (!r ? null : r.user_id != null ? `u${r.user_id}` : r.slot ? `s${r.slot}` : null);
@@ -36,9 +39,26 @@ export function buyCost(l: Partial<Loadout> | undefined | null, side?: string | 
 }
 export const money = (n: number) => `$${n.toLocaleString('en-US')}`;
 
-export interface Step { type: 'throw' | 'drop' | 'pickup'; id: string; key: string; kind?: string; drop_id?: string; seq?: number; n: number; step: number }
+export interface Step { type: 'throw' | 'drop'; id: string; key: string; kind?: string; seq?: number; n: number; step: number }
 
-// One phase's utility actions per owner, in order (same rules as the server).
+// Play Phase timing (mirrors domain/utility.js).
+export const RADAR_SCALE: Record<string, number> = {
+  de_ancient: 5, de_anubis: 5.22, de_cache: 5.5, de_dust2: 4.4, de_inferno: 4.9, de_mirage: 5,
+  de_nuke: 7, de_overpass: 5.2, de_train: 4.082077, de_vertigo: 4,
+};
+export const RUN_SPEED = 230;
+export const GRENADE_SPEED = 750;
+export const GAP_S = 0.5;
+export const ACTION_S = 0.4;
+export const PICKUP_UNITS = 96;
+export const unitsPerBoard = (map: string | null | undefined) => 1024 * (RADAR_SCALE[map ?? ''] ?? 5);
+const levelOf = (x: { level?: string } | null | undefined) => (x && x.level) || 'main';
+type Pt = { x: number; y: number };
+const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
+export const pathLength = (pts: Pt[]) => pts.slice(1).reduce((n, p, i) => n + dist(pts[i], p), 0);
+
+// One phase's throws and drops per owner, in each player's order (same rules
+// as the server; older pickup annotations are ignored).
 export function phaseSteps(board: Board, seenMarkers: Set<string>): Step[] {
   const items: Step[] = [];
   board.markers.forEach((m, i) => {
@@ -50,8 +70,8 @@ export function phaseSteps(board: Board, seenMarkers: Set<string>): Step[] {
   });
   (board.actions ?? []).forEach((a, i) => {
     const key = refKey(a);
-    if (!key) return;
-    items.push({ type: a.type, id: a.id, key, kind: a.kind, drop_id: a.drop_id, seq: a.seq, n: 1000 + i, step: 0 });
+    if (!key || a.type !== 'drop') return;
+    items.push({ type: 'drop', id: a.id, key, kind: a.kind, seq: a.seq, n: 1000 + i, step: 0 });
   });
   const byOwner = new Map<string, Step[]>();
   for (const it of items) {
@@ -62,30 +82,175 @@ export function phaseSteps(board: Board, seenMarkers: Set<string>): Step[] {
     list.sort((a, b) => (a.seq ?? 1e9) - (b.seq ?? 1e9) || a.n - b.n);
     list.forEach((it, i) => { it.step = i; });
   }
-  const rank = { drop: 0, pickup: 1, throw: 2 } as const;
+  const rank = { drop: 0, throw: 1 } as const;
   return [...byOwner.values()].flat().sort((a, b) => a.step - b.step || rank[a.type] - rank[b.type] || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+export interface Move { key: string; markerId: string; level: string; path: Pt[]; times: number[]; end: number; routed: boolean }
+export function phaseMoves(board: Board, map: string | null | undefined): Map<string, Move> {
+  const scale = unitsPerBoard(map);
+  const moves = new Map<string, Move>();
+  for (const m of board.markers.filter((x) => x.kind === 'player')) {
+    const key = refKey(m);
+    if (!key || moves.has(key)) continue;
+    const routes = board.routes.filter((r) => refKey(r) === key && r.points.length >= 2 && levelOf(r) === levelOf(m));
+    const path: Pt[] = [{ x: m.x, y: m.y }, ...routes.flatMap((r) => r.points.map((p) => ({ x: p.x, y: p.y })))];
+    const times = [0];
+    for (let i = 1; i < path.length; i += 1) times.push(times[i - 1] + (dist(path[i - 1], path[i]) * scale) / RUN_SPEED);
+    moves.set(key, { key, markerId: m.id, level: levelOf(m), path, times, end: routes.length ? times[times.length - 1] : 0, routed: routes.length > 0 });
+  }
+  return moves;
+}
+
+// Where a player is at time t (along their route, then standing at its end).
+export function moveAt(mv: Move, t: number): Pt {
+  const { path, times } = mv;
+  if (t <= 0 || path.length === 1) return path[0];
+  for (let i = 1; i < path.length; i += 1) {
+    if (t <= times[i]) {
+      const f = times[i] > times[i - 1] ? (t - times[i - 1]) / (times[i] - times[i - 1]) : 1;
+      return { x: path[i - 1].x + (path[i].x - path[i - 1].x) * f, y: path[i - 1].y + (path[i].y - path[i - 1].y) * f };
+    }
+  }
+  return path[path.length - 1];
+}
+
+export function firstReach(mv: Move, p: Pt, r: number, from: number): number | null {
+  const { path, times } = mv;
+  for (let i = 1; i < path.length; i += 1) {
+    const t0 = times[i - 1];
+    const t1 = times[i];
+    if (t1 < from || t1 <= t0) continue;
+    const A = path[i - 1];
+    const vx = (path[i].x - A.x) / (t1 - t0);
+    const vy = (path[i].y - A.y) / (t1 - t0);
+    const s0 = Math.max(from, t0) - t0;
+    const wx = A.x - p.x;
+    const wy = A.y - p.y;
+    const at = (q: number) => Math.hypot(wx + vx * q, wy + vy * q);
+    if (at(s0) <= r) return t0 + s0;
+    const a = vx * vx + vy * vy;
+    const b = 2 * (wx * vx + wy * vy);
+    const c = wx * wx + wy * wy - r * r;
+    const disc = b * b - 4 * a * c;
+    if (a > 0 && disc >= 0) {
+      const q = (-b - Math.sqrt(disc)) / (2 * a);
+      if (q >= s0 && q <= t1 - t0) return t0 + q;
+    }
+  }
+  const last = path[path.length - 1];
+  return dist(last, p) <= r ? Math.max(from, mv.end) : null;
+}
+
+const roomFor = (c: GrenadeCounts, kind: Grenade) => c[kind] < BUY_LIMITS[kind] && grenadeTotal(c) < MAX_GRENADES;
+
+export interface GroundItem { id: string; kind: Grenade; x: number; y: number; level: string; key: string }
+export interface TimedStep extends Step { start: number; end: number; path?: Pt[] }
+export interface Pickup { id: string; key: string; t: number; kind: Grenade }
+export interface SimIssue { kind: Grenade; type: 'unavailable' | 'drop_unavailable'; planned: number; available: number; id: string; key: string }
+export interface PhaseSim {
+  moves: Map<string, Move>; steps: TimedStep[]; pickups: Pickup[]; blocked: Pickup[];
+  end: Map<string, GrenadeCounts>; ground: GroundItem[];
+  used: Map<string, GrenadeCounts>; dropped: Map<string, GrenadeCounts>; picked: Map<string, GrenadeCounts>;
+  over: SimIssue[]; duration: number;
+}
+
+// One phase, deterministically (see domain/utility.js simulatePhase).
+export function simulatePhase({ board, map, start = new Map(), ground = [], seen = new Set() }: {
+  board: Board; map: string | null | undefined; start?: Map<string, GrenadeCounts>; ground?: GroundItem[]; seen?: Set<string>;
+}): PhaseSim {
+  const scale = unitsPerBoard(map);
+  const reach = PICKUP_UNITS / scale; // board fraction (scale = units per board)
+  const moves = phaseMoves(board, map);
+  const steps = phaseSteps(board, seen);
+  const nextFree = new Map<string, number>();
+  const timed: TimedStep[] = [];
+  for (const s of steps) {
+    const begin = nextFree.get(s.key) ?? (moves.get(s.key)?.end ?? 0);
+    let end = begin + ACTION_S;
+    let path: Pt[] | undefined;
+    if (s.type === 'throw') {
+      const m = board.markers.find((x) => x.id === s.id)!;
+      const mv = moves.get(s.key);
+      const from = mv ? mv.path[mv.path.length - 1] : null;
+      path = [...(from ? [from] : []), ...(m.path ?? []).map((p) => ({ x: p.x, y: p.y })), { x: m.x, y: m.y }];
+      end = begin + Math.min(2.2, Math.max(0.5, (pathLength(path) * scale) / GRENADE_SPEED));
+    }
+    timed.push({ ...s, start: begin, end, path });
+    nextFree.set(s.key, end + GAP_S);
+  }
+  const inv = new Map([...start].map(([k, c]) => [k, { ...c }]));
+  const ensure = (k: string) => { if (!inv.has(k)) inv.set(k, empty()); return inv.get(k)!; };
+  const used = new Map<string, GrenadeCounts>();
+  const dropped = new Map<string, GrenadeCounts>();
+  const picked = new Map<string, GrenadeCounts>();
+  const bump = (m: Map<string, GrenadeCounts>, k: string, kind: Grenade) => { if (!m.has(k)) m.set(k, empty()); m.get(k)![kind] += 1; };
+  const over: SimIssue[] = [];
+  const pickups: Pickup[] = [];
+  const blocked: Pickup[] = [];
+  const items = new Map<string, GroundItem>();
+  type Ev = { t: number; rank: number; key: string; id: string; type: 'reach' | 'throw' | 'drop'; step?: TimedStep };
+  const queue: Ev[] = [];
+  const candidates = (item: GroundItem, from: number) => {
+    for (const mv of moves.values()) {
+      if (!mv.routed || mv.key === item.key || mv.level !== item.level) continue;
+      const t = firstReach(mv, item, reach, from);
+      // Rounded to 0.1 ms so equal-distance arrivals tie (then: by player key).
+      if (t != null) queue.push({ t: Math.round(t * 1e4) / 1e4, rank: 1, key: mv.key, id: item.id, type: 'reach' });
+    }
+  };
+  for (const g of ground) {
+    items.set(g.id, { ...g });
+    candidates(g, 0);
+  }
+  for (const s of timed) queue.push({ t: s.type === 'throw' ? s.start : s.end, rank: 0, key: s.key, id: s.id, type: s.type, step: s });
+  const order = (a: Ev, b: Ev) => a.t - b.t || a.rank - b.rank || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  while (queue.length) {
+    queue.sort(order);
+    const e = queue.shift()!;
+    if (e.type === 'reach') {
+      const item = items.get(e.id);
+      if (!item) continue;
+      const c = ensure(e.key);
+      if (!roomFor(c, item.kind)) { blocked.push({ id: item.id, key: e.key, t: e.t, kind: item.kind }); continue; }
+      c[item.kind] += 1;
+      bump(picked, e.key, item.kind);
+      items.delete(item.id);
+      pickups.push({ id: item.id, key: e.key, t: e.t, kind: item.kind });
+      continue;
+    }
+    const s = e.step!;
+    const kind = s.kind as Grenade;
+    if (!(GRENADES as readonly string[]).includes(kind)) continue;
+    const c = ensure(s.key);
+    if (c[kind] < 1) {
+      over.push({ kind, type: s.type === 'throw' ? 'unavailable' : 'drop_unavailable', planned: 1, available: 0, id: s.id, key: s.key });
+      if (s.type === 'throw') bump(used, s.key, kind);
+      continue;
+    }
+    c[kind] -= 1;
+    bump(s.type === 'throw' ? used : dropped, s.key, kind);
+    if (s.type === 'drop') {
+      const a = (board.actions ?? []).find((x) => x.id === s.id)!;
+      const item: GroundItem = { id: s.id, kind, x: a.x, y: a.y, level: levelOf(a), key: s.key };
+      items.set(item.id, item);
+      candidates(item, e.t);
+    }
+  }
+  const moveEnd = Math.max(0, ...[...moves.values()].map((m) => m.end));
+  const duration = Math.max(moveEnd, ...timed.map((t) => t.end), ...pickups.map((p) => p.t), 0.5);
+  return { moves, steps: timed, pickups, blocked, end: inv, ground: [...items.values()], used, dropped, picked, over, duration };
 }
 
 export interface ActionError { phase: number; id: string; message: string }
 export function actionErrors(phases: Phase[]): ActionError[] {
   const errors: ActionError[] = [];
-  const drops = new Map<string, { phase: number; step: number }>();
-  const picked = new Map<string, string>();
-  const seen = new Set<string>();
+  const ids = new Set<string>();
   phases.forEach((p, phase) => {
-    const steps = phaseSteps(p.board, seen);
-    for (const s of steps) {
-      if (s.type !== 'drop') continue;
-      if (drops.has(s.id)) errors.push({ phase, id: s.id, message: 'Each drop needs its own id' });
-      drops.set(s.id, { phase, step: s.step });
-    }
-    for (const s of steps) {
-      if (s.type !== 'pickup') continue;
-      const d = s.drop_id ? drops.get(s.drop_id) : undefined;
-      if (!d || d.phase > phase) errors.push({ phase, id: s.id, message: 'A pickup must take an item dropped in this or an earlier phase' });
-      else if (d.phase === phase && d.step >= s.step) errors.push({ phase, id: s.id, message: 'A pickup must come after its drop' });
-      else if (picked.has(s.drop_id!)) errors.push({ phase, id: s.id, message: 'That dropped item has already been picked up' });
-      else picked.set(s.drop_id!, s.id);
+    for (const a of p.board.actions ?? []) {
+      if (a.type !== 'drop') continue;
+      if (ids.has(a.id)) errors.push({ phase, id: a.id, message: 'Each drop needs its own id' });
+      ids.add(a.id);
     }
   });
   return errors;
@@ -100,16 +265,20 @@ export interface PlayerPlan {
   phases: { start: GrenadeCounts; used: GrenadeCounts; dropped: GrenadeCounts; picked: GrenadeCounts }[];
   over: PlanIssue[];
 }
+export interface TacticPlan { players: Map<string, PlayerPlan>; grounds: GroundItem[][]; sims: PhaseSim[]; final: GroundItem[] }
 
-export function utilityPlan(loadouts: Loadout[], phases: Phase[], side?: string | null): Map<string, PlayerPlan> {
+// The whole tactic with the Play Phase simulation (mirrors phasePlan).
+export function phasePlan(loadouts: Loadout[], phases: Phase[], side?: string | null, map?: string | null, bomb?: PlayerRef | null): TacticPlan {
   const keys: string[] = [];
   const add = (k: string | null) => { if (k && !keys.includes(k)) keys.push(k); };
   loadouts.forEach((l) => add(refKey(l)));
+  if (side === 'T' && bomb) add(refKey(bomb));
   for (const p of phases) {
     p.board.markers.forEach((m) => { if ((THROWN as readonly string[]).includes(m.kind) && !m.reference) add(refKey(m)); });
-    (p.board.actions ?? []).forEach((a) => add(refKey(a)));
+    (p.board.actions ?? []).forEach((a) => { if (a.type === 'drop') add(refKey(a)); });
+    p.board.markers.forEach((m) => { if (m.kind === 'player') add(refKey(m)); });
   }
-  const inv = new Map<string, GrenadeCounts>();
+  let inv = new Map<string, GrenadeCounts>();
   const out = new Map<string, PlayerPlan>();
   for (const key of keys) {
     const l = loadouts.find((x) => refKey(x) === key);
@@ -117,51 +286,31 @@ export function utilityPlan(loadouts: Loadout[], phases: Phase[], side?: string 
     inv.set(key, { ...buy });
     out.set(key, { key, buy, kit: side === 'CT' && Boolean(l?.kit), cost: buyCost(l, side), phases: [], over: [] });
   }
-  const dropKind = new Map<string, Grenade>();
   const seen = new Set<string>();
+  let ground: GroundItem[] = [];
+  const grounds: GroundItem[][] = [];
+  const sims: PhaseSim[] = [];
   phases.forEach((p, phase) => {
-    const starts = new Map([...inv].map(([k, c]) => [k, { ...c }]));
-    const used = new Map(keys.map((k) => [k, empty()]));
-    const dropped = new Map(keys.map((k) => [k, empty()]));
-    const gained = new Map(keys.map((k) => [k, empty()]));
-    for (const s of phaseSteps(p.board, seen)) {
-      const c = inv.get(s.key)!;
-      if (s.type === 'throw' || s.type === 'drop') {
-        const kind = s.kind as Grenade;
-        if (!(GRENADES as readonly string[]).includes(kind)) continue;
-        if (c[kind] < 1) out.get(s.key)!.over.push({ phase, kind, type: s.type === 'throw' ? 'unavailable' : 'drop_unavailable', planned: 1, available: 0, id: s.id });
-        c[kind] = Math.max(0, c[kind] - 1);
-        (s.type === 'throw' ? used : dropped).get(s.key)![kind] += 1;
-        if (s.type === 'drop') dropKind.set(s.id, kind);
-      } else {
-        const kind = s.drop_id ? dropKind.get(s.drop_id) : undefined;
-        if (!kind) continue;
-        c[kind] += 1;
-        gained.get(s.key)![kind] += 1;
-        if (c[kind] > BUY_LIMITS[kind] || grenadeTotal(c) > MAX_GRENADES) {
-          out.get(s.key)!.over.push({ phase, kind, type: 'over_limit', planned: c[kind], available: BUY_LIMITS[kind], id: s.id });
-        }
-      }
-    }
+    grounds.push(ground.map((g) => ({ ...g })));
+    const sim = simulatePhase({ board: p.board, map, start: inv, ground, seen });
+    sims.push(sim);
+    for (const o of sim.over) out.get(o.key)?.over.push({ phase, kind: o.kind, type: o.type, planned: o.planned, available: o.available, id: o.id });
     for (const key of keys) {
-      out.get(key)!.phases.push({ start: starts.get(key)!, used: used.get(key)!, dropped: dropped.get(key)!, picked: gained.get(key)! });
+      out.get(key)!.phases.push({
+        start: { ...(inv.get(key) ?? empty()) },
+        used: sim.used.get(key) ?? empty(),
+        dropped: sim.dropped.get(key) ?? empty(),
+        picked: sim.picked.get(key) ?? empty(),
+      });
     }
+    inv = new Map(keys.map((k) => [k, { ...(sim.end.get(k) ?? inv.get(k) ?? empty()) }]));
+    ground = sim.ground;
   });
-  return out;
+  return { players: out, grounds, sims, final: ground };
 }
 
-// Drops still on the ground at the start of a phase (dropped earlier, not
-// picked up before it), for pickups and the board.
-export function groundDrops(phases: Phase[], phaseIndex: number) {
-  const out: { id: string; phase: number; kind: Grenade; x: number; y: number; level: string; owner: PlayerRef }[] = [];
-  const picked = new Set<string>();
-  phases.slice(0, phaseIndex).forEach((p) => (p.board.actions ?? []).forEach((a) => { if (a.type === 'pickup' && a.drop_id) picked.add(a.drop_id); }));
-  phases.slice(0, phaseIndex).forEach((p, phase) => (p.board.actions ?? []).forEach((a) => {
-    if (a.type === 'drop' && a.kind && !picked.has(a.id)) {
-      out.push({ id: a.id, phase, kind: a.kind as Grenade, x: a.x, y: a.y, level: a.level ?? 'main', owner: { user_id: a.user_id, slot: a.slot ?? null } });
-    }
-  }));
-  return out;
+export function utilityPlan(loadouts: Loadout[], phases: Phase[], side?: string | null, map?: string | null, bomb?: PlayerRef | null): Map<string, PlayerPlan> {
+  return phasePlan(loadouts, phases, side, map, bomb).players;
 }
 
 // "1 smoke, 2 flashes" (empty string when nothing).
