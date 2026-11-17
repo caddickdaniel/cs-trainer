@@ -30,6 +30,9 @@ reviewRouter.route('/:review_id/annotations/:annotation_id')
   .delete(asyncHandler(async (req, res) => {
     res.status(200).send(await reviews.removeAnnotation(reviewId(req), v.parseId(req.params.annotation_id, 'annotation_id'), me(req)));
   }))
+  .patch(asyncHandler(async (req, res) => {
+    res.status(200).send(await reviews.updateAnnotation(reviewId(req), v.parseId(req.params.annotation_id, 'annotation_id'), me(req), v.annotationPatch.parse(req.body)));
+  }))
   .all(handle405);
 
 reviewRouter.route('/:review_id/end')

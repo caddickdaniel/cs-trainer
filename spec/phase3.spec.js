@@ -350,6 +350,9 @@ describe('phase 3', () => {
       await member.post(`/api/demos/${demo.demo_id}/annotations`).send({ ...text, round_number: 7 }).expect(400);
       await member.post(`/api/demos/${demo.demo_id}/annotations`)
         .send({ kind: 'drawing', round_number: 1, tick: 150, data: { points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.2 }] } }).expect(201);
+      // Phase 8: new annotations are drafts until their author saves them.
+      expect((await third.get(`/api/demos/${demo.demo_id}/annotations?round=1`).expect(200)).body.annotations).to.have.length(0);
+      await member.post(`/api/demos/${demo.demo_id}/save`).send({}).expect(200);
       expect((await third.get(`/api/demos/${demo.demo_id}/annotations?round=1`).expect(200)).body.annotations).to.have.length(2);
       await third.delete(`/api/demos/${demo.demo_id}/annotations/${annotation.annotation_id}`).expect(403);
       await owner.delete(`/api/demos/${demo.demo_id}/annotations/${annotation.annotation_id}`).expect(200);

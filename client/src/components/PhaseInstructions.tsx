@@ -1,5 +1,6 @@
 import type { Assignment } from '../lib/types';
-import { ownerColor, ownerKey } from './MapBoard';
+import { ownerKey } from './MapBoard';
+import { usePlayerColors } from '../lib/playerColors';
 
 // Read-only list of every player's instruction for one phase.
 export function PhaseInstructions({ assignments, players, highlight }: {
@@ -7,12 +8,13 @@ export function PhaseInstructions({ assignments, players, highlight }: {
   players: number[];
   highlight?: number | null;
 }) {
+  const colorOf = usePlayerColors();
   if (!assignments.length) return <p className="muted">No player instructions in this phase.</p>;
   return (
     <ul className="instructions">
       {assignments.map((a) => (
         <li key={ownerKey(a) ?? ''} className={a.user_id != null && highlight === a.user_id ? 'mine' : ''} data-players={players.length}>
-          <span className="dot" style={{ background: ownerColor(a) }} />
+          <span className="dot" style={{ background: colorOf(a) }} />
           <div>
             <strong>{a.user_id == null ? `Player ${a.slot} (unmapped)` : a.user_name ?? `Player ${a.user_id}`}</strong>
             {a.is_member === false ? <span className="muted"> (no longer on the team)</span> : null}

@@ -48,9 +48,11 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="stack narrow-page">
+    <div className="stack">
       <h1>Settings</h1>
-      <AccountSettings />
+      <div className="settings-grid">
+      <div className="stack"><AccountSettings /></div>
+      <div className="stack settings-side">
       <Panel title="Game Mode keyboard shortcuts">
         <Alert kind="info">
           Shortcuts only work while the Game Mode page is open and focused in your browser (click it on your second monitor first).
@@ -90,9 +92,14 @@ export function SettingsPage() {
         {message ? <Alert kind="success">{message}</Alert> : null}
         <div className="row">
           <button type="button" className="btn primary" disabled={!dirty || conflicts.size > 0} onClick={() => save(draft)}>Save shortcuts</button>
-          <button type="button" className="btn ghost" onClick={() => save(null)}>Reset all to defaults</button>
+          <button type="button" className="btn ghost" onClick={() => {
+            if (window.confirm('Reset every Game Mode shortcut to the defaults? Your custom keys will be removed.')) save(null);
+          }}>Reset to defaults</button>
         </div>
+        <p className="muted small">Defaults: {SHORTCUT_ACTIONS.map((a) => `${SHORTCUT_LABEL[a]} ${formatBinding(DEFAULT_SHORTCUTS[a])}`).join(' · ')}</p>
       </Panel>
+      </div>
+      </div>
     </div>
   );
 }

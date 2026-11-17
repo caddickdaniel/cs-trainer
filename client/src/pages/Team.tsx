@@ -11,14 +11,25 @@ import { Avatar, Facts, RoleBadge } from '../components/People';
 import { InviteButton } from './PlayerProfile';
 import { Combobox } from '../components/Combobox';
 import { RankBadge } from '../components/RankBadge';
-import { useCatalogue } from '../lib/catalogue';
+import { CompetitionList, CompetitionPicker, PlayerRankList, RankSelect, RequirementList, RequirementsEditor } from '../components/Recruitment';
+import { useCatalogue, type Catalogue } from '../lib/catalogue';
+import { PLAYER_PALETTE, paletteHex } from '../lib/playerColors';
+import type { PlayerColorId } from '../lib/types';
+import type { RankRequirement } from '../lib/types';
 
-const TEAM_FIELDS = [
-  ['language', 'Language'],
-  ['region', 'Region'],
-  ['platform', 'Platform'],
-  ['skill_level', 'Skill level'],
-] as const;
+const PLATFORM_IDS = ['premier', 'faceit', 'esea'] as const;
+
+// Language and region use the same searchable lists as player profiles.
+function TeamOptionFields({ cat, form, setForm }: { cat: Catalogue | null; form: Record<string, string>; setForm: (f: Record<string, string>) => void }) {
+  return (
+    <div className="grid2">
+      <Combobox label="Language" options={cat?.languages ?? []} value={form.language ?? ''} emptyLabel="Not set"
+        onChange={(v) => setForm({ ...form, language: v })} />
+      <Combobox label="Region" options={cat?.regions ?? []} value={form.region ?? ''} emptyLabel="Not set"
+        onChange={(v) => setForm({ ...form, region: v })} />
+    </div>
+  );
+}
 
 // Accepts a full invite link or just the code.
 export function extractInviteToken(value: string) {
@@ -30,7 +41,10 @@ export function extractInviteToken(value: string) {
 function NoTeam() {
   const { refresh } = useAuth();
   const navigate = useNavigate();
+  const cat = useCatalogue();
   const [form, setForm] = useState<Record<string, string>>({ team_name: '' });
+  const [requirements, setRequirements] = useState<RankRequirement[]>([]);
+  const [competitions, setCompetitions] = useState<string[]>([]);
   const [invite, setInvite] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,7 +57,7 @@ function NoTeam() {
     setError(null);
     try {
       const body = Object.fromEntries(Object.entries(form).filter(([, v]) => v.trim() !== ''));
-      await api.post('/teams', body);
+      await api.post('/teams', { ...body, rank_requirements: requirements, competitions });
       await refresh();
     } catch (err) {
       setError(errorMessage(err));
@@ -64,12 +78,9 @@ function NoTeam() {
         <form className="form" onSubmit={create}>
           <label>Team name<input required minLength={2} maxLength={60} value={form.team_name}
             onChange={(e) => setForm({ ...form, team_name: e.target.value })} /></label>
-          <div className="grid2">
-            {TEAM_FIELDS.map(([key, label]) => (
-              <label key={key}>{label}<input maxLength={40} value={form[key] ?? ''}
-                onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
-            ))}
-          </div>
+          <TeamOptionFields cat={cat} form={form} setForm={setForm} />
+          <CompetitionPicker cat={cat} value={competitions} onChange={setCompetitions} />
+          <RequirementsEditor cat={cat} value={requirements} onChange={setRequirements} />
           <label>Description<textarea rows={4} maxLength={1000} value={form.description ?? ''}
             onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <Alert>{error}</Alert>
@@ -123,7 +134,40 @@ function RoleSelect({ member, roster, me, onChange }: { member: Member; roster: 
   );
 }
 
-function MemberRow({ member, roster, me, onChange }: { member: Member; roster: RosterResponse; me: number; onChange: () => Promise<void> }) {
+// A player's CS2 teammate colour: a swatch, and for the owner / IGL a picker
+// where colours other players already have are disabled and name the holder.
+export function ColorSwatch({ color, size = 14 }: { color: PlayerColorId | null | undefined; size?: number }) {
+  if (!color) return <span className="color-swatch none" style={{ width: size, height: size }} title="No colour" aria-hidden="true" />;
+  return <span className="color-swatch" style={{ width: size, height: size, background: paletteHex(color) }} title={`CS2 colour: ${color}`} aria-hidden="true" />;
+}
+function ColorSelect({ member, roster, onChange }: { member: Member; roster: RosterResponse; onChange: (c: PlayerColorId | null) => void }) {
+  const label = PLAYER_PALETTE.find((c) => c.id === member.game_color)?.label;
+  if (!roster.viewer.can_lead) {
+    return <span className="row tight"><ColorSwatch color={member.game_color} /> {label ?? <span className="muted">Not set</span>}</span>;
+  }
+  const holder = (id: PlayerColorId) => roster.members.find((m) => m.game_color === id && m.user_id !== member.user_id);
+  return (
+    <span className="row tight color-select">
+      <ColorSwatch color={member.game_color} />
+      <select aria-label={`CS2 colour for ${member.user_name}`} value={member.game_color ?? ''}
+        style={member.game_color ? { boxShadow: `inset 4px 0 0 ${paletteHex(member.game_color)}` } : undefined}
+        onChange={(e) => onChange((e.target.value || null) as PlayerColorId | null)}>
+        <option value="">Not set</option>
+        {PLAYER_PALETTE.map((c) => {
+          const h = holder(c.id);
+          return <option key={c.id} value={c.id} disabled={Boolean(h)}>{c.label}{h ? ` (${h.user_name})` : ''}</option>;
+        })}
+      </select>
+    </span>
+  );
+}
+
+// Premier / FACEIT / ESEA ranks from the player's profile (self-reported).
+function RankCell({ cat, rank }: { cat: Catalogue | null; rank: string | null | undefined }) {
+  return rank ? <RankBadge cat={cat} rankId={rank} compact /> : <span className="muted small">Not set</span>;
+}
+
+function MemberRow({ member, roster, me, onChange, cat }: { member: Member; roster: RosterResponse; me: number; onChange: () => Promise<void>; cat: Catalogue | null }) {
   const [error, setError] = useState<string | null>(null);
   const teamId = roster.team.team_id;
 
@@ -131,6 +175,16 @@ function MemberRow({ member, roster, me, onChange }: { member: Member; roster: R
     setError(null);
     try {
       await api.patch(`/teams/${teamId}/members/${member.user_id}`, { player_role: role });
+      await onChange();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const setColor = async (game_color: PlayerColorId | null) => {
+    setError(null);
+    try {
+      await api.patch(`/teams/${teamId}/members/${member.user_id}`, { game_color });
       await onChange();
     } catch (err) {
       setError(errorMessage(err));
@@ -152,21 +206,20 @@ function MemberRow({ member, roster, me, onChange }: { member: Member; roster: R
     <tr>
       <td>
         <div className="row">
-          <Avatar name={member.user_name} url={member.avatar_url} size={32} />
+          <span className="avatar-ring" style={member.game_color ? { boxShadow: `0 0 0 2px ${paletteHex(member.game_color)}` } : undefined}>
+            <Avatar name={member.user_name} url={member.avatar_url} size={32} />
+          </span>
           <div>
             <Link to={`/players/${member.user_id}`}><strong>{member.user_name}</strong></Link>
             {member.user_id === me ? <span className="muted"> (you)</span> : null}
+            {member.is_owner ? <> <Badge tone="gold">Owner</Badge></> : null}
             {error ? <div className="error-text">{error}</div> : null}
           </div>
         </div>
       </td>
+      <td><ColorSelect member={member} roster={roster} onChange={setColor} /></td>
+      {PLATFORM_IDS.map((p) => <td key={p} className="rank-cell"><RankCell cat={cat} rank={member.ranks?.[p]} /></td>)}
       <td><RoleSelect member={member} roster={roster} me={me} onChange={setRole} /></td>
-      <td>
-        <span className="row wrap tight-row">
-          {member.is_owner ? <Badge tone="gold">Owner</Badge> : null}
-          {member.is_igl ? <Badge tone="red">Controls Game Mode</Badge> : null}
-        </span>
-      </td>
       <td className="right">
         {roster.viewer.is_owner && !member.is_owner ? (
           <button type="button" className="btn ghost small danger" onClick={remove}>Remove</button>
@@ -180,15 +233,13 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
   const { team, viewer } = roster;
   const { refresh } = useAuth();
   const [editing, setEditing] = useState(false);
+  const cat = useCatalogue();
   const [form, setForm] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const startEdit = () => {
-    setForm({
-      team_name: team.team_name, language: team.language ?? '', region: team.region ?? '',
-      platform: team.platform ?? '', skill_level: team.skill_level ?? '', description: team.description ?? '',
-    });
+    setForm({ team_name: team.team_name, language: team.language ?? '', region: team.region ?? '', description: team.description ?? '' });
     setEditing(true);
   };
 
@@ -244,11 +295,7 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
         {editing ? (
           <form className="form compact" onSubmit={save}>
             <label>Team name<input required minLength={2} maxLength={60} value={form.team_name} onChange={(e) => setForm({ ...form, team_name: e.target.value })} /></label>
-            <div className="grid2">
-              {TEAM_FIELDS.map(([key, label]) => (
-                <label key={key}>{label}<input maxLength={40} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
-              ))}
-            </div>
+            <TeamOptionFields cat={cat} form={form} setForm={setForm} />
             <label>Description<textarea rows={3} maxLength={1000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
             <div className="row">
               <button className="btn primary">Save details</button>
@@ -259,9 +306,16 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
           <>
             <div className="row space">
               <h1>{team.team_name}</h1>
-              {viewer.is_owner ? <button type="button" className="btn ghost small" onClick={startEdit}><Icon name="edit" /> Edit details</button> : null}
+              {viewer.is_owner ? (
+                <div className="row tight-row">
+                  <button type="button" className="btn ghost small" onClick={startEdit}><Icon name="edit" /> Edit details</button>
+                  <DeleteTeamButton roster={roster} />
+                </div>
+              ) : null}
             </div>
-            <Facts items={TEAM_FIELDS.map(([k, label]) => [label, team[k as keyof Team] as string | null])} />
+            <Facts items={[['Language', team.language], ['Region', team.region],
+              ['Plays', team.competitions.length || team.recruiting_leagues ? <CompetitionList cat={cat} ids={team.competitions} legacy={team.recruiting_leagues} /> : null],
+              ['Recruiting', team.rank_requirements.length || team.legacy_requirement ? <RequirementList cat={cat} list={team.rank_requirements} legacy={team.legacy_requirement} /> : null]]} />
             {team.description ? <p>{team.description}</p> : null}
           </>
         )}
@@ -272,18 +326,24 @@ function TeamDetails({ roster, onChange }: { roster: RosterResponse; onChange: (
 }
 
 function RecruitingSettings({ team, onChange }: { team: Team; onChange: () => Promise<void> }) {
+  const cat = useCatalogue();
   const [form, setForm] = useState({
-    is_recruiting: team.is_recruiting, recruiting_leagues: team.recruiting_leagues ?? '',
-    roles_needed: team.roles_needed, recruiting_notes: team.recruiting_notes ?? '',
+    is_recruiting: team.is_recruiting, roles_needed: team.roles_needed, recruiting_notes: team.recruiting_notes ?? '',
+    competitions: team.competitions, rank_requirements: team.rank_requirements,
   });
+  // Legacy free text is only replaced once the owner touches the list.
+  const [touched, setTouched] = useState({ competitions: false, rank_requirements: false });
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
+      const { competitions, rank_requirements: reqs, ...rest } = form;
       await api.patch(`/teams/${team.team_id}/recruiting`, {
-        ...form, recruiting_leagues: form.recruiting_leagues || null, recruiting_notes: form.recruiting_notes || null,
+        ...rest, recruiting_notes: form.recruiting_notes || null,
+        ...(touched.competitions || !team.recruiting_leagues ? { competitions } : {}),
+        ...(touched.rank_requirements || !team.legacy_requirement ? { rank_requirements: reqs } : {}),
       });
       setMessage(form.is_recruiting ? 'Your team is listed under Recruiting.' : 'Your team is not listed under Recruiting.');
       await onChange();
@@ -298,8 +358,14 @@ function RecruitingSettings({ team, onChange }: { team: Team; onChange: () => Pr
       <form className="form compact" onSubmit={save}>
         <label className="inline-check"><input type="checkbox" checked={form.is_recruiting} onChange={(e) => setForm({ ...form, is_recruiting: e.target.checked })} />
           Show this team in "Teams looking for players"</label>
-        <label>Leagues you plan to play<input maxLength={300} value={form.recruiting_leagues} placeholder="e.g. ESEA Open, FACEIT League"
-          onChange={(e) => setForm({ ...form, recruiting_leagues: e.target.value })} /></label>
+        <CompetitionPicker cat={cat} value={form.competitions} legacy={touched.competitions ? null : team.recruiting_leagues}
+          onChange={(v) => { setForm({ ...form, competitions: v }); setTouched({ ...touched, competitions: true }); }} />
+        <RequirementsEditor cat={cat} value={form.rank_requirements}
+          onChange={(v) => { setForm({ ...form, rank_requirements: v }); setTouched({ ...touched, rank_requirements: true }); }} />
+        {team.legacy_requirement && !touched.rank_requirements ? (
+          <p className="muted small">Previously entered: “{team.legacy_requirement}”. It's kept until you set requirements above.</p>
+        ) : null}
+        <p className="muted small">Leagues and matchmaking say where the team plans to play; rank requirements say who it's recruiting.</p>
         <fieldset className="role-picker">
           <legend>Roles needed</legend>
           {PLAYER_ROLES.map((r) => (
@@ -366,8 +432,8 @@ function JoinRequests({ teamId }: { teamId: number }) {
 
 function RequestRank({ r }: { r: JoinRequest }) {
   const cat = useCatalogue();
-  if (!r.rank_platform && !r.legacy_platform && !r.legacy_skill_level) return null;
-  return <RankBadge cat={cat} platform={r.rank_platform} rankId={r.rank_id} legacyPlatform={r.legacy_platform} legacySkill={r.legacy_skill_level} />;
+  if (!Object.values(r.ranks).some(Boolean) && !r.legacy_platform && !r.legacy_skill_level) return null;
+  return <PlayerRankList cat={cat} ranks={r.ranks} legacyPlatform={r.legacy_platform} legacySkill={r.legacy_skill_level} />;
 }
 
 // Player search filters, using the same options as the profile editor.
@@ -378,18 +444,10 @@ function PlayerFilters({ value, onChange }: { value: Record<string, string>; onC
     <div className="filter-grid">
       <Combobox label="Language" options={cat?.languages ?? []} value={value.language ?? ''} onChange={(v) => set('language', v)} emptyLabel="Any language" />
       <Combobox label="Region" options={cat?.regions ?? []} value={value.region ?? ''} onChange={(v) => set('region', v)} emptyLabel="Any region" />
-      <label>Platform
-        <select value={value.platform ?? ''} onChange={(e) => onChange({ ...value, platform: e.target.value, rank: '' })}>
-          <option value="">Any platform</option>
-          {(cat?.platforms ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-        </select>
-      </label>
-      <label>Skill
-        <select value={value.rank ?? ''} disabled={!value.platform} onChange={(e) => set('rank', e.target.value)}>
-          <option value="">{value.platform ? 'Any rank' : 'Choose a platform first'}</option>
-          {(cat?.ranks ?? []).filter((r) => r.platform === value.platform).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-        </select>
-      </label>
+      {PLATFORM_IDS.map((p) => (
+        <RankSelect key={p} cat={cat} platform={p} label={`${cat?.platforms.find((x) => x.id === p)?.label ?? p} rank`}
+          emptyLabel="Any" value={value[p] ?? ''} onChange={(v) => set(p, v)} />
+      ))}
     </div>
   );
 }
@@ -447,14 +505,16 @@ function Invites({ teamId }: { teamId: number }) {
       <PlayerFilters value={filters} onChange={setFilters} />
       {players.data?.players.length ? (
         <table className="table compact">
-          <thead><tr><th>Player</th><th>Language</th><th>Region</th><th>Rank</th><th /></tr></thead>
+          <thead><tr><th>Player</th>{PLATFORM_IDS.map((p) => <th key={p}>{cat?.platforms.find((x) => x.id === p)?.label ?? p}</th>)}
+            <th>Language</th><th>Region</th><th /></tr></thead>
           <tbody>
             {players.data.players.map((p) => (
               <tr key={p.user_id}>
-                <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><Link to={`/players/${p.user_id}`}>{p.user_name}</Link></div></td>
-                <td>{p.language ?? <span className="muted">—</span>}</td>
-                <td>{p.region ?? <span className="muted">—</span>}</td>
-                <td><RankBadge cat={cat} platform={p.rank_platform} rankId={p.rank_id} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></td>
+                <td><div className="row"><Avatar name={p.user_name} url={p.avatar_url} size={28} /><div><Link to={`/players/${p.user_id}`}>{p.user_name}</Link>
+                  {p.legacy_platform || p.legacy_skill_level ? <div><RankBadge cat={cat} legacyPlatform={p.legacy_platform} legacySkill={p.legacy_skill_level} /></div> : null}</div></div></td>
+                {PLATFORM_IDS.map((k) => <td key={k} className="rank-cell"><RankCell cat={cat} rank={p.ranks[k]} /></td>)}
+                <td>{p.language ?? <span className="muted small">Not set</span>}</td>
+                <td>{p.region ?? <span className="muted small">Not set</span>}</td>
                 <td className="right">
                   <InviteButton teamId={players.data!.inviting_team?.team_id} userId={p.user_id} status={p.invite_status}
                     canInvite={players.data!.can_invite} onDone={refreshAll} />
@@ -463,7 +523,9 @@ function Invites({ teamId }: { teamId: number }) {
             ))}
           </tbody>
         </table>
-      ) : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
+      ) : null}
+      {players.data?.players.length ? <p className="muted small">Ranks are self-reported on each player's profile. Colours are assigned once a player joins.</p> : null}
+      {players.data?.players.length ? null : <p className="muted">{query ? 'No players match these filters.' : 'No players without a team right now.'}</p>}
 
       <h3>Invite link</h3>
       <div className="row wrap">
@@ -509,45 +571,66 @@ function Invites({ teamId }: { teamId: number }) {
   );
 }
 
-function DeleteTeam({ roster }: { roster: RosterResponse }) {
+// Owner-only. Opens a confirmation dialog; the final button stays disabled
+// until the owner types DELETE. The server re-checks ownership.
+function DeleteTeamButton({ roster }: { roster: RosterResponse }) {
   const { refresh } = useAuth();
   const navigate = useNavigate();
+  const ref = useRef<HTMLDialogElement>(null);
   const [confirm, setConfirm] = useState('');
-  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const name = roster.team.team_name;
+  const others = roster.members.length - 1;
+  const open = () => { setConfirm(''); setError(null); ref.current?.showModal(); };
   const remove = async () => {
     setError(null);
+    setBusy(true);
     try {
       await api.delete(`/teams/${roster.team.team_id}`);
+      ref.current?.close();
       await refresh();
       navigate('/team');
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      setBusy(false);
     }
   };
   return (
-    <Panel title="Delete team" className="danger-zone">
-      {!open ? (
-        <button type="button" className="btn ghost danger" onClick={() => setOpen(true)}><Icon name="trash" /> Delete {name}…</button>
-      ) : (
-        <div className="form compact">
-          <p>This permanently deletes {name} with its tactics, lineup screenshots, calendar, invites and Game Mode history.
-            All {roster.members.length} members lose access. This cannot be undone.</p>
-          <label>Type the team name to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+    <>
+      <button type="button" className="btn ghost small danger" onClick={open}><Icon name="trash" /> Delete team</button>
+      <dialog ref={ref} className="modal" aria-labelledby="delete-team-title" aria-describedby="delete-team-desc">
+        <form method="dialog" className="modal-body" onSubmit={(e) => { e.preventDefault(); if (confirm === 'DELETE') void remove(); }}>
+          <h2 id="delete-team-title">Delete {name}?</h2>
+          <div id="delete-team-desc" className="stack tight">
+            <p>This permanently deletes the team <strong>{name}</strong> and everything that belongs to it:</p>
+            <ul className="privacy-list">
+              <li>its tactics, lineup screenshots and calendar events</li>
+              <li>its community listings (and their votes and import counts)</li>
+              <li>uploaded demos, demo reviews and annotations</li>
+              <li>open invites, join requests and Game Mode history</li>
+            </ul>
+            <p>{others > 0 ? `${others} other member${others === 1 ? '' : 's'} will lose access. ` : ''}Player accounts and profiles are not deleted. This cannot be undone.</p>
+          </div>
+          <label>Type DELETE to confirm
+            <input value={confirm} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm(e.target.value)} aria-describedby="delete-team-hint" />
+          </label>
+          <span id="delete-team-hint" className="muted small">Capital letters, exactly as shown.</span>
           <Alert>{error}</Alert>
           <div className="row">
-            <button type="button" className="btn danger-solid" disabled={confirm !== name} onClick={remove}>Delete team permanently</button>
-            <button type="button" className="btn ghost" onClick={() => { setOpen(false); setConfirm(''); }}>Cancel</button>
+            <button type="submit" className="btn danger-solid" disabled={confirm !== 'DELETE' || busy}>{busy ? 'Deleting…' : 'Delete team permanently'}</button>
+            <button type="button" className="btn ghost" onClick={() => ref.current?.close()}>Cancel</button>
           </div>
-        </div>
-      )}
-    </Panel>
+        </form>
+      </dialog>
+    </>
   );
 }
 
 function TeamView({ teamId }: { teamId: number }) {
   const { user, teams, refresh } = useAuth();
+  const cat = useCatalogue();
   const location = useLocation();
   const roster = useLoad(() => api.get<RosterResponse>(`/teams/${teamId}/roster`), [teamId]);
   const [error, setError] = useState<string | null>(null);
@@ -561,6 +644,7 @@ function TeamView({ teamId }: { teamId: number }) {
   if (!roster.data) return <Alert>{roster.error}</Alert>;
   const { team, members, viewer } = roster.data;
   const me = user?.user_id ?? 0;
+  const unassigned = members.filter((m) => !m.game_color).length;
   const igl = members.find((m) => m.is_igl);
   const reload = async () => { await roster.reload(); await refresh(); };
 
@@ -589,12 +673,20 @@ function TeamView({ teamId }: { teamId: number }) {
         ) : null}>
           <TeamDetails roster={roster.data} onChange={reload} />
           <h3>Roster ({members.length})</h3>
-          <table className="table">
-            <thead><tr><th>Player</th><th>Role</th><th>Access</th><th /></tr></thead>
-            <tbody>
-              {members.map((m) => <MemberRow key={m.user_id} member={m} roster={roster.data!} me={me} onChange={reload} />)}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="table roster-table">
+              <thead><tr><th>Player</th><th>CS2 colour</th><th>Premier</th><th>FACEIT</th><th>ESEA</th><th>Role</th><th /></tr></thead>
+              <tbody>
+                {members.map((m) => <MemberRow key={m.user_id} member={m} roster={roster.data!} me={me} onChange={reload} cat={cat} />)}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted small">
+            CS2 colours are used for each player in Tactics and Game Mode; each colour goes to one player.
+            {viewer.can_lead ? ' The owner and the IGL assign them.' : ' The owner or the IGL assigns them.'}
+            {unassigned && members.length > 1 ? ` ${unassigned} player${unassigned === 1 ? ' has' : 's have'} no colour yet${members.length > 5 ? ' (there are five colours)' : ''}.` : ''}
+            {' '}Ranks are self-reported on each player's profile.
+          </p>
           <p className="muted small">
             The IGL controls live Game Mode{igl ? ` (currently ${igl.user_name})` : ''}. Only the owner can assign the IGL, and assigning it to
             another player moves control to them immediately. The owner and the IGL can edit tactics and send invites.
@@ -604,7 +696,6 @@ function TeamView({ teamId }: { teamId: number }) {
           {!viewer.is_owner ? <button type="button" className="btn ghost danger" onClick={leave}>Leave team</button> : null}
         </Panel>
         {viewer.is_owner ? <RecruitingSettings key={`${team.team_id}-${team.is_recruiting}`} team={team} onChange={reload} /> : null}
-        {viewer.is_owner ? <DeleteTeam roster={roster.data} /> : null}
       </div>
       <div className="stack">
         {viewer.is_owner ? <JoinRequests teamId={teamId} /> : null}

@@ -1,6 +1,7 @@
 // Tactic documents: metadata + ordered phases, each with per-player
 // assignments and board annotations.
 const db = require('../db/connection');
+const { applyTeamColors } = require('./teamColors');
 const { notFound, conflict, httpError } = require('../errors');
 const { requireMember, requireLead } = require('./access');
 const { assertTeamImages } = require('./images');
@@ -9,6 +10,7 @@ const { notify, teamMemberIds } = require('./notifications');
 const SUMMARY_COLUMNS = [
   'tactic_id', 'tactic_name', 'team_id', 'map', 'side', 'economy',
   'grenade', 'molly', 'flash', 'smoke', 'revision', 'created_at', 'updated_at', 'imported_from_share_id',
+  'loadouts', 'bomb_carrier', 'player_colors',
 ];
 
 async function loadTactic(tacticId, trx = db, lock = false) {
@@ -59,6 +61,9 @@ function normaliseBoard(board) {
     markers: (b.markers || []).map((m) => ({ slot: null, ...m })),
     routes: (b.routes || []).map((r) => ({ slot: null, ...r })),
     holds: b.holds || [],
+    // Drops (Phase 15; pickups follow from routes, so Phase 14 pickup
+    // annotations are left out). Older boards have none.
+    actions: (b.actions || []).filter((a) => a.type === 'drop').map((a) => ({ slot: null, ...a })),
   };
 }
 
@@ -67,7 +72,7 @@ async function teamRoster(teamId, trx = db) {
     .join('users as u', 'u.user_id', 'm.user_id')
     .where('m.team_id', teamId)
     .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
-    .select('u.user_id', 'u.user_name', 'm.player_role');
+    .select('u.user_id', 'u.user_name', 'm.player_role', 'm.game_color');
 }
 
 async function getDocument(tacticId, userId) {
@@ -81,7 +86,10 @@ async function getDocument(tacticId, userId) {
   for (const phase of phases) {
     for (const a of phase.assignments) a.is_member = a.user_id != null && memberIds.has(a.user_id);
   }
-  return { tactic: { ...tactic, phases }, roster, can_edit: access.canLead };
+  // Members' team colours (Team tab) win over colours stored in the tactic.
+  const assigned = new Map(roster.filter((r) => r.game_color).map((r) => [r.user_id, r.game_color]));
+  const playerColors = applyTeamColors(tactic.player_colors, assigned);
+  return { tactic: { ...tactic, player_colors: playerColors, phases }, roster, can_edit: access.canLead };
 }
 
 // Every player referenced by an assignment or board item must be on the team.
@@ -92,6 +100,10 @@ async function assertAssigneesAreMembers(trx, teamId, doc) {
     phase.board.markers.forEach((m) => m.user_id != null && ids.add(m.user_id));
     phase.board.routes.forEach((r) => r.user_id != null && ids.add(r.user_id));
   }
+  (doc.loadouts || []).forEach((l) => l.user_id != null && ids.add(l.user_id));
+  for (const phase of doc.phases) (phase.board.actions || []).forEach((x) => x.user_id != null && ids.add(x.user_id));
+  if (doc.bomb_carrier && doc.bomb_carrier.user_id != null) ids.add(doc.bomb_carrier.user_id);
+  (doc.player_colors || []).forEach((c) => c.user_id != null && ids.add(c.user_id));
   if (!ids.size) return;
   const members = new Set(
     await trx('team_memberships').where('team_id', teamId).whereIn('user_id', [...ids]).pluck('user_id')
@@ -118,6 +130,9 @@ const tacticRow = (doc) => ({
   molly: doc.molly,
   flash: doc.flash,
   smoke: doc.smoke,
+  loadouts: JSON.stringify(doc.loadouts || []),
+  bomb_carrier: doc.side === 'T' && doc.bomb_carrier ? JSON.stringify(doc.bomb_carrier) : null,
+  player_colors: JSON.stringify(doc.player_colors || []),
   // Legacy boolean columns kept in sync for existing callers.
   T: doc.side === 'T',
   CT: doc.side === 'CT',

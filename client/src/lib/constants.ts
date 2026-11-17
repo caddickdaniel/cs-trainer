@@ -49,7 +49,7 @@ export const SHORTCUT_LABEL: Record<ShortcutAction, string> = {
   switch_side: 'Switch between T and CT',
 };
 export const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
-  phase_prev: 'ArrowLeft', phase_next: 'ArrowRight', tactic_prev: '[', tactic_next: ']', new_round: 'N', switch_side: 'S',
+  phase_prev: 'ArrowLeft', phase_next: 'ArrowRight', tactic_prev: 'ArrowUp', tactic_next: 'ArrowDown', new_round: 'Home', switch_side: 'End',
 };
 export const PROFILE_LINKS = [
   { key: 'steam_url', label: 'Steam', host: 'steamcommunity.com' },
@@ -58,13 +58,16 @@ export const PROFILE_LINKS = [
   { key: 'hltv_url', label: 'HLTV', host: 'hltv.org' },
 ] as const;
 export const MARKER_KINDS = ['player', 'smoke', 'flash', 'molly', 'he', 'note'] as const;
+export const BOUNCE_POINTS = 8;
 export const INVITE_TTL_HOURS = [1, 24, 72, 168] as const;
 export const LIMITS = {
   phases: 20, markers: 60, routes: 30, routePoints: 100, holds: 20, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024,
-  pictureBytes: 2 * 1024 * 1024, noteChars: 200, slots: 5,
+  pictureBytes: 2 * 1024 * 1024, noteChars: 200, slots: 5, actions: 30,
 };
 export const NOTE_SIZE = { min: 12, max: 64, default: 22, step: 2 };
 // Supplied utility icons (client/public/icons/utility).
+// Transparent CT defuse kit image for buy lists and instructions.
+export const KIT_ICON = '/icons/defuse-kit.png';
 export const UTILITY_ICON: Record<string, string> = {
   smoke: '/icons/utility/smoke.png', flash: '/icons/utility/flash.png', molly: '/icons/utility/molly.png', he: '/icons/utility/he.png',
 };

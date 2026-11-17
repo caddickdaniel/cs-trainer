@@ -38,6 +38,8 @@ teamRouter.route('/:team_id/requests').get(c.sendJoinRequests).all(handle405);
 teamRouter.route('/:team_id/requests/:request_id/invite').post(c.approveJoinRequest).all(handle405);
 teamRouter.route('/:team_id/requests/:request_id/decline').post(c.declineJoinRequest).all(handle405);
 teamRouter.route('/:team_id/events').get(c.sendEvents).post(c.createEvent).all(handle405);
+teamRouter.route('/:team_id/availability').get(c.sendAvailability).post(c.createAvailability).all(handle405);
+teamRouter.route('/:team_id/availability/:availability_id').patch(c.patchAvailability).delete(c.deleteAvailability).all(handle405);
 teamRouter.route('/:team_id/events/next').get(c.sendNextEvent).all(handle405);
 teamRouter.route('/:team_id/events/:event_id').get(c.sendEvent).patch(c.patchEvent).delete(c.deleteEvent).all(handle405);
 
@@ -61,6 +63,13 @@ teamRouter.route('/:team_id/demos')
   // Body: the raw .dem file (application/octet-stream), streamed to disk.
   .post(asyncHandler(async (req, res) => {
     res.status(201).send(await demos.upload(tid(req), req.user.user_id, req, v.demoUploadQuery.parse(req.query)));
+  }))
+  .all(handle405);
+// Body: { share_code, title? }. Queues the match for retrieval and processing.
+teamRouter.route('/:team_id/demos/share-code')
+  .post(asyncHandler(async (req, res) => {
+    const result = await demos.importShareCode(tid(req), req.user.user_id, v.shareCodeImport.parse(req.body));
+    res.status(result.existing ? 200 : 202).send(result);
   }))
   .all(handle405);
 teamRouter.route('/:team_id/review')

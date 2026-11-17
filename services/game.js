@@ -7,10 +7,12 @@
 // checked on every request, so transferring the IGL role revokes control
 // immediately. Every command is compare-and-set on `version`.
 const db = require('../db/connection');
+const { teamColors, applyTeamColors } = require('./teamColors');
 const { notFound, conflict, badRequest } = require('../errors');
 const { requireMember, requireIgl, getAccess } = require('./access');
 const { loadTactic, loadPhases } = require('./tactics');
 const { ECONOMIES } = require('../domain/constants');
+const { utilityPlan } = require('../domain/utility');
 
 const userName = (trx, userId) =>
   userId == null ? null : trx('users').where('user_id', userId).first('user_id', 'user_name');
@@ -34,15 +36,37 @@ async function currentIgl(trx, teamId) {
   return row || null;
 }
 
+// One player's utility for the current phase (null without a buy list or plan).
+function utilityFor(plan, key, phaseIndex) {
+  const p = plan.find((x) => x.key === key);
+  if (!p) return null;
+  const at = p.phases[phaseIndex] || { start: p.buy, used: {} };
+  return {
+    user_id: p.user_id, slot: p.slot,
+    buy: p.buy, kit: p.kit, bomb: p.bomb,
+    available: at.start,
+    planned: at.used,
+    dropped: at.dropped || {},
+    picked: at.picked || {},
+    cost: p.cost ?? 0,
+    over: p.over.filter((o) => o.phase === phaseIndex),
+  };
+}
+
 async function present(session, userId, canControl, trx = db) {
   const snap = session.snapshot;
   const phase = snap.phases[session.current_phase];
   const mine = phase.assignments.find((a) => a.user_id === userId) || null;
-  const [startedBy, endedBy, igl, tactics] = await Promise.all([
+  // Sessions started before buy lists existed have none.
+  const plan = utilityPlan({ loadouts: snap.loadouts || [], phases: snap.phases, side: snap.tactic.side, bomb: snap.bomb_carrier || null, map: snap.tactic.map });
+  const [startedBy, endedBy, igl, tactics, assigned, roles] = await Promise.all([
     userName(trx, session.started_by),
     userName(trx, session.ended_by),
     currentIgl(trx, session.team_id),
     sideTactics(trx, session.team_id, session.map, session.side),
+    teamColors(session.team_id, trx),
+    trx('team_memberships as m').join('users as u', 'u.user_id', 'm.user_id').where('m.team_id', session.team_id)
+      .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }]).select('u.user_id', 'u.user_name', 'm.player_role'),
   ]);
   const selected = tactics.find((t) => t.tactic_id === session.selected_tactic_id) || null;
   return {
@@ -66,8 +90,18 @@ async function present(session, userId, canControl, trx = db) {
     phases: snap.phases.map((p, index) => ({ index, name: p.name })),
     phase: { index: session.current_phase, name: phase.name, notes: phase.notes, board: phase.board },
     my_assignment: mine,
-    // The IGL sees every player's instruction for the current phase.
-    assignments: canControl ? phase.assignments : undefined,
+    // The player's buy list and what they have at the start of this phase.
+    my_utility: utilityFor(plan, `u${userId}`, session.current_phase),
+    bomb_carrier: snap.tactic.side === 'T' ? snap.bomb_carrier || null : null,
+    // Team colours (Team tab) over the round's colours; sessions started
+    // before colours existed have none (derived colours are used).
+    player_colors: applyTeamColors(snap.player_colors || [], assigned),
+    // Everyone can view every player's instruction and utility for the
+    // current phase (read-only; Phase 10); only the IGL controls the round.
+    assignments: phase.assignments,
+    utility: plan.map((p) => utilityFor(plan, p.key, session.current_phase)),
+    // Team members and their roster roles, for the player picker.
+    members: roles.map((r) => ({ user_id: r.user_id, user_name: r.user_name, player_role: r.player_role })),
     // The tactic queued for the next round, within the current map and side.
     selected_tactic: selected,
     side_tactic_count: tactics.length,
@@ -123,6 +157,10 @@ async function buildSnapshot(tactic) {
       smoke: tactic.smoke,
       revision: tactic.revision,
     },
+    // Copied with the round so editing the tactic never changes a live round.
+    loadouts: tactic.loadouts || [],
+    bomb_carrier: tactic.bomb_carrier || null,
+    player_colors: tactic.player_colors || [],
     phases: phases.map((p) => ({ name: p.name, notes: p.notes, board: p.board, assignments: p.assignments })),
   };
 }

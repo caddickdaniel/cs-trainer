@@ -57,6 +57,7 @@ const router = createBrowserRouter([
           { path: '/recruiting', element: <RecruitingPage /> },
           { path: '/recruiting/:teamId', element: <RecruitingTeamPage /> },
           { path: '/training', element: <TrainingPage /> },
+          { path: '/calendar', element: <TrainingPage /> },
           { path: '/demos', element: <DemoLibraryPage /> },
           { path: '/demos/:demoId', element: <DemoPage /> },
           { path: '/settings', element: <SettingsPage /> },

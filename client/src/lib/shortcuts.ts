@@ -31,11 +31,14 @@ export function formatBinding(binding: string) {
     .split('+').join(' + ');
 }
 
-// True while the user is typing somewhere (shortcuts must be ignored).
+// True while the user is typing, editing a binding, or using a dropdown,
+// listbox, menu or modal (shortcuts must be ignored then).
 export function isTyping(target: EventTarget | null) {
   const el = target as HTMLElement | null;
-  if (!el) return false;
-  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable || Boolean(el.closest?.('[data-capturing-shortcut]'));
+  if (document.querySelector('dialog[open], [aria-modal="true"]')) return true;
+  if (!el || !el.tagName) return false;
+  return ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(el.tagName) || el.isContentEditable
+    || Boolean(el.closest?.('[data-capturing-shortcut], [role="listbox"], [role="combobox"], [role="menu"], [aria-expanded="true"]'));
 }
 
 export function findConflicts(shortcuts: Shortcuts) {

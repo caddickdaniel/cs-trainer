@@ -74,27 +74,24 @@ describe('phase 4', () => {
       const p = await signUp('Ranked');
       await connection('users').where('user_id', p.user.user_id).update({ language: 'Klingon', platform: 'Perfect World', skill_level: '2,800' });
       let res = await p.get('/api/me/profile').expect(200);
-      expect(res.body.profile).to.include({ language: 'Klingon', legacy_platform: 'Perfect World', legacy_skill_level: '2,800', rank_platform: null });
+      expect(res.body.profile).to.include({ language: 'Klingon', legacy_platform: 'Perfect World', legacy_skill_level: '2,800' });
+      expect(res.body.profile.ranks).to.deep.equal({ premier: null, faceit: null, esea: null });
       // The legacy value can be kept unchanged, but not set anew.
       await p.patch('/api/me/profile').send({ language: 'Klingon', bio: 'x' }).expect(200);
       await p.patch('/api/me/profile').send({ region: 'Mars' }).expect(400);
-      await p.patch('/api/me/profile').send({ rank_platform: 'faceit', rank_id: 'premier:5000' }).expect(400);
-      await p.patch('/api/me/profile').send({ rank_id: 'faceit:5' }).expect(400);
-      res = await p.patch('/api/me/profile').send({ language: 'Polish', region: 'EU East', rank_platform: 'faceit', rank_id: 'faceit:10-2751' }).expect(200);
-      expect(res.body.profile).to.include({ language: 'Polish', region: 'EU East', rank_platform: 'faceit', rank_id: 'faceit:10-2751', legacy_platform: null, legacy_skill_level: null });
-      // Platform without a rank is allowed; clearing the platform clears the rank.
-      res = await p.patch('/api/me/profile').send({ rank_platform: 'premier', rank_id: null }).expect(200);
-      expect(res.body.profile).to.include({ rank_platform: 'premier', rank_id: null });
-      await p.patch('/api/me/profile').send({ rank_platform: 'faceit', rank_id: 'faceit:10-2751' }).expect(200);
+      // Phase 5: one rank per platform, each from its own platform.
+      await p.patch('/api/me/profile').send({ ranks: { faceit: 'premier:5000' } }).expect(400);
+      res = await p.patch('/api/me/profile').send({ language: 'Polish', region: 'EU East', ranks: { faceit: 'faceit:10-2751' } }).expect(200);
+      expect(res.body.profile).to.include({ language: 'Polish', region: 'EU East' });
+      expect(res.body.profile.ranks.faceit).to.equal('faceit:10-2751');
 
       const other = await signUp('Searcher');
       const all = (await other.get('/api/players/available').expect(200)).body.players;
       expect(all.map((x) => x.user_id)).to.include(p.user.user_id);
-      const hit = (await other.get('/api/players/available?language=Polish&region=EU%20East&platform=faceit&rank=faceit:10-2751').expect(200)).body.players;
+      const hit = (await other.get('/api/players/available?language=Polish&region=EU%20East&faceit=faceit:10-2751').expect(200)).body.players;
       expect(hit.map((x) => x.user_id)).to.deep.equal([p.user.user_id]);
-      expect(hit[0]).to.include({ rank_id: 'faceit:10-2751' });
-      expect((await other.get('/api/players/available?platform=esea').expect(200)).body.players.map((x) => x.user_id)).not.to.include(p.user.user_id);
-      await other.get('/api/players/available?platform=valve').expect(400);
+      expect(hit[0].ranks).to.include({ faceit: 'faceit:10-2751' });
+      expect((await other.get('/api/players/available?esea=esea:a').expect(200)).body.players.map((x) => x.user_id)).not.to.include(p.user.user_id);
       expect((await other.get('/api/catalogue').expect(200)).body.ranks.length).to.equal(C.RANKS.length);
     });
   });

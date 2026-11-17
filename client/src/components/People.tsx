@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ROLE_COLOR, roleLabel } from '../lib/constants';
 import { Icon } from './Icons';
@@ -29,7 +30,7 @@ export function PlayerLink({ id, name }: { id: number; name: string }) {
   return <Link to={`/players/${id}`}>{name}</Link>;
 }
 
-export function Facts({ items }: { items: [string, string | number | null | undefined][] }) {
+export function Facts({ items }: { items: [string, ReactNode][] }) {
   const shown = items.filter(([, v]) => v !== null && v !== undefined && v !== '');
   if (!shown.length) return null;
   return (

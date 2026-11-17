@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { ECONOMIES, ECONOMY_LABEL, mapName } from '../lib/constants';
+import { ECONOMIES, ECONOMY_LABEL, MARKER_LABEL, mapName, roleLabel } from '../lib/constants';
 import { formatDateTime, useDocumentTitle } from '../lib/hooks';
 import type { GameSession, GameState, Marker, SideTactic, TacticSummary } from '../lib/types';
 import type { Level } from '../lib/constants';
@@ -11,7 +11,65 @@ import { Icon } from '../components/Icons';
 import { bindingFromEvent, formatBinding, isTyping, useShortcutSettings, type Shortcuts } from '../lib/shortcuts';
 import { MapBoard } from '../components/MapBoard';
 import { PhaseInstructions } from '../components/PhaseInstructions';
+import { TeamUtility, UtilityCard } from '../components/UtilityCard';
 import { LevelSwitch, LineupGallery, LineupLightbox, lineupMarkers, preferredLevel } from '../components/Lineups';
+import { DesktopHotkeysPanel, useDesktopHotkeys } from '../components/DesktopHotkeys';
+import { acceleratorFromEvent } from '../lib/desktop';
+import { PlayerColorsProvider, textOn, usePlayerColors } from '../lib/playerColors';
+import { describeCounts } from '../lib/utility';
+import { UtilityIcon } from '../components/UtilityIcon';
+
+// Anyone on the team can look at another player's role for this round:
+// pick a teammate (in their CS2 colour) to see their roster role, this
+// phase's instruction, the utility they throw and have, and what they're
+// placed on the board. Read-only: it never changes the round or the tactic.
+function TeamRoles({ session, me, selected, onSelect }: { session: GameSession; me: number | null; selected: number | null; onSelect: (id: number) => void }) {
+  const colorOf = usePlayerColors();
+  const members = session.members ?? [];
+  if (!members.length) return null;
+  const who = members.find((m) => m.user_id === selected) ?? members.find((m) => m.user_id === me) ?? members[0];
+  const assignment = (session.assignments ?? []).find((a) => a.user_id === who.user_id);
+  const util = (session.utility ?? []).find((u) => u.user_id === who.user_id);
+  const markers = session.phase.board.markers.filter((m) => m.user_id === who.user_id);
+  const positions = markers.filter((m) => m.kind === 'player');
+  const holds = (session.phase.board.holds ?? []).filter((h) => positions.some((m) => m.id === h.marker_id)).length;
+  const throws = markers.filter((m) => ['smoke', 'flash', 'molly', 'he'].includes(m.kind) && !m.reference);
+  return (
+    <Panel title="Team roles this round">
+      <div className="role-picker" role="radiogroup" aria-label="Show a player's role">
+        {members.map((m) => {
+          const c = colorOf({ user_id: m.user_id });
+          const on = m.user_id === who.user_id;
+          return (
+            <button key={m.user_id} type="button" role="radio" aria-checked={on} className={`role-pill${on ? ' on' : ''}`}
+              style={{ background: on ? c : undefined, color: on ? textOn(c) : undefined, borderColor: c }} onClick={() => onSelect(m.user_id)}>
+              <span className="role-pill__dot" style={{ background: c }} aria-hidden="true" />{m.user_name}{m.user_id === me ? ' (you)' : ''}
+            </button>
+          );
+        })}
+      </div>
+      <dl className="role-details">
+        <dt>Role</dt><dd>{who.player_role ? roleLabel(who.player_role) : <span className="muted">No role set</span>}</dd>
+        <dt>Instruction</dt>
+        <dd>{assignment?.instruction ? assignment.instruction : <span className="muted">No instruction this phase.</span>}
+          {assignment?.utility ? <div className="small"><strong>Utility note:</strong> {assignment.utility}</div> : null}</dd>
+        <dt>Throws this phase</dt>
+        <dd>{throws.length ? (
+          <span className="row wrap tight">{throws.map((t) => (
+            <span key={t.id} className="role-throw"><UtilityIcon kind={t.kind} side={session.tactic.side} size={16} /> {t.label || MARKER_LABEL[t.kind] || t.kind}</span>
+          ))}</span>
+        ) : util && describeCounts(util.planned) ? describeCounts(util.planned) : <span className="muted">None</span>}</dd>
+        <dt>{session.current_phase === 0 ? 'Buys' : 'Has now'}</dt>
+        <dd>{util ? (describeCounts(session.current_phase === 0 ? util.buy : util.available) || 'No grenades')
+          : <span className="muted">No buy list</span>}{util?.kit ? ' · defuse kit' : ''}{util?.bomb ? ' · carries the bomb' : ''}</dd>
+        <dt>Position</dt>
+        <dd>{positions.length ? `${positions.map((m) => m.label || 'On the board').join(', ')}${holds ? ` · holds ${holds} angle${holds === 1 ? '' : 's'}` : ''}`
+          : <span className="muted">Not placed on the board this phase.</span>}</dd>
+      </dl>
+      <p className="muted small">Highlighted on the board. Viewing only; the IGL controls the round.</p>
+    </Panel>
+  );
+}
 
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 15000;
@@ -115,6 +173,34 @@ function StartPanel({ teamId, onStarted }: { teamId: number; onStarted: (s: Game
   );
 }
 
+// Sizes the radar column to the largest square that fits under the header
+// (so the radar, lineups and IGL pane are visible together without
+// scrolling on a 1080p second monitor). Stacks below 1101px.
+const LIVE = { pane: 250, side: 300, gap: 14 };
+function useLiveColumns(control: boolean) {
+  const [layout, setLayout] = useState<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!layout) return undefined;
+    const measure = () => {
+      if (window.innerWidth < 1101) { setWidth(null); return; }
+      const frame = layout.querySelector('.live-board .board-frame');
+      const top = (frame ?? layout).getBoundingClientRect().top + window.scrollY;
+      const fixed = (control ? LIVE.pane + LIVE.gap : 0) + LIVE.side + LIVE.gap;
+      setWidth(Math.max(320, Math.floor(Math.min(layout.clientWidth - fixed, window.innerHeight - top - 16))));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(layout);
+    return () => { window.removeEventListener('resize', measure); ro?.disconnect(); };
+  }, [layout, control]);
+  const style = width == null ? undefined : {
+    gridTemplateColumns: `${control ? `${LIVE.pane}px ` : ''}${width}px minmax(${LIVE.side}px, 1fr)`,
+  };
+  return { setLayout, style };
+}
+
 type Command = 'phase_prev' | 'phase_next' | 'tactic_prev' | 'tactic_next' | 'new_round' | 'switch_side';
 
 // IGL dropdown of this map and side's tactics, grouped by economy. Uses the
@@ -153,6 +239,8 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
   const [busy, setBusy] = useState(false);
   const [levelChoice, setLevelChoice] = useState<{ key: string; level: Level } | null>(null);
   const [open, setOpen] = useState<{ marker: Marker; index: number } | null>(null);
+  // The teammate picked in "Team roles" (defaults to you); highlighted on the board.
+  const [viewing, setViewing] = useState<number | null>(null);
   const mine = session.my_assignment;
   const map = session.tactic.map ?? 'practice_yard';
   const phaseKey = `${session.session_id}:${session.round_number}:${session.current_phase}`;
@@ -201,29 +289,45 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
     send('command', { action, expected_version: session.version });
   }, [send, session, lastPhase]);
 
+  // Global hotkeys from the desktop app (if this is the desktop app). They
+  // send exactly the same commands as the buttons and browser shortcuts.
+  const busyRef = useRef(busy);
+  useLayoutEffect(() => { busyRef.current = busy; });
+  const hk = useDesktopHotkeys(control, (action) => { if (!busyRef.current) run(action); });
+  const globalKeys = hk.globalKeys;
+
   // Shortcuts apply only to the IGL's focused Game Mode view, never while typing.
   useEffect(() => {
     if (!control) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (busy || isTyping(e.target) || !document.hasFocus() || document.querySelector('dialog[open]')) return;
+      if (isTyping(e.target) || !document.hasFocus()) return;
+      // A key the desktop app holds as a global hotkey is handled there only,
+      // so one press never runs a command twice.
+      const acc = globalKeys.size ? acceleratorFromEvent(e) : null;
+      if (acc && globalKeys.has(acc)) { e.preventDefault(); return; }
       const binding = bindingFromEvent(e);
       const action = (Object.keys(shortcuts) as Command[]).find((a) => shortcuts[a] === binding);
       if (!action) return;
+      // Handled keys never scroll the page (arrows, Home, End), even while a
+      // command is still being sent or the key is held down.
       e.preventDefault();
+      if (busy || e.repeat) return;
       run(action);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [control, busy, shortcuts, run]);
+  }, [control, busy, shortcuts, run, globalKeys]);
 
+  const { setLayout, style: columnStyle } = useLiveColumns(control);
+  const queued = session.selected_tactic && session.selected_tactic.tactic_id !== session.tactic.tactic_id ? session.selected_tactic : null;
   return (
-    <div className={`live ${focus ? 'focus' : ''}`}>
+    <PlayerColorsProvider colors={session.player_colors}>
+    <div className={`live ${focus ? 'focus' : ''} ${control ? 'with-controls' : 'read-only'}`}>
       <div className="live-head">
         <div>
           <p className="eyebrow">
             <Badge tone="red">LIVE</Badge> Round {session.round_number} · {mapName(session.map)} <SideBadge side={session.side} />
-            {session.selected_tactic && session.selected_tactic.tactic_id !== session.tactic.tactic_id
-              ? <span className="queued-chip" title="Starts when the IGL begins the next round">Next: {session.selected_tactic.tactic_name}</span> : null}
+            {queued ? <span className="queued-chip" title="Starts when the IGL begins the next round">Next: {queued.tactic_name}</span> : null}
             {session.tactic.side !== session.side ? <span className="muted small">(playing a {session.tactic.side} tactic from before the side switch)</span> : null}
           </p>
           <h1 className="phase-title">{session.tactic.tactic_name}</h1>
@@ -241,47 +345,64 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
         </ol>
       </div>
 
-      {control ? (
-        <section className="panel igl-controls" aria-label="IGL controls">
-          <div className="control-group">
-            <span className="control-label">Phase</span>
-            <button type="button" className="btn" disabled={busy || session.current_phase === 0} onClick={() => run('phase_prev')}><Icon name="left" /> Previous <Key binding={shortcuts.phase_prev} /></button>
-            <button type="button" className="btn primary" disabled={busy || lastPhase} onClick={() => run('phase_next')}>Next <Icon name="right" /> <Key binding={shortcuts.phase_next} /></button>
-          </div>
-          <div className="control-group">
-            <span className="control-label">Queued for round {session.round_number + 1} ({session.side} on {mapName(session.map)})</span>
-            {session.side_tactic_count ? (
-              <>
-                <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_prev')} aria-label="Previous tactic"><Icon name="left" /> <Key binding={shortcuts.tactic_prev} /></button>
-                <TacticPicker tactics={session.side_tactics ?? []} value={session.selected_tactic?.tactic_id ?? null} disabled={busy}
-                  liveId={session.tactic.tactic_id}
-                  onChange={(id) => send('command', { action: 'tactic_select', tactic_id: id, expected_version: session.version })} />
-                <button type="button" className="btn" disabled={busy} onClick={() => run('tactic_next')} aria-label="Next tactic"><Key binding={shortcuts.tactic_next} /> <Icon name="right" /></button>
-              </>
-            ) : <span className="empty-side">No {session.side} tactics on {mapName(session.map)} yet. <Link to="/tactics/new">Create one</Link> or switch side.</span>}
-          </div>
-          <div className="control-group">
-            <button type="button" className="btn" disabled={busy} onClick={() => run('switch_side')}>Switch to {session.side === 'CT' ? 'T' : 'CT'} <Key binding={shortcuts.switch_side} /></button>
-            <button type="button" className="btn primary big-ish" disabled={busy || !session.selected_tactic} onClick={() => run('new_round')}>
-              Start round {session.round_number + 1} <Key binding={shortcuts.new_round} /></button>
-            <button type="button" className="btn ghost danger" disabled={busy}
+      {!control ? (
+        <p className="muted small read-only-note">
+          Read-only view. {session.igl ? `${session.igl.user_name} (IGL) controls the round.` : 'No IGL is assigned.'}
+          {queued ? ` Up next: ${queued.tactic_name}.` : ''}
+          {error ? ` ${error}` : ''}
+        </p>
+      ) : null}
+
+      <div className="live-layout" ref={setLayout} style={columnStyle}>
+        {control ? (
+          <aside className="panel igl-pane" aria-label="IGL controls">
+            <div className="control-group">
+              <span className="control-label">Phase</span>
+              <button type="button" className="btn" disabled={busy || session.current_phase === 0} onClick={() => run('phase_prev')}>
+                <Icon name="left" /> Previous <Key binding={shortcuts.phase_prev} /></button>
+              <button type="button" className="btn primary" disabled={busy || lastPhase} onClick={() => run('phase_next')}>
+                Next <Icon name="right" /> <Key binding={shortcuts.phase_next} /></button>
+            </div>
+            <div className="control-group">
+              <span className="control-label">Queued for round {session.round_number + 1} ({session.side})</span>
+              {session.side_tactic_count ? (
+                <>
+                  <TacticPicker tactics={session.side_tactics ?? []} value={session.selected_tactic?.tactic_id ?? null} disabled={busy}
+                    liveId={session.tactic.tactic_id}
+                    onChange={(id) => send('command', { action: 'tactic_select', tactic_id: id, expected_version: session.version })} />
+                  <div className="row tight-row">
+                    <button type="button" className="btn small" disabled={busy} onClick={() => run('tactic_prev')} aria-label="Previous tactic">
+                      <Icon name="left" /> <Key binding={shortcuts.tactic_prev} /></button>
+                    <button type="button" className="btn small" disabled={busy} onClick={() => run('tactic_next')} aria-label="Next tactic">
+                      <Key binding={shortcuts.tactic_next} /> <Icon name="right" /></button>
+                  </div>
+                </>
+              ) : <span className="empty-side small">No {session.side} tactics on {mapName(session.map)} yet. <Link to="/tactics/new">Create one</Link> or switch side.</span>}
+            </div>
+            <div className="control-group">
+              <span className="control-label">Round</span>
+              <button type="button" className="btn primary" disabled={busy || !session.selected_tactic} onClick={() => run('new_round')}>
+                Start round {session.round_number + 1} <Key binding={shortcuts.new_round} /></button>
+              <button type="button" className="btn" disabled={busy} onClick={() => run('switch_side')}>
+                Switch to {session.side === 'CT' ? 'T' : 'CT'} <Key binding={shortcuts.switch_side} /></button>
+            </div>
+            <Alert>{error}</Alert>
+            <p className="muted small">Browser shortcuts work while this window is focused. <Link to="/settings">Change shortcuts</Link></p>
+            <DesktopHotkeysPanel hk={hk} />
+            <button type="button" className="btn ghost small danger" disabled={busy}
               onClick={() => { if (window.confirm('End this Game Mode session for the whole team?')) send('end', { expected_version: session.version }); }}>
               <Icon name="stop" /> End match
             </button>
-          </div>
-          <p className="muted small">Shortcuts work while this page is focused. <Link to="/settings">Change shortcuts</Link></p>
-          <Alert>{error}</Alert>
-        </section>
-      ) : (
-        <p className="muted small read-only-note">
-          Read-only view. {session.igl ? `${session.igl.user_name} (IGL) controls the round.` : 'No IGL is assigned.'}
-          {session.selected_tactic && session.selected_tactic.tactic_id !== session.tactic.tactic_id ? ` Up next: ${session.selected_tactic.tactic_name}.` : ''}
-          {error ? ` ${error}` : ''}
-        </p>
-      )}
+          </aside>
+        ) : null}
 
-      <div className="live-grid">
-        <div className="stack">
+        <div className="live-board">
+          <LevelSwitch map={map} level={level} board={session.phase.board} onChange={(l) => setLevelChoice({ key: phaseKey, level: l })} />
+          <MapBoard board={session.phase.board} map={map} level={level} players={boardPlayers} highlightUserId={viewing ?? user?.user_id ?? null} side={session.tactic.side}
+            onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for phase ${session.phase.name}`} bomb={session.bomb_carrier ?? null} />
+        </div>
+
+        <div className="stack live-side">
           <section className={`my-call ${mine ? '' : 'empty'}`} aria-live="polite">
             <h2>Your instruction</h2>
             {mine && (mine.instruction || mine.utility) ? (
@@ -294,24 +415,29 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
             ) : (
               <p className="call-text muted">No instruction for you this phase. Hold your position and follow the IGL's call.</p>
             )}
-            {myLineups.length ? (
-              <>
-                <h2 className="lineup-heading">Your lineups</h2>
-                <LineupGallery markers={myLineups} large onOpen={(m, i) => setOpen({ marker: m, index: i })} />
-              </>
-            ) : null}
+            {session.my_utility ? <UtilityCard u={session.my_utility} phaseIndex={session.current_phase} side={session.tactic.side} /> : null}
           </section>
+          {myLineups.length ? (
+            <section className="panel lineups-now" aria-label="Your lineups">
+              <h2 className="lineup-heading">Your lineups</h2>
+              <LineupGallery markers={myLineups} large onOpen={(m, i) => setOpen({ marker: m, index: i })} />
+            </section>
+          ) : null}
           {session.phase.notes ? <Panel title="Team notes"><p>{session.phase.notes}</p></Panel> : null}
+          <TeamRoles session={session} me={user?.user_id ?? null} selected={viewing} onSelect={setViewing} />
           {control ? (
             <Panel title="All instructions this phase">
               <PhaseInstructions assignments={session.assignments ?? []} players={players} highlight={user?.user_id} />
             </Panel>
           ) : null}
-        </div>
-        <div className="stack">
-          <LevelSwitch map={map} level={level} board={session.phase.board} onChange={(l) => setLevelChoice({ key: phaseKey, level: l })} />
-          <MapBoard board={session.phase.board} map={map} level={level} players={boardPlayers} highlightUserId={user?.user_id ?? null}
-            onMarkerActivate={(m) => setOpen({ marker: m, index: 0 })} label={`Board for phase ${session.phase.name}`} />
+          {session.utility?.length ? (
+            <Panel title={session.current_phase === 0 ? 'Team buy' : 'Team utility at the start of this phase'}>
+              <TeamUtility list={session.utility} side={session.tactic.side} name={(u) => (u.user_id != null
+                ? (session.members ?? []).find((m) => m.user_id === u.user_id)?.user_name
+                  ?? (session.assignments ?? []).find((a) => a.user_id === u.user_id)?.user_name ?? (u.user_id === user?.user_id ? user.user_name : `Player #${u.user_id}`)
+                : `Player ${u.slot} (unmapped)`)} />
+            </Panel>
+          ) : null}
           {otherLineups.length ? (
             <details className="panel">
               <summary>Team lineups this phase ({otherLineups.length})</summary>
@@ -324,6 +450,7 @@ function LiveSession({ session, onUpdate, focus, shortcuts }: {
         onIndex={(i) => setOpen((o) => (o ? { ...o, index: i } : o))} onClose={() => setOpen(null)} />
       <p className="muted small">Started by {session.started_by?.user_name ?? 'unknown'} at {formatDateTime(session.started_at)} · round tactic revision {session.tactic.revision}</p>
     </div>
+    </PlayerColorsProvider>
   );
 }
 

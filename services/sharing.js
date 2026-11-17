@@ -39,7 +39,13 @@ function buildSnapshot(tactic, phases, { includeImages }) {
     p.board.markers.filter((m) => m.kind === 'player').forEach(visit);
     p.board.markers.forEach(visit);
     p.board.routes.forEach(visit);
+    (p.board.actions || []).forEach(visit);
   }
+  // Buy lists and the bomb carrier keep their player's slot (or take the next one).
+  (tactic.loadouts || []).forEach(visit);
+  if (tactic.bomb_carrier) visit(tactic.bomb_carrier);
+  // Colours follow their player's slot; a colour for a player with nothing
+  // else in the tactic does not take a slot of its own.
   const slotOf = (item) => {
     const key = keyOf(item);
     return key ? slots.get(key) ?? null : null;
@@ -61,12 +67,23 @@ function buildSnapshot(tactic, phases, { includeImages }) {
           images: images.map((i) => ({ image_id: i.image_id, caption: i.caption || '' })),
         };
         if (m.size != null) out.size = m.size;
+        if (m.reference) out.reference = true;
+        // Throw paths and throw order travel with the tactic.
+        if (m.path && m.path.length) out.path = m.path.map((pt) => ({ x: pt.x, y: pt.y }));
+        if (m.seq != null) out.seq = m.seq;
+        // The attributed lineup reference (Phase 15) travels too.
+        if (m.lineup) out.lineup = { ...m.lineup };
         return out;
       }),
       routes: p.board.routes.map((r) => ({
         id: r.id, level: r.level || 'main', user_id: null, slot: slotOf(r), color: r.color, points: r.points,
       })),
       holds: (p.board.holds || []).map((h) => ({ id: h.id, marker_id: h.marker_id, angle: h.angle, spread: h.spread, length: h.length })),
+      // Drops keep their position, floor and order; players become slots.
+      actions: (p.board.actions || []).filter((x) => x.type === 'drop').map((x) => ({
+        id: x.id, type: 'drop', user_id: null, slot: slotOf(x), x: x.x, y: x.y, level: x.level || 'main',
+        ...(x.kind ? { kind: x.kind } : {}), ...(x.seq != null ? { seq: x.seq } : {}),
+      })),
     },
     assignments: p.assignments
       .map((a) => ({ slot: slotOf(a), instruction: a.instruction, utility: a.utility }))
@@ -85,6 +102,10 @@ function buildSnapshot(tactic, phases, { includeImages }) {
         molly: tactic.molly,
         flash: tactic.flash,
         smoke: tactic.smoke,
+        loadouts: (tactic.loadouts || []).map((l) => ({ ...l, user_id: null, slot: slotOf(l) })).filter((l) => l.slot != null),
+        bomb_carrier: tactic.side === 'T' && tactic.bomb_carrier && slotOf(tactic.bomb_carrier) != null
+          ? { user_id: null, slot: slotOf(tactic.bomb_carrier) } : null,
+        player_colors: (tactic.player_colors || []).map((c) => ({ user_id: null, slot: slotOf(c), color: c.color })).filter((c) => c.slot != null),
       },
       slot_count: slots.size,
       phases: snapshotPhases,
@@ -315,6 +336,7 @@ async function importShared(shareId, userId, { team_id: teamId, tactic_name: nam
         })),
         routes: p.board.routes.map((r) => ({ ...r, user_id: null })),
         holds: p.board.holds || [],
+        actions: (p.board.actions || []).filter((x) => x.type === 'drop').map((x) => ({ ...x, user_id: null })),
       },
       assignments: p.assignments.map((a) => ({ user_id: null, slot: a.slot, instruction: a.instruction, utility: a.utility, reference_url: null })),
     }));

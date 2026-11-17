@@ -10,6 +10,7 @@ const notificationRouter = require('./notificationRouter');
 const discovery = require('./discoveryRouter');
 const sharedRouter = require('./sharedRouter');
 const demoRouter = require('./demoRouter');
+const { asyncHandler } = require('../errors');
 const reviewRouter = require('./reviewRouter');
 const createAuthRouter = require('./authRouter');
 const { endpoints } = require('../endpoints');
@@ -37,11 +38,25 @@ module.exports = ({ authLimiter }) => {
 
   // Everything below requires a signed-in user.
   apiRouter.use(requireAuth);
+  // Lineup catalogue for the tactics editor's picker (Phase 15): attributed
+  // links to individual CSNADES.gg lineups, with radar positions.
+  apiRouter.get('/lineups', (req, res) => {
+    const map = String(req.query.map || '');
+    const lineups = require('../domain/lineups');
+    if (!lineups.MAPS.includes(map)) return res.status(400).send({ message: 'Unknown map', code: 'bad_map' });
+    res.set('Cache-Control', 'private, max-age=600');
+    return res.status(200).send({ map, source: lineups.SOURCE, lineups: lineups.list({ map }) });
+  });
   apiRouter.use('/teams', teamRouter);
   apiRouter.use('/tactics', tacticRouter);
   apiRouter.use('/users', userRouter);
   apiRouter.use('/invites', inviteRouter);
   apiRouter.use('/game-sessions', gameRouter);
+  // Replay Inspector: the signed-in user's latest CS2 capture session (progress overlay).
+  apiRouter.get('/capture-sessions/current', asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.status(200).send(await require('../services/captures').currentSession(req.user.user_id));
+  }));
   apiRouter.use('/lineup-images', imageRouter);
   apiRouter.use('/me', meRouter);
   apiRouter.use('/notifications', notificationRouter);

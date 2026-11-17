@@ -6,7 +6,7 @@ const { pictureUrl } = require('./pictures');
 
 const teamColumns = (q) => q.select(
   't.team_id', 't.team_name', 't.logo_image_id', 't.language', 't.region', 't.platform', 't.skill_level',
-  't.description', 't.recruiting_leagues', 't.roles_needed', 't.recruiting_notes', 't.is_recruiting',
+  't.description', 't.recruiting_leagues', 't.rank_requirements', 't.competitions', 't.roles_needed', 't.recruiting_notes', 't.is_recruiting',
   db.raw('(select count(*)::int from team_memberships m where m.team_id = t.team_id) as roster_size'),
 );
 
@@ -32,6 +32,9 @@ function present(t, state) {
     skill_level: t.skill_level,
     description: t.description,
     recruiting_leagues: t.recruiting_leagues,
+    rank_requirements: t.rank_requirements || [],
+    competitions: t.competitions || [],
+    legacy_requirement: require('./teams').legacyRequirement(t),
     roles_needed: t.roles_needed || [],
     recruiting_notes: t.recruiting_notes,
     roster_size: t.roster_size,

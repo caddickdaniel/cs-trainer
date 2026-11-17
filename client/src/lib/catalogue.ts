@@ -22,6 +22,7 @@ export interface Catalogue {
   regions: string[];
   platforms: { id: PlatformId; label: string }[];
   ranks: Rank[];
+  competitions: { id: string; label: string; group: string }[];
 }
 
 let cached: Catalogue | null = null;
@@ -46,3 +47,5 @@ export function useCatalogue() {
 
 export const findRank = (cat: Catalogue | null, id: string | null | undefined) => (cat && id ? cat.ranks.find((r) => r.id === id) ?? null : null);
 export const platformLabel = (cat: Catalogue | null, id: string | null | undefined) => (cat && id ? cat.platforms.find((p) => p.id === id)?.label ?? id : '');
+export const ranksOf = (cat: Catalogue | null, platform: string) => (cat ? cat.ranks.filter((r) => r.platform === platform) : []);
+export const competitionLabel = (cat: Catalogue | null, id: string) => cat?.competitions.find((c) => c.id === id)?.label ?? id;

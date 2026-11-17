@@ -43,6 +43,24 @@ exports.signin = z.object({
   password: z.string().min(1).max(200),
 });
 
+const CAT = require('../domain/catalogue');
+
+// Team recruitment requirements and competitions (catalogue values only).
+const rankRequirements = z.array(z.object({
+  platform: z.enum(CAT.PLATFORM_IDS),
+  min: z.string().max(30),
+  max: z.string().max(30),
+}).strict()).max(CAT.PLATFORM_IDS.length).superRefine((list, ctx) => {
+  const seen = new Set();
+  list.forEach((r, i) => {
+    const problem = CAT.checkRequirement(r);
+    if (problem) ctx.addIssue({ code: 'custom', path: [i], message: problem });
+    if (seen.has(r.platform)) ctx.addIssue({ code: 'custom', path: [i], message: 'Add at most one requirement per platform' });
+    seen.add(r.platform);
+  });
+});
+const competitions = z.array(z.enum(CAT.COMPETITION_IDS)).max(CAT.COMPETITION_IDS.length).transform((l) => [...new Set(l)]);
+
 const teamFields = {
   team_name: trimmed(60).min(2, 'Team name must be at least 2 characters'),
   language: optionalText(40),
@@ -51,8 +69,9 @@ const teamFields = {
   skill_level: optionalText(40),
   description: optionalText(1000),
 };
-exports.createTeam = z.object(teamFields);
-exports.patchTeam = z.object(teamFields).partial();
+const teamExtras = () => ({ rank_requirements: rankRequirements.optional(), competitions: competitions.optional() });
+exports.createTeam = z.object({ ...teamFields, ...teamExtras() });
+exports.patchTeam = z.object({ ...teamFields, ...teamExtras() }).partial();
 
 exports.createInvite = z.object({
   expires_in_hours: z.coerce.number().refine((h) => C.INVITE_TTL_HOURS.includes(h), {
@@ -66,11 +85,15 @@ exports.inviteToken = z.string().regex(/^[A-Za-z0-9_-]{20,100}$/, 'Invalid invit
 exports.patchMember = z.object({
   is_igl: z.boolean().optional(),
   player_role: z.enum(C.PLAYER_ROLES).nullable().optional(),
-}).refine((v) => v.is_igl !== undefined || v.player_role !== undefined, 'Nothing to update');
+  // CS2 teammate colour on this team (null clears it).
+  game_color: z.enum(C.PLAYER_COLOR_IDS).nullable().optional(),
+}).refine((v) => v.is_igl !== undefined || v.player_role !== undefined || v.game_color !== undefined, 'Nothing to update');
 
 exports.recruiting = z.object({
   is_recruiting: z.boolean().optional(),
   recruiting_leagues: optionalText(300),
+  competitions: competitions.optional(),
+  rank_requirements: rankRequirements.optional(),
   roles_needed: z.array(z.enum(C.PLAYER_ROLES)).max(7)
     .transform((list) => [...new Set(list)]).optional(),
   recruiting_notes: optionalText(1000),
@@ -92,25 +115,21 @@ const profileLink = (field) => z.string().trim().max(300).nullable().optional()
     }
   }, { message: `Must be an https link to ${C.PROFILE_LINK_HOSTS[field][0]}` });
 
-const CAT = require('../domain/catalogue');
+
+const rankFor = (platform) => z.string().max(30).nullable().optional()
+  .refine((v) => v == null || v === '' || CAT.isValidRank(platform, v), { message: `Choose a ${platform} rank from the list` });
 
 exports.profile = z.object({
   language: optionalText(40),
   region: optionalText(40),
-  // Recruitment rank: a platform and a rank from that platform's catalogue.
-  rank_platform: z.enum(CAT.PLATFORM_IDS).nullable().optional(),
-  rank_id: z.string().max(30).nullable().optional(),
+  // Self-reported ranks, one per platform. Omitted platforms are left unchanged.
+  ranks: z.object(Object.fromEntries(CAT.PLATFORM_IDS.map((p) => [p, rankFor(p)]))).strict().optional(),
+  clear_legacy_rank: z.boolean().optional(),
   bio: optionalText(1000),
   steam_url: profileLink('steam_url'),
   faceit_url: profileLink('faceit_url'),
   esea_url: profileLink('esea_url'),
   hltv_url: profileLink('hltv_url'),
-}).superRefine((p, ctx) => {
-  if (p.rank_id && !p.rank_platform) {
-    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'Choose a platform for this rank' });
-  } else if (p.rank_id && !CAT.isValidRank(p.rank_platform, p.rank_id)) {
-    ctx.addIssue({ code: 'custom', path: ['rank_id'], message: 'That rank does not belong to the chosen platform' });
-  }
 });
 
 exports.statsSettings = z.object({
@@ -121,9 +140,11 @@ exports.statsSettings = z.object({
 exports.playerFilters = z.object({
   language: z.string().max(40).optional(),
   region: z.string().max(40).optional(),
-  platform: z.enum(CAT.PLATFORM_IDS).optional(),
-  rank: z.string().max(30).optional(),
+  ...Object.fromEntries(CAT.PLATFORM_IDS.map((p) => [p, z.string().max(30).optional()])),
 });
+
+exports.rankRequirements = rankRequirements;
+exports.competitions = competitions;
 
 // Key bindings such as "ArrowRight", "N", "Shift+N", "Ctrl+]".
 const binding = z.string().max(40).regex(/^((Ctrl|Alt|Shift|Meta)\+){0,3}([A-Z0-9]|F[1-9]|F1[0-2]|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|Backspace|Delete|Home|End|PageUp|PageDown|Insert|[[\]\\;',./`=-])$/,
@@ -151,7 +172,7 @@ const timeZone = z.string().max(64).refine((tz) => {
     return false;
   }
 }, 'Unknown time zone');
-exports.event = z.object({
+const eventBase = z.object({
   kind: z.enum(C.EVENT_KINDS),
   // Demo Review events may link a demo from the team's library.
   demo_id: id.nullable().optional(),
@@ -160,8 +181,24 @@ exports.event = z.object({
   time_zone: timeZone,
   opponent: optionalText(80),
   notes: trimmed(2000).optional().default(''),
+  // Optional end time (used to warn about players marked unavailable).
+  ends_at: isoInstant.nullable().optional(),
 });
-exports.eventPatch = exports.event.partial();
+const endsAfterStart = (v) => v.ends_at == null || v.starts_at == null || Date.parse(v.ends_at) > Date.parse(v.starts_at);
+exports.event = eventBase.refine(endsAfterStart, { message: 'The end time must be after the start time', path: ['ends_at'] });
+exports.eventPatch = eventBase.partial().refine(endsAfterStart, { message: 'The end time must be after the start time', path: ['ends_at'] });
+// A player's own availability: a date, Available / Unavailable, all day or a
+// time range (the client sends local midnight-to-midnight for all-day entries).
+exports.availability = z.object({
+  status: z.enum(C.AVAILABILITY_STATUSES),
+  all_day: z.boolean(),
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+  starts_at: isoInstant,
+  ends_at: isoInstant,
+  time_zone: timeZone,
+  note: trimmed(200).optional().default(''),
+}).refine((v) => Date.parse(v.ends_at) > Date.parse(v.starts_at), { message: 'The end time must be after the start time', path: ['ends_at'] })
+  .refine((v) => Date.parse(v.ends_at) - Date.parse(v.starts_at) <= 25 * 3600 * 1000, { message: 'An entry covers one day at most', path: ['ends_at'] });
 exports.eventRange = z.object({ from: isoInstant.optional(), to: isoInstant.optional() });
 
 exports.gameCommand = z.object({
@@ -203,11 +240,33 @@ const marker = z.object({
   label: trimmed(C.LIMITS.noteChars).optional().default(''),
   // Note font size in board units (notes only).
   size: z.number().int().min(C.NOTE_SIZE.min).max(C.NOTE_SIZE.max).optional(),
+  // Utility markers assigned to a player are planned throws unless they are
+  // only a reference (e.g. showing where a teammate's smoke lands).
+  reference: z.boolean().optional(),
+  // Utility only (Phase 10): intermediate points the throw passes through
+  // (bounces), from the thrower to this marker, in board coordinates. A
+  // drawn illustration, not a simulated trajectory. Absent = straight line.
+  path: z.array(z.object({ x: coord, y: coord })).max(C.LIMITS.bouncePoints).optional(),
   // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
+  // Utility only (Phase 14): position in the thrower's order for this phase.
+  seq: z.number().int().min(0).max(99).optional(),
+  // Utility only (Phase 15): the catalogue lineup this throw was placed from
+  // (an attributed link to that exact lineup on CSNADES.gg).
+  lineup: z.object({
+    id: z.string().regex(/^[a-z0-9-]{1,80}$/),
+    title: trimmed(120),
+    url: z.string().max(300).url().refine((u) => u.startsWith('https://csnades.gg/'), 'Lineup links must point to CSNADES.gg'),
+    source: z.literal('CSNADES.gg'),
+    technique: z.string().max(20).optional(),
+    instructions: trimmed(400).optional(),
+  }).strict().optional(),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
   message: 'Only utility and note markers can have lineup screenshots',
   path: ['images'],
+}).refine((m) => !m.path || ['smoke', 'flash', 'molly', 'he'].includes(m.kind), {
+  message: 'Only utility markers have a throw path',
+  path: ['path'],
 }).refine((m) => m.kind === 'note' || m.label.length <= 40, {
   message: 'Labels can be at most 40 characters',
   path: ['label'],
@@ -234,12 +293,32 @@ const hold = z.object({
   length: z.number().finite().min(0.02).max(0.6),
 });
 
+// Drop (Phase 15): a player leaves a utility item at a point on the map; it
+// takes a place in their order for the phase (seq). Teammates pick drops up
+// by passing over them on their routes (domain/utility simulatePhase), so
+// there are no pickup annotations; Phase 14 pickups are accepted and
+// discarded so boards saved by that version still load and save.
+const action = z.object({
+  id: clientId,
+  type: z.enum(['drop', 'pickup']),
+  user_id: id.nullable().optional().default(null),
+  slot,
+  kind: z.enum(['smoke', 'flash', 'molly', 'he', 'decoy']).optional(),
+  drop_id: clientId.optional(),
+  x: coord,
+  y: coord,
+  level,
+  seq: z.number().int().min(0).max(99).optional(),
+}).refine((a) => a.user_id != null || a.slot != null, 'A drop needs a player or a player slot')
+  .refine((a) => a.type !== 'drop' || a.kind, { message: 'Choose the item being dropped', path: ['kind'] });
+
 const board = z.object({
   markers: z.array(marker).max(C.LIMITS.markers).default([]),
   routes: z.array(route).max(C.LIMITS.routes).default([]),
   holds: z.array(hold).max(C.LIMITS.holds).default([]),
+  actions: z.array(action).max(C.LIMITS.actions).default([]).transform((list) => list.filter((a) => a.type === 'drop')),
 }).superRefine((b, ctx) => {
-  const ids = [...b.markers, ...b.routes, ...b.holds].map((x) => x.id);
+  const ids = [...b.markers, ...b.routes, ...b.holds, ...b.actions].map((x) => x.id);
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Board item ids must be unique' });
   const players = new Set(b.markers.filter((m) => m.kind === 'player').map((m) => m.id));
   b.holds.forEach((h, i) => {
@@ -271,6 +350,26 @@ const phase = z.object({
 
 const utilityCount = (max) => z.coerce.number().int().min(0).max(max);
 
+// One player's buy list (CS2 carry limits: 1 smoke, 2 flashes, 1 molotov or
+// incendiary, 1 HE, at most 4 grenades; a defuse kit on CT).
+const U = require('../domain/utility');
+const loadout = z.object({
+  user_id: id.nullable().optional().default(null),
+  slot,
+  smoke: z.number().int().min(0).max(U.BUY_LIMITS.smoke).default(0),
+  flash: z.number().int().min(0).max(U.BUY_LIMITS.flash).default(0),
+  molly: z.number().int().min(0).max(U.BUY_LIMITS.molly).default(0),
+  he: z.number().int().min(0).max(U.BUY_LIMITS.he).default(0),
+  // Phase 14; older buy lists have none.
+  decoy: z.number().int().min(0).max(U.BUY_LIMITS.decoy).default(0),
+  kit: z.boolean().default(false),
+}).refine((l) => l.user_id != null || l.slot != null, 'A buy list needs a player or a player slot')
+  .refine((l) => l.smoke + l.flash + l.molly + l.he + l.decoy <= U.MAX_GRENADES, `A player can carry at most ${U.MAX_GRENADES} grenades`);
+const owner = z.object({ user_id: id.nullable().optional().default(null), slot })
+  .refine((o) => o.user_id != null || o.slot != null, 'Choose a player or a player slot');
+const playerColor = z.object({ user_id: id.nullable().optional().default(null), slot, color: z.enum(C.PLAYER_COLOR_IDS) })
+  .refine((o) => o.user_id != null || o.slot != null, 'A colour needs a player or a player slot');
+
 const tacticDocumentBase = z.object({
   tactic_name: trimmed(60).min(1, 'Name is required'),
   map: z.enum(C.MAPS),
@@ -280,14 +379,33 @@ const tacticDocumentBase = z.object({
   molly: utilityCount(5).default(0),
   flash: utilityCount(10).default(0),
   smoke: utilityCount(5).default(0),
+  loadouts: z.array(loadout).max(10).default([]).superRefine((list, ctx) => {
+    const keys = list.map(U.ownerKey);
+    if (new Set(keys).size !== keys.length) ctx.addIssue({ code: 'custom', message: 'A player can only have one buy list' });
+  }),
+  // T only: who carries the bomb.
+  bomb_carrier: owner.nullable().optional().default(null),
+  // In-game colours: one per player, each colour used once.
+  player_colors: z.array(playerColor).max(C.PLAYER_COLOR_IDS.length).default([]).superRefine((list, ctx) => {
+    const keys = list.map(U.ownerKey);
+    if (new Set(keys).size !== keys.length) ctx.addIssue({ code: 'custom', message: 'A player can only have one colour' });
+    const colors = list.map((c) => c.color);
+    if (new Set(colors).size !== colors.length) ctx.addIssue({ code: 'custom', message: 'Each colour can only be given to one player' });
+  }),
   phases: z.array(phase).min(1, 'Add at least one phase').max(C.LIMITS.phases),
 });
 
 // Board items may only use levels the chosen map has (e.g. lower on Nuke).
 const checkLevels = (doc, ctx) => {
+  if (doc.side !== 'T' && doc.bomb_carrier) ctx.addIssue({ code: 'custom', path: ['bomb_carrier'], message: 'Only T tactics have a bomb carrier' });
+  if (doc.side !== 'CT') doc.loadouts.forEach((l, i) => { if (l.kit) ctx.addIssue({ code: 'custom', path: ['loadouts', i, 'kit'], message: 'Defuse kits are CT only' }); });
+  // Every drop needs its own id across the tactic.
+  for (const e of U.actionErrors(doc.phases)) {
+    ctx.addIssue({ code: 'custom', path: ['phases', e.phase, 'board', 'actions', e.id], message: e.message });
+  }
   const allowed = C.mapLevels(doc.map);
   doc.phases.forEach((p, pi) => {
-    [...p.board.markers, ...p.board.routes].forEach((item) => {
+    [...p.board.markers, ...p.board.routes, ...p.board.actions].forEach((item) => {
       if (!allowed.includes(item.level)) {
         ctx.addIssue({
           code: 'custom',
@@ -355,9 +473,28 @@ exports.sharedQuery = z.object({
 exports.demoUploadQuery = z.object({
   title: z.string().trim().max(120).optional(),
   file_name: z.string().trim().max(255).optional(),
+  // Optional: capture these recorded events from CS2 once the demo parses.
+  capture: z.enum(['all', 'kill', 'utility']).optional(),
+});
+exports.watchRound = z.object({ round_number: z.number().int().min(1).max(200) }).strict();
+exports.captureRetry = z.object({ session_id: z.number().int().positive() }).strict();
+exports.captureBatch = z.object({
+  selection: z.enum(['all', 'kill', 'utility']),
+  round_number: z.number().int().min(1).max(200).optional(),
+  // Parsed player index from the demo roster (not a display name).
+  player: z.number().int().min(0).max(63).nullable().optional(),
+  dry_run: z.boolean().optional(),
+  // Answering the upload option's player choice (clears it).
+  pending: z.boolean().optional(),
+}).strict();
+exports.shareCodeImport = z.object({
+  share_code: z.string().trim().min(1, 'Paste a match share code').max(200),
+  title: z.string().trim().max(120).optional(),
 });
 exports.demoPatch = z.object({ title: trimmed(120).min(1) });
 const annPoint = z.object({ x: coord, y: coord });
+// Text annotation size in board units (same range as tactic notes).
+const annotationSize = z.number().int().min(C.NOTE_SIZE.min).max(C.NOTE_SIZE.max);
 exports.annotation = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('drawing'),
@@ -371,17 +508,64 @@ exports.annotation = z.discriminatedUnion('kind', [
     round_number: z.number().int().min(1).max(200),
     tick: z.number().int().min(0),
     level: z.enum(C.LEVELS).optional().default('main'),
-    data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166') }),
+    data: z.object({ x: coord, y: coord, text: trimmed(200).min(1), color: color.optional().default('#ffd166'), size: annotationSize.optional() }),
+  }),
+  // A smoke, flash, HE or molotov placed on the radar.
+  z.object({
+    kind: z.literal('utility'),
+    round_number: z.number().int().min(1).max(200),
+    tick: z.number().int().min(0),
+    level: z.enum(C.LEVELS).optional().default('main'),
+    data: z.object({ x: coord, y: coord, utility: z.enum(['smoke', 'flash', 'he', 'molly']) }),
   }),
 ]);
+// Editing an annotation: move a utility marker or text, change a marker's
+// type, or change a text's content and size.
+exports.annotationPatch = z.object({
+  text: trimmed(200).min(1).optional(),
+  size: annotationSize.optional(),
+  x: coord.optional(),
+  y: coord.optional(),
+  utility: z.enum(['smoke', 'flash', 'he', 'molly']).optional(),
+  level: z.enum(C.LEVELS).optional(),
+}).refine((p) => Object.keys(p).length > 0, 'Nothing to update');
+// Save notes and annotations (Demo Review). expected_version: the note version
+// the client loaded (0 when there was none), for conflict detection.
+exports.reviewSave = z.object({
+  notes: z.array(z.object({
+    round_number: z.number().int().min(1).max(200),
+    body: z.string().max(C.LIMITS.roundNoteChars).transform((s) => s.replace(/\s+$/, '')),
+    expected_version: z.number().int().min(0).optional(),
+  })).max(200).optional().default([]),
+  review_id: id.optional(),
+});
+// Replay Inspector capture request: an event in a round of a demo the user can access.
+exports.captureRequest = z.object({
+  kind: z.enum(['kill', 'utility']),
+  round_number: z.number().int().min(1).max(200),
+  event_index: z.number().int().min(0).max(5000),
+  // Capture again even if media already exists.
+  retry: z.boolean().optional(),
+}).strict();
 exports.reviewStart = z.object({ demo_id: id, round_number: z.number().int().min(1).optional() });
+// The host's Replay Inspector selection (Phase 15): an event by round and
+// index (stable identities), and the victim or lineup tab chosen in a group.
+const inspectSelection = z.object({
+  round_number: z.number().int().min(1),
+  event_index: z.number().int().min(0).max(5000),
+  kind: z.enum(['kill', 'utility']),
+  victim: z.number().int().min(0).max(5000).nullable().optional(),
+  lineup: z.number().int().min(0).max(5000).nullable().optional(),
+}).strict();
 exports.reviewCommand = z.object({
-  action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed']),
+  action: z.enum(['play', 'pause', 'seek', 'round', 'clear', 'speed', 'inspect']),
   tick: z.number().finite().min(0).optional(),
   round_number: z.number().int().min(1).optional(),
   speed: z.union([z.literal(0.5), z.literal(1), z.literal(2), z.literal(4)]).optional(),
+  inspect: inspectSelection.nullable().optional(),
   expected_version: z.number().int().positive(),
 }).refine((c) => c.action !== 'seek' || c.tick !== undefined, 'tick is required for seek')
+  .refine((c) => c.action !== 'inspect' || c.inspect !== undefined, 'inspect is required (null clears it)')
   .refine((c) => c.action !== 'round' || c.round_number !== undefined, 'round_number is required to change round')
   .refine((c) => c.action !== 'speed' || c.speed !== undefined, 'speed is required');
 exports.startSession = z.object({ tactic_id: id });

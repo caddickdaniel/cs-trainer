@@ -184,3 +184,20 @@ exports.deleteEvent = asyncHandler(async (req, res) => {
   res.status(204).end();
 });
 
+
+// ---- Player availability (team calendar) ----
+const availability = require('../services/availability');
+const availabilityId = (req) => v.parseId(req.params.availability_id, 'availability_id');
+exports.sendAvailability = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.send(await availability.list(teamId(req), me(req), v.eventRange.parse(req.query)));
+});
+exports.createAvailability = asyncHandler(async (req, res) => {
+  res.status(201).send(await availability.create(teamId(req), me(req), v.availability.parse(req.body)));
+});
+exports.patchAvailability = asyncHandler(async (req, res) => {
+  res.send(await availability.update(teamId(req), me(req), availabilityId(req), v.availability.parse(req.body)));
+});
+exports.deleteAvailability = asyncHandler(async (req, res) => {
+  res.send(await availability.remove(teamId(req), me(req), availabilityId(req)));
+});

@@ -6,6 +6,9 @@
 // Only the team's current IGL controls a review (checked on every request,
 // so an IGL transfer revokes control immediately). Teammates follow read-only.
 // Reviews are separate from Game Mode: nothing here touches game_sessions.
+// The host's Replay Inspector selection (event and victim / lineup tab) is
+// part of the state too, so followers see the event being discussed.
+const zlib = require('zlib');
 const db = require('../db/connection');
 const { badRequest, conflict, notFound } = require('../errors');
 const { requireMember, requireIgl, getAccess } = require('./access');
@@ -19,6 +22,11 @@ function positionAt(review, round, tickrate, atMs = nowMs()) {
   if (review.playing) tick += ((atMs - new Date(review.anchor_at).getTime()) / 1000) * tickrate * review.speed;
   if (round) tick = Math.min(round.end_tick, Math.max(round.start_tick, tick));
   return tick;
+}
+
+async function roundEvents(demoId, roundNumber) {
+  const row = await db('demo_rounds').where({ demo_id: demoId, round_number: roundNumber }).first('data');
+  return row ? JSON.parse(zlib.gunzipSync(row.data)).events || [] : null;
 }
 
 async function roundOf(trx, demoId, roundNumber) {
@@ -36,9 +44,12 @@ async function present(review, userId, trx = db) {
     review.started_by ? trx('users').where('user_id', review.started_by).first('user_id', 'user_name') : null,
   ]);
   const at = nowMs();
+  // This review's live drawings plus the demo's saved annotations for the round.
   const annotations = await trx('demo_annotations')
-    .where({ review_id: review.review_id, round_number: review.round_number })
+    .where({ demo_id: review.demo_id, round_number: review.round_number })
+    .where((w) => w.where('review_id', review.review_id).orWhere((x) => x.whereNull('review_id').where('saved', true)))
     .orderBy([{ column: 'tick' }, { column: 'annotation_id' }]);
+  const note = await trx('demo_round_notes').where({ demo_id: review.demo_id, round_number: review.round_number }).first();
   const names = await demos.userNames(annotations.map((a) => a.author_id));
   const position = positionAt(review, round, demo.tickrate || 64, at);
   return {
@@ -60,6 +71,9 @@ async function present(review, userId, trx = db) {
     igl: igl || null,
     can_control: Boolean(access && access.canControl),
     annotations: annotations.map((a) => demos.presentAnnotation(a, names)),
+    // The host's Replay Inspector selection (Phase 15), or null.
+    inspect: review.inspect || null,
+    note: note ? (await demos.presentNotes([note]))[0] : null,
   };
 }
 
@@ -134,6 +148,20 @@ async function loadForControl(reviewId, userId) {
   return review;
 }
 
+// A shared inspector selection must name a kill or utility throw (and tab
+// events) in this demo.
+async function checkInspect(review, sel) {
+  if (!sel) return null;
+  const events = await roundEvents(review.demo_id, sel.round_number);
+  const ev = events && events[sel.event_index];
+  const kindOk = ev && (sel.kind === 'kill' ? ev.type === 'kill' : ['smoke', 'flash', 'he', 'fire'].includes(ev.type));
+  if (!kindOk) throw badRequest('That event is not in this demo', 'event_not_found');
+  for (const tab of ['victim', 'lineup']) {
+    if (sel[tab] != null && !events[sel[tab]]) throw badRequest('That event is not in this demo', 'event_not_found');
+  }
+  return JSON.stringify(sel);
+}
+
 // Applies one IGL command with compare-and-set on version.
 async function command(reviewId, userId, body) {
   const review = await loadForControl(reviewId, userId);
@@ -171,9 +199,16 @@ async function command(reviewId, userId, body) {
     case 'clear':
       changes = {};
       break;
+    case 'inspect':
+      changes = {};
+      break;
     default:
       throw badRequest('Unknown command', 'unknown_command');
   }
+  // The host's inspector selection can travel with any command (a seek to
+  // the selected event, a round change) or on its own ('inspect'); it never
+  // changes playback.
+  if (body.inspect !== undefined) changes.inspect = await checkInspect(review, body.inspect);
   const updated = await db.transaction(async (trx) => {
     const [row] = await trx('review_sessions')
       .where({ review_id: reviewId, status: 'active', version: body.expected_version })
@@ -218,6 +253,20 @@ async function removeAnnotation(reviewId, annotationId, userId) {
   return { review: await present(updated, userId) };
 }
 
+// Moving or changing a utility marker during a live review (IGL only).
+async function updateAnnotation(reviewId, annotationId, userId, patch) {
+  await loadForControl(reviewId, userId);
+  const updated = await db.transaction(async (trx) => {
+    const row = await trx('demo_annotations').where({ review_id: reviewId, annotation_id: annotationId }).first();
+    if (!row) throw notFound('Annotation not found');
+    await demos.applyAnnotationPatch(trx, row, patch);
+    const [rev] = await trx('review_sessions').where('review_id', reviewId)
+      .update({ version: trx.raw('version + 1'), updated_at: trx.fn.now() }).returning('*');
+    return rev;
+  });
+  return { review: await present(updated, userId) };
+}
+
 async function end(reviewId, userId) {
   const review = await db('review_sessions').where('review_id', reviewId).first();
   if (!review) throw notFound('Review not found');
@@ -231,4 +280,4 @@ async function end(reviewId, userId) {
   return { review: await present(row || review, userId) };
 }
 
-module.exports = { getCurrent, getReview, start, command, annotate, removeAnnotation, end, positionAt };
+module.exports = { getCurrent, getReview, start, command, annotate, updateAnnotation, removeAnnotation, end, positionAt };

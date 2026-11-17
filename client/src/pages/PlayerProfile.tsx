@@ -6,7 +6,7 @@ import { useDocumentTitle, useLoad } from '../lib/hooks';
 import type { Profile } from '../lib/types';
 import { Alert, Badge, Loading, Panel } from '../components/ui';
 import { Avatar, Facts } from '../components/People';
-import { RankBadge } from '../components/RankBadge';
+import { PlayerRankList } from '../components/Recruitment';
 import { PlayerStats } from '../components/PlayerStats';
 import { useCatalogue } from '../lib/catalogue';
 import type { PlayerStatsResponse } from '../lib/types';
@@ -73,8 +73,8 @@ export function PlayerProfilePage() {
           </div>
         </div>
         <Facts items={[['Language', profile.language], ['Region', profile.region]]} />
-        <div className="row wrap"><span className="muted small">Rank (self-reported)</span>
-          <RankBadge cat={cat} platform={profile.rank_platform} rankId={profile.rank_id} legacyPlatform={profile.legacy_platform} legacySkill={profile.legacy_skill_level} /></div>
+        <div className="row wrap"><span className="muted small">Ranks (self-reported)</span>
+          <PlayerRankList cat={cat} ranks={profile.ranks} legacyPlatform={profile.legacy_platform} legacySkill={profile.legacy_skill_level} /></div>
         <h3>Bio</h3>
         {profile.bio ? <p className="bio">{profile.bio}</p> : <p className="muted">No bio yet.</p>}
         {links.length ? (

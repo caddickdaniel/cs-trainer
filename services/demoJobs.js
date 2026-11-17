@@ -7,11 +7,13 @@ const { fork } = require('child_process');
 const db = require('../db/connection');
 const config = require('../config/env');
 
+const fs = require('fs');
 const CHILD = path.join(__dirname, '..', 'workers', 'demo-parse-child.js');
+const FETCH_CHILD = path.join(__dirname, '..', 'workers', 'demo-fetch-child.js');
 const MAX_ATTEMPTS = 2;
 
 const storagePath = (key) => path.join(config.demoStorageDir, key);
-const { STATS_VERSION } = require('./demoParse');
+const { STATS_VERSION, REPLAY_VERSION } = require('./demoParse');
 const FACEIT_MATCH_ID = /1-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 // Saves a demo's match and per-player totals. Idempotent: the match is keyed
@@ -70,6 +72,32 @@ function parseInChild(file, timeoutMs = config.demoParseTimeoutMs) {
   });
 }
 
+// Downloads (and decompresses) a replay into `file` in a child process.
+function fetchInChild(url, file, timeoutMs = 15 * 60 * 1000) {
+  return new Promise((resolve, reject) => {
+    const child = fork(FETCH_CHILD, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(reject, { code: 'timeout', message: 'Downloading the replay took too long and was stopped.' }); }, timeoutMs);
+    child.on('message', (msg) => (msg.ok ? finish(resolve, msg) : finish(reject, { code: msg.code, message: msg.message })));
+    child.on('exit', (code, signal) => finish(reject, { code: 'download_failed', message: `The download stopped unexpectedly (${signal || `exit ${code}`}).` }));
+    child.send({ url, file, maxBytes: config.demoMaxBytes });
+  });
+}
+
+// Share-code imports have no file until the replay is fetched through the
+// replay provider; uploads already have theirs.
+async function ensureFile(demo, { locate, download }) {
+  const file = storagePath(demo.storage_key);
+  if (demo.source !== 'share_code' || fs.existsSync(file)) return file;
+  const { decodeShareCode } = require('./shareCode');
+  const url = await locate(decodeShareCode(demo.share_code));
+  fs.mkdirSync(config.demoStorageDir, { recursive: true });
+  const { size } = await download(url, file);
+  await db('demos').where('demo_id', demo.demo_id).update({ byte_size: size });
+  return file;
+}
+
 async function claimNext() {
   return db.transaction(async (trx) => {
     const row = await trx('demos').where('status', 'queued').orderBy('created_at').forUpdate().skipLocked().first();
@@ -103,6 +131,7 @@ async function saveResult(demoId, result) {
     }
     await trx('demos').where('demo_id', demoId).update({
       status: 'ready',
+      replay_version: REPLAY_VERSION,
       map: result.map,
       tickrate: result.tickrate,
       round_count: result.rounds.length,
@@ -121,12 +150,15 @@ async function markFailed(demoId, code, message) {
 }
 
 // Processes one queued demo. `parse` is injectable for tests.
-async function processNext({ parse = parseInChild } = {}) {
+async function processNext({ parse = parseInChild, locate = (ids) => require('./replayProvider').locateReplay(ids), download = fetchInChild } = {}) {
   const demo = await claimNext();
   if (!demo) return null;
   try {
-    const result = await parse(storagePath(demo.storage_key));
+    const file = await ensureFile(demo, { locate, download });
+    const result = await parse(file);
     await saveResult(demo.demo_id, result);
+    // Upload option: queue the selected recorded events for CS2 capture.
+    await require('./captures').onDemoReady(demo.demo_id).catch((e) => console.error('capture queue:', e.message));
     return { demo_id: demo.demo_id, status: 'ready' };
   } catch (err) {
     await markFailed(demo.demo_id, err.code || 'parse_failed', err.message || String(err));
@@ -134,22 +166,53 @@ async function processNext({ parse = parseInChild } = {}) {
   }
 }
 
-// Demos processed before stats extraction existed (or by an older version)
-// are re-parsed once in the background to fill in Player Stats.
-async function backfillNextStats({ parse = parseInChild } = {}) {
-  const demo = await db('demos').where('status', 'ready').where('stats_version', '<', STATS_VERSION)
-    .orderBy('created_at').first();
-  if (!demo) return null;
+// Replaces each round's replay data in place (matched by round number).
+// Annotations and reviews reference the demo and round number, never the
+// round rows, so they are untouched. If the new parse finds a different set
+// of rounds (it shouldn't: detection is deterministic) the old data is kept.
+async function refreshReplay(trx, demo, result) {
+  const existing = await trx('demo_rounds').where('demo_id', demo.demo_id).orderBy('round_number').pluck('round_number');
+  const rounds = result.rounds || [];
+  const fresh = rounds.map((r) => r.round_number);
+  if (existing.length !== fresh.length || existing.some((n, i) => n !== fresh[i])) {
+    await trx('demos').where('demo_id', demo.demo_id).update({ replay_version: REPLAY_VERSION });
+    return false;
+  }
+  for (const r of rounds) {
+    await trx('demo_rounds').where({ demo_id: demo.demo_id, round_number: r.round_number })
+      .update({ data: zlib.gzipSync(JSON.stringify(r.data)) });
+  }
+  await trx('demos').where('demo_id', demo.demo_id).update({ replay_version: REPLAY_VERSION, ...(result.meta ? { meta: JSON.stringify(result.meta) } : {}) });
+  return true;
+}
+
+// Re-parses one ready demo that was processed by an older version, to fill in
+// Player Stats and/or the newer replay data (recorded utility).
+async function upgradeDemo(demo, { parse = parseInChild } = {}) {
   try {
     const result = await parse(storagePath(demo.storage_key));
-    await db.transaction((trx) => importDemoStats(trx, demo, result.stats));
-    return { demo_id: demo.demo_id, status: 'stats_ready' };
+    let replaced = false;
+    await db.transaction(async (trx) => {
+      if (demo.stats_version < STATS_VERSION) await importDemoStats(trx, demo, result.stats);
+      if (demo.replay_version < REPLAY_VERSION) replaced = await refreshReplay(trx, demo, result);
+    });
+    return { demo_id: demo.demo_id, status: demo.stats_version < STATS_VERSION ? 'stats_ready' : 'replay_ready', replay: replaced };
   } catch (err) {
     // Missing file or parse failure: don't retry forever.
-    await db('demos').where('demo_id', demo.demo_id).update({ stats_version: STATS_VERSION });
-    return { demo_id: demo.demo_id, status: 'stats_failed', code: err.code };
+    await db('demos').where('demo_id', demo.demo_id).update({ stats_version: STATS_VERSION, replay_version: REPLAY_VERSION });
+    return { demo_id: demo.demo_id, status: 'upgrade_failed', code: err.code, message: err.message };
   }
 }
+
+// Background: one outdated demo per worker tick.
+async function backfillNext({ parse = parseInChild } = {}) {
+  const demo = await db('demos').where('status', 'ready')
+    .where((q) => q.where('stats_version', '<', STATS_VERSION).orWhere('replay_version', '<', REPLAY_VERSION))
+    .orderBy('created_at').first();
+  if (!demo) return null;
+  return upgradeDemo(demo, { parse });
+}
+const backfillNextStats = backfillNext;
 
 // Demos left "processing" by a stopped server are retried once, then failed.
 async function recoverStale() {
@@ -169,7 +232,7 @@ async function tick() {
   running = true;
   try {
     while (await processNext()) { /* drain the queue */ }
-    await backfillNextStats();
+    await backfillNext();
   } catch (err) {
     console.error('[demo worker]', err);
   } finally {
@@ -196,4 +259,4 @@ function notifyQueued() {
   if (wake) wake();
 }
 
-module.exports = { importDemoStats, backfillNextStats, start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };
+module.exports = { fetchInChild, importDemoStats, backfillNextStats, backfillNext, upgradeDemo, refreshReplay, start, stop, processNext, parseInChild, recoverStale, notifyQueued, storagePath };

@@ -126,8 +126,8 @@ function StatsSettings({ ids }: { ids: Identities }) {
       ) : null}
 
       <h3>Valve matchmaking (automatic)</h3>
-      <p className="muted small">Not available yet. Discovering new matches works with Valve's match-sharing codes, but downloading
-        the replays needs a signed-in Steam game client, which this server doesn't run. Upload Premier demos in Demo Review instead.</p>
+      <p className="muted small">Not automatic yet. You can paste a match share code in Demo Review: it's checked here, and the replay is
+        fetched through a replay provider (a Steam game-client bridge) when the server has one configured. Otherwise upload the .dem file.</p>
       <Alert>{error}</Alert>
     </Panel>
   );

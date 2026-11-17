@@ -1,6 +1,6 @@
 // Player profiles, the available-player directory and per-user settings.
 const db = require('../db/connection');
-const { DEFAULT_SHORTCUTS } = require('../domain/constants');
+const { DEFAULT_SHORTCUTS, PREVIOUS_SHORTCUTS } = require('../domain/constants');
 const { notFound, badRequest } = require('../errors');
 const CAT = require('../domain/catalogue');
 const { getAccess } = require('./access');
@@ -10,14 +10,23 @@ const { getMemberships } = require('./users');
 
 const PROFILE_FIELDS = ['language', 'region', 'bio', 'steam_url', 'faceit_url', 'esea_url', 'hltv_url'];
 
-// Recruitment rank: catalogue values, or the legacy free text a player entered
-// before Phase 4 when it could not be mapped (shown until they pick a rank).
-const rankFields = (u) => ({
-  rank_platform: u.rank_platform || null,
-  rank_id: u.rank_id || null,
-  legacy_platform: u.rank_platform ? null : u.platform || null,
-  legacy_skill_level: u.rank_id ? null : u.skill_level || null,
-});
+// Self-reported ranks: one optional catalogue band per platform. Legacy free
+// text entered before the catalogue existed stays visible for review unless
+// it is already represented by the matching rank.
+function rankFields(u) {
+  const ranks = Object.fromEntries(CAT.PLATFORM_IDS.map((p) => [p, u[CAT.RANK_COLUMNS[p]] || null]));
+  let legacy = Boolean(u.platform || u.skill_level);
+  if (legacy && u.platform) {
+    const mapped = CAT.mapLegacyRank(u.platform, u.skill_level);
+    if (mapped && mapped.rank && ranks[mapped.platform]) legacy = false;
+  }
+  return {
+    ranks,
+    legacy_platform: legacy ? u.platform || null : null,
+    legacy_skill_level: legacy ? u.skill_level || null : null,
+  };
+}
+const RANK_SELECT = ['premier_rank', 'faceit_rank', 'esea_rank', 'platform', 'skill_level'];
 
 // A sign-in method: a password or a verified identity (Steam). Accounts with
 // neither are unclaimed legacy rows and stay out of discovery.
@@ -58,12 +67,12 @@ async function updateOwnProfile(userId, fields) {
   checkOption(CAT.LANGUAGES, 'language', fields.language, current.language);
   checkOption(CAT.REGIONS, 'region', fields.region, current.region);
   const changes = Object.fromEntries(PROFILE_FIELDS.filter((k) => fields[k] !== undefined).map((k) => [k, fields[k] || null]));
-  if (fields.rank_platform !== undefined) {
-    changes.rank_platform = fields.rank_platform || null;
-    changes.rank_id = fields.rank_platform ? fields.rank_id || null : null;
-    // Choosing a catalogue platform replaces any legacy free text.
-    if (fields.rank_platform) { changes.platform = null; changes.skill_level = null; }
+  // Each platform's rank is optional and saved independently.
+  for (const p of CAT.PLATFORM_IDS) {
+    if (fields.ranks && fields.ranks[p] !== undefined) changes[CAT.RANK_COLUMNS[p]] = fields.ranks[p] || null;
   }
+  // The player reviewed their legacy text and chose to drop it.
+  if (fields.clear_legacy_rank) { changes.platform = null; changes.skill_level = null; }
   if (Object.keys(changes).length) {
     await db('users').where('user_id', userId).update({ ...changes, updated_at: db.fn.now() });
   }
@@ -122,11 +131,13 @@ async function availablePlayers(viewerId, filters = {}) {
     .whereNot('u.user_id', viewerId)
     .orderBy([{ column: 'u.user_name' }, { column: 'u.user_id' }])
     .limit(200)
-    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'u.language', 'u.region', 'u.platform', 'u.skill_level', 'u.rank_platform', 'u.rank_id');
+    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'u.language', 'u.region', ...RANK_SELECT.map((c) => `u.${c}`));
   if (filters.language) q = q.where('u.language', filters.language);
   if (filters.region) q = q.where('u.region', filters.region);
-  if (filters.platform) q = q.where('u.rank_platform', filters.platform);
-  if (filters.rank) q = q.where('u.rank_id', filters.rank);
+  // One rank filter per platform; a player must match every active filter.
+  for (const p of CAT.PLATFORM_IDS) {
+    if (filters[p]) q = q.where(`u.${CAT.RANK_COLUMNS[p]}`, filters[p]);
+  }
   const rows = await q;
   const team = await invitingTeam(viewerId);
   const pending = team
@@ -134,9 +145,9 @@ async function availablePlayers(viewerId, filters = {}) {
       .whereNull('response').whereNull('revoked_at').where('expires_at', '>', db.fn.now()).pluck('invitee_user_id'))
     : new Set();
   return {
-    players: rows.map(({ avatar_image_id, platform, skill_level, rank_platform, rank_id, ...p }) => ({
+    players: rows.map(({ avatar_image_id, premier_rank, faceit_rank, esea_rank, platform, skill_level, ...p }) => ({
       ...p,
-      ...rankFields({ platform, skill_level, rank_platform, rank_id }),
+      ...rankFields({ premier_rank, faceit_rank, esea_rank, platform, skill_level }),
       avatar_url: pictureUrl(avatar_image_id),
       invite_status: pending.has(p.user_id) ? 'pending' : null,
     })),
@@ -145,9 +156,23 @@ async function availablePlayers(viewerId, filters = {}) {
   };
 }
 
+// Saved bindings always win. An action the player never set takes the
+// current default, unless that key is already one of their saved bindings;
+// then it keeps its previous default so two actions never share a key.
+function mergeShortcuts(saved = {}) {
+  const used = new Set(Object.values(saved));
+  const out = {};
+  for (const [action, key] of Object.entries(DEFAULT_SHORTCUTS)) {
+    if (saved[action]) out[action] = saved[action];
+    else if (used.has(key) && PREVIOUS_SHORTCUTS[action] && !used.has(PREVIOUS_SHORTCUTS[action])) out[action] = PREVIOUS_SHORTCUTS[action];
+    else out[action] = key;
+  }
+  return out;
+}
+
 async function getSettings(userId) {
   const { settings } = await db('users').where('user_id', userId).first('settings');
-  return { shortcuts: { ...DEFAULT_SHORTCUTS, ...((settings || {}).shortcuts || {}) }, defaults: DEFAULT_SHORTCUTS };
+  return { shortcuts: mergeShortcuts((settings || {}).shortcuts || {}), defaults: DEFAULT_SHORTCUTS };
 }
 
 async function updateSettings(userId, { shortcuts }) {
@@ -162,6 +187,7 @@ async function updateSettings(userId, { shortcuts }) {
 module.exports = {
   canSignIn,
   rankFields,
+  RANK_SELECT,
   PROFILE_FIELDS,
   presentProfile,
   getOwnProfile,
@@ -170,6 +196,7 @@ module.exports = {
   getPublicProfile,
   availablePlayers,
   getSettings,
+  mergeShortcuts,
   updateSettings,
   canViewProfile,
   getAccess,

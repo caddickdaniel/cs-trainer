@@ -9,6 +9,34 @@ const { pictureUrl } = require('./pictures');
 
 const TEAM_FIELDS = ['team_name', 'language', 'region', 'platform', 'skill_level', 'description'];
 const RECRUITING_FIELDS = ['is_recruiting', 'recruiting_leagues', 'roles_needed', 'recruiting_notes'];
+
+// Team language and region are picked from the catalogue in the UI. The API
+// still accepts free text because the legacy /api/teams contract does.
+
+// Requirements and competitions are catalogue values. Saving requirements
+// replaces the legacy free-text platform / skill level; saving competitions
+// replaces the legacy free-text leagues.
+function recruitmentChanges(fields) {
+  const changes = {};
+  if (fields.rank_requirements !== undefined) {
+    changes.rank_requirements = JSON.stringify(fields.rank_requirements);
+    changes.platform = null;
+    changes.skill_level = null;
+  }
+  if (fields.competitions !== undefined) {
+    changes.competitions = fields.competitions;
+    changes.recruiting_leagues = null;
+  }
+  return changes;
+}
+
+// The team's legacy free-text platform / skill level, shown for review only
+// while it isn't represented by a requirement.
+function legacyRequirement(team) {
+  if (!team.platform && !team.skill_level) return null;
+  if ((team.rank_requirements || []).length) return null;
+  return [team.platform, team.skill_level].filter(Boolean).join(' · ');
+}
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj[k] !== undefined).map((k) => [k, obj[k]]));
 
 // Serialises membership changes for one user (prevents double create/join).
@@ -41,7 +69,7 @@ async function createTeam(userId, fields) {
     await lockUser(trx, userId);
     await assertNoTeam(trx, userId);
     const [team] = await trx('teams')
-      .insert({ ...pick(fields, TEAM_FIELDS), owner: userId })
+      .insert({ ...pick(fields, TEAM_FIELDS), ...recruitmentChanges(fields), owner: userId })
       .returning('*');
     await trx('team_memberships').insert({ team_id: team.team_id, user_id: userId, player_role: 'igl', is_igl: true });
     await trx('users').where('user_id', userId).update({ team_id: team.team_id, updated_at: trx.fn.now() });
@@ -51,7 +79,7 @@ async function createTeam(userId, fields) {
 
 async function updateTeam(teamId, userId, fields) {
   await requireOwner(teamId, userId);
-  const changes = pick(fields, TEAM_FIELDS);
+  const changes = { ...pick(fields, TEAM_FIELDS), ...recruitmentChanges(fields) };
   if (Object.keys(changes).length) {
     await db('teams').where('team_id', teamId).update({ ...changes, updated_at: db.fn.now() });
   }
@@ -59,7 +87,7 @@ async function updateTeam(teamId, userId, fields) {
 
 async function updateRecruiting(teamId, userId, fields) {
   await requireOwner(teamId, userId);
-  const changes = pick(fields, RECRUITING_FIELDS);
+  const changes = { ...pick(fields, RECRUITING_FIELDS), ...recruitmentChanges(fields) };
   if (Object.keys(changes).length) {
     await db('teams').where('team_id', teamId).update({ ...changes, updated_at: db.fn.now() });
   }
@@ -99,6 +127,9 @@ function presentTeam(team) {
     logo_url: pictureUrl(team.logo_image_id),
     is_recruiting: team.is_recruiting,
     recruiting_leagues: team.recruiting_leagues,
+    rank_requirements: team.rank_requirements || [],
+    competitions: team.competitions || [],
+    legacy_requirement: legacyRequirement(team),
     roles_needed: team.roles_needed || [],
     recruiting_notes: team.recruiting_notes,
   };
@@ -111,11 +142,15 @@ async function getRoster(teamId, userId) {
     .join('users as u', 'u.user_id', 'm.user_id')
     .where('m.team_id', teamId)
     .orderBy([{ column: 'm.joined_at' }, { column: 'm.membership_id' }])
-    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'm.player_role', 'm.joined_at');
+    .select('u.user_id', 'u.user_name', 'u.avatar_image_id', 'm.player_role', 'm.joined_at', 'm.game_color',
+      'u.premier_rank', 'u.faceit_rank', 'u.esea_rank');
+  const { rankFields } = require('./profiles');
   return {
     team: presentTeam(team),
-    members: members.map(({ avatar_image_id, ...m }) => ({
+    members: members.map(({ avatar_image_id, premier_rank, faceit_rank, esea_rank, ...m }) => ({
       ...m,
+      // Self-reported profile ranks (Premier, FACEIT, ESEA); null when not set.
+      ranks: rankFields({ premier_rank, faceit_rank, esea_rank }).ranks,
       avatar_url: pictureUrl(avatar_image_id),
       is_igl: m.player_role === 'igl',
       is_owner: m.user_id === team.owner,
@@ -140,6 +175,18 @@ async function updateMember(teamId, actorId, targetId, changes) {
     await trx('teams').where('team_id', teamId).forUpdate().first('team_id');
     const membership = await trx('team_memberships').where({ team_id: teamId, user_id: targetId }).first();
     if (!membership) throw notFound('That player is not on this team');
+
+    // CS2 teammate colour: the owner or the IGL assigns them (as with roles).
+    if (changes.game_color !== undefined && changes.game_color !== membership.game_color) {
+      if (!access.canLead) throw forbidden('Only the owner or the IGL can assign player colours', 'lead_only');
+      if (changes.game_color) {
+        const holder = await trx('team_memberships as m').join('users as u', 'u.user_id', 'm.user_id')
+          .where({ 'm.team_id': teamId, 'm.game_color': changes.game_color }).whereNot('m.user_id', targetId).first('u.user_name');
+        if (holder) throw conflict(`${holder.user_name} already has ${changes.game_color}. Clear or change their colour first.`, 'color_taken');
+      }
+      await trx('team_memberships').where({ team_id: teamId, user_id: targetId }).update({ game_color: changes.game_color });
+      await touchActiveSession(trx, teamId);
+    }
 
     let role = changes.player_role;
     if (changes.is_igl === true) role = 'igl';
@@ -351,7 +398,7 @@ async function myInvites(userId) {
     .where('i.invitee_user_id', userId)
     .orderBy('i.created_at', 'desc')
     .limit(50)
-    .select('i.*', 't.team_name', 't.logo_image_id', 't.region', 't.language', 't.platform', 't.skill_level',
+    .select('i.*', 't.team_name', 't.logo_image_id', 't.region', 't.language', 't.platform', 't.skill_level', 't.rank_requirements',
       db.raw('(select count(*)::int from team_memberships m where m.team_id = t.team_id) as roster_size'));
   return rows.map((r) => ({
     ...presentInvite(r),
@@ -363,6 +410,8 @@ async function myInvites(userId) {
       language: r.language,
       platform: r.platform,
       skill_level: r.skill_level,
+      rank_requirements: r.rank_requirements || [],
+      legacy_requirement: legacyRequirement(r),
       roster_size: r.roster_size,
     },
   }));
@@ -426,11 +475,11 @@ async function listJoinRequests(teamId, userId) {
     .orderByRaw("(r.status = 'pending') desc, r.created_at desc")
     .limit(50)
     .select('r.*', 'u.user_name', 'u.avatar_image_id', 'u.language', 'u.region', 'u.platform', 'u.skill_level',
-      'u.rank_platform', 'u.rank_id',
+      'u.premier_rank', 'u.faceit_rank', 'u.esea_rank',
       db.raw('exists (select 1 from team_memberships m where m.user_id = r.user_id) as has_team'));
   const { rankFields } = require('./profiles');
-  return rows.map(({ avatar_image_id, platform, skill_level, rank_platform, rank_id, ...r }) => ({
-    ...r, ...rankFields({ platform, skill_level, rank_platform, rank_id }), avatar_url: pictureUrl(avatar_image_id),
+  return rows.map(({ avatar_image_id, platform, skill_level, premier_rank, faceit_rank, esea_rank, ...r }) => ({
+    ...r, ...rankFields({ platform, skill_level, premier_rank, faceit_rank, esea_rank }), avatar_url: pictureUrl(avatar_image_id),
   }));
 }
 
@@ -461,6 +510,7 @@ async function myJoinRequests(userId) {
 
 module.exports = {
   TEAM_FIELDS,
+  legacyRequirement,
   presentTeam,
   createTeam,
   updateTeam,
