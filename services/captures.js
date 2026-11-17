@@ -181,6 +181,8 @@ const presentSession = (s) => s && ({
   mode: s.mode,
   selection: s.selection,
   round_number: s.round_number,
+  player_index: s.player_index ?? null,
+  player_name: s.player_name ?? null,
   status: s.status,
   stage: s.stage,
   total: s.total,
@@ -212,15 +214,20 @@ function checkKind(kind, ev) {
   if (kind === 'utility' && !isUtility(ev)) throw badRequest('That event is not a utility throw', 'wrong_event');
 }
 
-// The events of a whole demo matching an upload selection, in tick order.
-async function selectEvents(demoId, selection) {
-  const rounds = await db('demo_rounds').where('demo_id', demoId).orderBy('round_number').select('round_number', 'data');
+// The recorded events matching a selection, in tick order: optionally one
+// round, and optionally one player (by parsed player index, so players with
+// the same display name stay apart): kills they made, utility they threw.
+async function selectEvents(demoId, selection, { round = null, player = null } = {}) {
+  let q = db('demo_rounds').where('demo_id', demoId).orderBy('round_number').select('round_number', 'data');
+  if (round != null) q = q.where('round_number', round);
+  const rounds = await q;
   const out = [];
   for (const r of rounds) {
     const data = JSON.parse(zlib.gunzipSync(r.data));
     data.events.forEach((ev, i) => {
       const kind = isCapturableKill(ev) ? 'kill' : isUtility(ev) ? 'utility' : null;
       if (!kind || (selection !== 'all' && selection !== kind)) return;
+      if (player != null && (kind === 'kill' ? ev.attacker : ev.player) !== player) return;
       out.push({ round_number: r.round_number, event_index: i, kind, moment_tick: momentOf(ev) });
     });
   }
@@ -270,39 +277,74 @@ async function request(demoId, userId, body) {
     const s = existing.session_id ? await db('capture_sessions').where('session_id', existing.session_id).first() : null;
     return { ...st, capture: present(existing), session: presentSession(s) };
   }
-  const session = await createSession({ demo_id: demoId, requested_by: userId, mode: 'single', total: 1 });
+  let session = await createSession({ demo_id: demoId, requested_by: userId, mode: 'single', total: 1, status: 'preparing' });
   const row = await queueCapture(demoId, userId, { ...body, moment_tick: momentOf(ev) }, session.session_id);
+  [session] = await db('capture_sessions').where('session_id', session.session_id).update({ status: 'queued' }).returning('*');
   kick();
   return { ...st, capture: present(row), session: presentSession(session) };
 }
 
-// Queues every recorded event matching the upload selection (after the demo
-// parsed). Returns the session.
-async function queueBatch(demoId, userId, selection) {
+// Queues every recorded event matching a selection as one batch session.
+async function queueBatch(demoId, userId, selection, { round = null, player = null, playerName = null } = {}) {
   if (!SELECTIONS.includes(selection)) throw badRequest('Unknown capture selection', 'bad_selection');
-  const events = await selectEvents(demoId, selection);
-  const session = await createSession({
-    demo_id: demoId, requested_by: userId, mode: 'batch', selection, total: events.length,
-    status: events.length ? 'queued' : 'done', stage: events.length ? 'Queued' : 'No recorded events matched the selection.',
+  const events = await selectEvents(demoId, selection, { round, player });
+  // Built as 'preparing' and only queued once every event is attached, so
+  // the worker can't start it with part of the batch.
+  let session = await createSession({
+    demo_id: demoId, requested_by: userId, mode: 'batch', selection, total: events.length, round_number: round,
+    player_index: player, player_name: playerName,
+    status: events.length ? 'preparing' : 'done', stage: events.length ? 'Queued' : 'No recorded events matched the selection.',
     finished_at: events.length ? null : db.fn.now(),
   });
   for (const ev of events) await queueCapture(demoId, userId, ev, session.session_id);
+  if (events.length) [session] = await db('capture_sessions').where('session_id', session.session_id).update({ status: 'queued' }).returning('*');
   kick();
   return session;
 }
 
-// Called by the demo worker once a demo has parsed.
+// Called by the demo worker once a demo has parsed. An upload capture option
+// stays pending until the uploader picks players (the roster only exists
+// now), so nothing is queued and CS2 isn't launched yet.
 async function onDemoReady(demoId) {
   const demo = await db('demos').where('demo_id', demoId).first();
-  if (!demo || !demo.capture_selection) return null;
-  await db('demos').where('demo_id', demoId).update({ capture_selection: null });
-  if (!enabled) {
-    return createSession({
-      demo_id: demoId, requested_by: demo.uploaded_by, mode: 'batch', selection: demo.capture_selection, status: 'failed',
-      error_code: 'capture_unavailable', error: readiness(null).reason, finished_at: db.fn.now(),
-    });
+  return demo && demo.capture_selection ? { pending: demo.capture_selection } : null;
+}
+
+const countBy = (events) => ({ total: events.length, kills: events.filter((e) => e.kind === 'kill').length, utility: events.filter((e) => e.kind === 'utility').length });
+
+// Capture a scoped batch: a round (Capture this round) and/or one player
+// (upload player filter). `dry_run` only counts, so the page can say "no
+// matching events" before anything launches. Choosing for a pending upload
+// option clears it.
+async function requestBatch(demoId, userId, body) {
+  const { demo } = await loadDemo(demoId, userId);
+  if (demo.status !== 'ready') throw conflict('This demo is not ready yet', 'demo_not_ready');
+  if (body.round_number != null && !(await db('demo_rounds').where({ demo_id: demoId, round_number: body.round_number }).first('round_number'))) {
+    throw notFound('Round not found');
   }
-  return queueBatch(demoId, demo.uploaded_by, demo.capture_selection);
+  let playerName = null;
+  if (body.player != null) {
+    const p = ((demo.meta && demo.meta.players) || []).find((x) => x.index === body.player);
+    if (!p) throw badRequest('That player is not in this demo', 'bad_player');
+    playerName = p.name;
+  }
+  const events = await selectEvents(demoId, body.selection, { round: body.round_number ?? null, player: body.player ?? null });
+  const counts = countBy(events);
+  if (body.dry_run) return { ...counts, estimate_s: estimates.forCounts(counts.kills, counts.utility) };
+  if (!events.length) throw conflict('No recorded events match that selection, so there is nothing to capture.', 'no_events', counts);
+  if (body.pending && demo.uploaded_by !== userId) throw httpError(403, 'Only the uploader can choose players for their upload', 'forbidden');
+  const st = await requireEnabled();
+  if (body.pending) await db('demos').where('demo_id', demoId).update({ capture_selection: null });
+  const session = await queueBatch(demoId, userId, body.selection, { round: body.round_number ?? null, player: body.player ?? null, playerName });
+  return { ...st, ...counts, session: presentSession(session) };
+}
+
+// The uploader decides not to capture after all.
+async function cancelPending(demoId, userId) {
+  const { demo } = await loadDemo(demoId, userId);
+  if (demo.uploaded_by !== userId) throw httpError(403, 'Only the uploader can change this', 'forbidden');
+  await db('demos').where('demo_id', demoId).update({ capture_selection: null });
+  return { cancelled: true };
 }
 
 // Requeues a finished session's failed events as one new batch (one CS2 run).
@@ -310,12 +352,13 @@ async function retryFailed(demoId, userId, sessionId) {
   await loadDemo(demoId, userId);
   const old = await db('capture_sessions').where({ session_id: sessionId, demo_id: demoId }).first();
   if (!old) throw notFound('Capture session not found');
-  if (old.status === 'queued' || old.status === 'running') throw conflict('That capture is still running', 'session_running');
+  if (['preparing', 'queued', 'running'].includes(old.status)) throw conflict('That capture is still running', 'session_running');
   const failed = await db('demo_captures').where({ session_id: sessionId, status: 'failed' });
   if (!failed.length) throw badRequest('Nothing failed in that capture', 'nothing_to_retry');
   const st = await requireEnabled();
-  const session = await createSession({ demo_id: demoId, requested_by: userId, mode: failed.length > 1 ? 'batch' : 'single', selection: old.selection, total: failed.length });
+  let session = await createSession({ demo_id: demoId, requested_by: userId, mode: failed.length > 1 ? 'batch' : 'single', selection: old.selection, total: failed.length, status: 'preparing' });
   for (const row of failed) await queueCapture(demoId, userId, row, session.session_id);
+  [session] = await db('capture_sessions').where('session_id', session.session_id).update({ status: 'queued' }).returning('*');
   kick();
   return { ...st, session: presentSession(session) };
 }
@@ -474,7 +517,7 @@ async function runSession(s) {
   try {
     const opened = await proc.call({
       op: 'open', state_dir: stateDir(), size: config.captureSize, profile: s.mode === 'watch' ? null : config.captureProfile,
-      short_forward: config.captureShortForward, timescale: config.captureTimescale,
+      short_forward: config.captureShortForward, timescale: config.captureTimescale, nav: config.captureNav,
     }, 10 * 60 * 1000);
     timings.open = opened.timings;
     if (!opened.ok) {
@@ -563,6 +606,7 @@ async function runSession(s) {
     }
     return await finish({
       status: failed && !completed ? 'failed' : 'done', completed, failed,
+      total: prepared.length,
       stage: failed ? `${completed} captured, ${failed} failed.` : `${completed} captured.`,
     });
   } catch (e) {
@@ -599,7 +643,7 @@ async function start() {
 }
 
 module.exports = {
-  CAPTURE_VERSION, INPUT_BITS, SELECTIONS, status, list, request, queueBatch, onDemoReady, watchRound, retryFailed, currentSession, mediaFile, start,
+  CAPTURE_VERSION, INPUT_BITS, SELECTIONS, status, list, request, queueBatch, requestBatch, cancelPending, onDemoReady, watchRound, retryFailed, currentSession, mediaFile, start,
   victimLastAliveTick, buildJob, selectEvents,
   // Tests: swap the CS2 driver and enable the queue without a real game.
   _test: {

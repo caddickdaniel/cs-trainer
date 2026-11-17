@@ -108,10 +108,13 @@ describe('phase 12', () => {
       expect(await connection('capture_sessions').where('demo_id', d.demo_id)).to.have.length(0);
     });
 
-    it('queues the matching recorded events in tick order once the demo parses', async () => {
+    it('queues the matching recorded events in tick order once the uploader picks players', async () => {
       captures._test.setEnabled(true);
       const { owner, member, teamId } = await teamWithMember();
       const d = await uploadParsed(owner, teamId, 'all');
+      // Phase 13: the option waits for the player choice after parsing.
+      expect(await connection('capture_sessions').where('demo_id', d.demo_id)).to.have.length(0);
+      await owner.post(`/api/demos/${d.demo_id}/captures/batch`).send({ selection: 'all', player: null, pending: true }).expect(202);
       const [s] = await connection('capture_sessions').where('demo_id', d.demo_id);
       expect(s).to.include({ mode: 'batch', selection: 'all', status: 'queued', total: 2, requested_by: d.uploaded_by });
       const rows = await connection('demo_captures').where('session_id', s.session_id).orderBy('moment_tick');
@@ -128,17 +131,19 @@ describe('phase 12', () => {
       captures._test.setEnabled(true);
       const a = await teamWithMember();
       const k = await uploadParsed(a.owner, a.teamId, 'kill');
+      await a.owner.post(`/api/demos/${k.demo_id}/captures/batch`).send({ selection: 'kill', pending: true }).expect(202);
       expect((await connection('demo_captures').where('demo_id', k.demo_id)).map((r) => r.kind)).to.deep.equal(['kill']);
       const b = await teamWithMember();
       const u = await uploadParsed(b.owner, b.teamId, 'utility');
+      await b.owner.post(`/api/demos/${u.demo_id}/captures/batch`).send({ selection: 'utility', pending: true }).expect(202);
       expect((await connection('demo_captures').where('demo_id', u.demo_id)).map((r) => r.kind)).to.deep.equal(['utility']);
     });
 
-    it('records why nothing was captured when capture is off', async () => {
+    it('refuses to queue with the reason when capture is off', async () => {
       const { owner, teamId } = await teamWithMember();
       const d = await uploadParsed(owner, teamId, 'kill');
-      const [s] = await connection('capture_sessions').where('demo_id', d.demo_id);
-      expect(s).to.include({ status: 'failed', error_code: 'capture_unavailable' });
+      const res = await owner.post(`/api/demos/${d.demo_id}/captures/batch`).send({ selection: 'kill', pending: true }).expect(503);
+      expect(res.body.code).to.equal('capture_unavailable');
       expect(await connection('demo_captures').where('demo_id', d.demo_id)).to.have.length(0);
     });
   });
@@ -148,6 +153,7 @@ describe('phase 12', () => {
       captures._test.setEnabled(true);
       const t = await teamWithMember();
       const d = await uploadParsed(t.owner, t.teamId, selection);
+      await t.owner.post(`/api/demos/${d.demo_id}/captures/batch`).send({ selection, pending: true }).expect(202);
       const s = await connection('capture_sessions').where('demo_id', d.demo_id).first();
       return { ...t, d, s };
     }

@@ -1029,6 +1029,75 @@ After parsing, the overlay uses the real count.
 - **Smoke and fire in stills:** when CS2 seeks it rebuilds smoke and fire without their history. At the same tick and view, paused stills showed visibly different smoke density, and once missed a fire the clip showed. Positions and camera are exact. Stills carry a note saying this, and the clips (played through) are closer to what was seen.
 - **Flash and smoke views:** in the flashed-attacker kill (NertZ → zont1x) the view at the kill tick is heavily washed out but not fully white, and X-ray outlines stay visible. In the through-smoke kill (magixx → huNter) the view inside the smoke shows nothing without X-ray; with it, the players are outlined.
 
+## Phase 13: 720p muted capture, speed benchmarks, round and player capture
+
+### What was added
+- **Capture profile:** CS2 launches for capture in a **1280×720 window** with low video settings (`CAPTURE_PROFILE=capture`: no shadows/AO, low textures and shaders, MSAA 2×), plus **`-nosound`** and **`-novid`**. The resolution is applied at launch through the temporary `cs2_video.txt` profile, so CS2 renders at 720p rather than downscaling. Watch this round still opens CS2 with sound and the player's own settings. Everything changed on the installation is restored after the instance exits.
+- **Speed-aware clip sampler** (`capture.py clip()`): frames are grabbed as fast as the window allows and each 30 fps output frame takes the grab nearest its moment, so a clip recorded at any demo speed plays at normal speed. Each clip records how many distinct grabs it contains.
+- **Capture this round:** under Watch this round, with Kills & Utility / Kills only / Utility only. Only the selected round's matching events are queued. The count is checked first (`POST /api/demos/:id/captures/batch` with `dry_run`), so a round with nothing to capture says so before CS2 launches. The confirmation shows the count, the estimate and the launch warning.
+- **Upload player filter:** capture stays off by default. With an option selected, the demo uploads and parses first; the uploader then picks **All players** or one player from the parsed roster in the library before anything is queued or launched.
+  - A specific player means kills they made and/or utility they threw, matched by the **parsed player index**, so duplicate display names don't mix.
+  - Each matching kill still produces killer and victim POVs.
+  - The confirmation states the player, the scope and the count. **Skip capture** clears the option.
+- **Keyboard and mouse overlay:** compact keycaps laid out like a keyboard (W above A S D, Shift left of A, Ctrl under Shift beside a wide Space) and a mouse outline with M1 / M2. Held actions are highlighted amber; unavailable ones are dashed and struck through, as before. It follows the clip at any playback speed and after seeking (per decoded frame, plus seek/time events and a 150 ms fallback).
+- **Batch fix:** batch sessions are created as `preparing` and only queued once every event is attached. Before this, the worker could start a batch with part of its events: a live round capture took 1 of 11 events and stopped.
+- **Failure evidence:** when a capture step fails, the tool saves the last 200 CS2 log lines and the current frame to `storage/captures/cs2-session/failures/`. CS2's own log is deleted at cleanup.
+
+### Live results (16 Nov 2026, RTX 4090, `spirit-vs-g2-m3-ancient.dem` unless noted)
+**Launch (verified live, three launches):**
+- **Window:** 1280×720.
+- **Muted:** CS2 logged `Setting null device for -nosound`, and no CS2 audio stream appeared in PipeWire, before or after the demo load.
+- **No intro:** the UI went straight from start-up to the main menu.
+- **Timing:** main menu in 8.6–11.4 s (31 s once while shaders rebuilt), focused without the user, demo load 18.4–19.6 s, close 3.4–5.0 s.
+
+**Recording speed** (the same smoke kill, flash kill and flash throw; 2 s clips = 60 frames at 30 fps):
+
+| Speed | Distinct frames | Worst sampling lag | Recording per kill (2 clips) | Visual check |
+|---|---|---|---|---|
+| 1× | 56–60 | ~1 tick | 9.1–9.2 s | Smooth; release and kill frames present |
+| 2× | 26–48 | 2–4 ticks | 7.25 s | Release and kill kept; motion halved, visible repeats and jumps |
+| 4× | 6–12 | 12–24 ticks | 6.4–6.6 s | Grenade release missed; slideshow |
+| 8× | 4–11 | 33–45 ticks | 6.3–6.4 s | Unusable |
+
+The window can be read about 40 times a second, so recording faster than real time only repeats frames. The time saved is small because fixed per-clip costs (pre-roll, console, pause) dominate. **Clips stay at 1×** (`CAPTURE_TIMESCALE=1`); 2× saves about 2 s per kill (7%) for half the motion.
+
+**Navigation:**
+- To a kill 541 ticks ahead, the verified seek took 1.5 s.
+- Playing through at 8× took 2.1 s, and then CS2's paused-tick line couldn't be read, so it fell back to the seek anyway.
+- Navigation stays on the verified seek (`CAPTURE_NAV=seek`); the play-through code remains as an option.
+- Phase 12 already measured that one-command forward seeks leave stale views.
+
+**Workloads** (start, load and close excluded unless stated):
+
+| Workload | Events | Wall-clock | Output | Failures |
+|---|---|---|---|---|
+| Round 3, baseline (1×, seek) | 16 | 284.6 s | 27.1 MB | 0 |
+| Round 3, 1× + 8× play-through | 16 | 282.5 s | 26.1 MB | 1 (CS2 lost focus mid-run; automatic recovery failed; reported as retryable) |
+| Website: round 17 Kills only, total | 6 | 203 s | | 0 |
+| Website: round 17 Utility only, total | 5 | 109 s | | 0 |
+| Website: round 17 Kills & Utility, total | 11 | 271 s | | 0 |
+| Website: player filter, tN1R kills in round 16 | 1 | | both POVs (killer tN1R, victim NertZ) | 0 |
+
+- **Per event:** 26.3–28.1 s per kill (both POVs), 13.0–14.1 s per throw, plus about 6 s for the first event.
+- **Cold start:** CS2 start-up and demo load add about 30 s once per session.
+- **Sizes:** at the new 4 Mbit/s VP8 target, a 2 s 720p clip is about 1.0 MB (about 1.45 MB at Phase 12's 6 Mbit/s); a kill with 2 clips and 2 stills is about 2.4 MB; a throw about 1.2 MB.
+
+**Full-match estimate** (not a measured full-match run; extrapolated from the per-event sample, 131 kills and 391 throws in this demo):
+- Kills & Utility: about 2.4 h;
+- Kills only: about 59 min;
+- Utility only: about 1.5 h.
+
+Lower settings and 720p saved only output size, not wall-clock time: seeking (CPU) and per-step console overhead dominate.
+
+**720p lineup zoom:** crosshair, doorway edges and target are crisp at 3× and softer but readable at 5×.
+
+### Known limitations found live
+- **POV confirmation needs CS2's TrueView log lines.** The tool only captures a view once CS2's log confirms whose view it is. Two cases fail as retryable:
+  - Kills after the final round's end, while the victory screen shows: the switch happens, but CS2 logs "TrueView inactive". The filtered zont1x kill in round 18 failed this way.
+  - Demos where CS2 never logs POV changes. The Mirage Premier demo: twelve `spec_next` produced no lines, so 𝙟𝙆.'s kill could not be captured.
+  - Capturing these would need another way to confirm the POV.
+- Recorded input may also be missing from such demos; the overlay then shows "Input not recorded".
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

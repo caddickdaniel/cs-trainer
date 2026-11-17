@@ -385,6 +385,8 @@ export interface SharePreview {
 // ---- Demo Review ----------------------------------------------------------------
 export type DemoStatus = 'queued' | 'processing' | 'ready' | 'failed';
 export interface DemoSummary {
+  // Upload capture option waiting for the uploader to choose players.
+  capture_pending?: 'all' | 'kill' | 'utility' | null;
   source?: 'upload' | 'share_code';
   share_code?: string | null;
   demo_id: number;
