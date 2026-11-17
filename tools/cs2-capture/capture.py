@@ -59,14 +59,34 @@ MAX_PENDING_ENCODES = 3
 FAST_MIN_DISTINCT = 0.75
 FAST_MAX_LAG_TICKS = 3.0  # finished clips still encoding before we wait
 PREROLL_TICKS = 32       # minimum demo ticks played before a clip's first frame
-PREROLL_REAL_S = 0.6     # ...and at least this much real time (console closing)
+PREROLL_REAL_S = 0.35    # real time played before the first frame (console closing; was 0.6, 0.35 measured 17 Nov with the console check)
 FF_SPEED = 8             # play-through navigation speed
 FF_MARGIN_REAL_S = 0.35  # stop this long (real time) before the target
+# Window-to-window transitions (Phase 16, measured on the capture machine;
+# see README). Forward gaps up to `short_forward` ticks from an exact pause
+# are one seek command; longer ones fast-forward when that is cheaper than a
+# long seek, else seek directly (accepted when CS2 rebuilt the frame from a
+# full snapshot, otherwise recovered with a backward seek).
+SEEK_LONG_S = 0.7        # a long forward seek, confirmed (measured 0.17-1.14 s)
+FF_OVERHEAD_S = 0.7      # speed changes, resume and an exact pause (measured)
+# Measured 17 Nov (bench16): fast-forward never beat a seek here (400-tick
+# gap: 0.98 s vs 0.17 s; 6,400 ticks: 12.7 s vs 0.17 s), so with these
+# costs it is never chosen; it stays for machines where seeks are slow.
+STILL_MAX_LAG_TICKS = 2.0  # a still from a recording must be this close to its tick
+MENU_SETTLE_S = 1.0      # after the main menu shows, before the first command
 SEEK_RX = r'Demo Skipping: skipping (?:forward |back(?:ward)? )?to demo tick \d+[^\n]*'
 # CS2's own resync after a POV change: up to ~1 s after TrueView prediction
 # starts, it skips to the tick before the current one and resumes playback.
 RESYNC_RX = r'Demo Skipping: skipping to demo tick (\d+) \(game tick \d+\) from full packet[^\n]*Current playback is (\d+)'
 RESYNC_WAIT_S = 0  # measured: 1.6 s waits caught no resync (17 Nov); detection stays
+# CS2 ends playback at the last tick of the demo (it prints its frame and
+# networking reports); after that no player can be watched until the demo is
+# loaded again. A whole-match pass can play into the end, then seek back.
+DEMO_END_RX = r'VProfLite stopped|Source2 engine networking summary'
+# Frames reach the encoder this long (real time) after they are grabbed, so
+# when the demo ends mid-clip the clip can stop on the demo's last tick: the
+# end is seen in the log within ~0.2 s, and held frames past it are dropped.
+END_HOLD_S = 0.5
 TRUEVIEW_RX = r'Added TrueView prediction for player slot \d+ \((.*)\)'
 
 
@@ -210,12 +230,29 @@ class Driver:
         self.use_shm = True
         self.shm_check = None
         self.resyncs_seen = 0  # CS2 resyncs that interrupted a seek (seek redone)
+        # Ticks we seeked to ourselves: our own seek to the tick before the
+        # current one reads like CS2's resync line, so those are not resyncs.
+        self.own_targets = set()
         # Wait for CS2's resync after a POV change (see _settle_pov); 0 skips
         # the wait and relies on detecting the resync after the seek.
         self.pov_settle_s = RESYNC_WAIT_S
         self.encoders = []
         self.debug_dir = None  # when set, failed checks save evidence here
         self.nav = 'seek'      # how clips reach their pre-roll: 'seek' or 'play'
+        # Console audit (Phase 16): every command with why it was sent, how
+        # long submitting took and when its effect was confirmed.
+        self.trace = []
+        self.trace_sent = 0
+        self.ts_now = None        # demo_timescale we last set (None: unknown)
+        self.bar_hidden = False   # demo bar confirmed hidden since the demo loaded
+        self.transitions = {}     # how each window was reached: counts
+        self.ff_speed = FF_SPEED
+        self.seek_long_s = SEEK_LONG_S
+        self.ff_overhead_s = FF_OVERHEAD_S
+        self.max_pending = MAX_PENDING_ENCODES
+        self.preroll_s = PREROLL_REAL_S
+        self.demo_at = 0          # log offset once the current demo was ready
+        self.demo_reloads = 0
 
     def close(self):
         if self._shm:
@@ -272,11 +309,15 @@ class Driver:
         except RuntimeError as e:
             raise CaptureError('cs2_closed', f'Could not read the CS2 window ({e}).')
 
-    def console_open(self):
-        f = self.frame(640)
+    @staticmethod
+    def console_in(f):
+        """True when the console panel is in the frame (its dark input band)."""
         w, h = f.size
         box = f.crop((int(w * .05), int(h * .739), int(w * .45), int(h * .748))).convert('L')
         return box.getextrema()[1] <= 6
+
+    def console_open(self):
+        return self.console_in(self.frame(640))
 
     def _set_console(self, want_open):
         """Opens or closes the console, polling its pixels instead of
@@ -286,6 +327,7 @@ class Driver:
                 return
             self.ensure_focus()
             self.con.toggle()
+            self._trace_event('console_open' if want_open else 'console_close')
             end = time.time() + 1.0
             while time.time() < end:
                 if self.console_open() == want_open:
@@ -297,18 +339,53 @@ class Driver:
                 time.sleep(0.03)
         raise CaptureError('console', f'Could not {"open" if want_open else "close"} the CS2 console.')
 
-    def cmd(self, text, settle=0.0, typed=False):
+    def _trace_event(self, what, **kw):
+        self.trace.append({'t': round(time.time(), 3), 'event': what, **kw})
+
+    def cmd(self, text, settle=0.0, typed=False, why=''):
+        """Submits one console command (pasted in full, one Enter). Returns
+        its trace entry; callers that wait for the effect set confirm_s."""
+        t0 = time.time()
         self._set_console(True)
+        t1 = time.time()
+        how = None
         for attempt in range(2):
             try:
-                self.con.run(text, typed=typed)
+                how = self.con.run(text, typed=typed)
                 break
             except self.ukeys.FocusLost:
                 if attempt:
                     raise CaptureError('focus_lost', 'CS2 lost keyboard focus during capture; nothing more was typed.')
                 self.ensure_focus()
                 self._set_console(True)
+        entry = {'t': round(t0, 3), 'cmd': text, 'why': why, 'how': how, 'console_s': round(t1 - t0, 3), 'submit_s': round(time.time() - t1, 3)}
+        self.trace.append(entry)
+        # Keep the known state in step with what was sent.
+        if text.startswith('demo_timescale '):
+            self.ts_now = text.split()[1]
+        elif text == 'demo_pause':
+            self.paused = True
+        elif text == 'demo_resume':
+            self.paused = False
         time.sleep(settle)
+        return entry
+
+    def confirmed(self, entry, at=None):
+        if entry is not None:
+            entry['confirm_s'] = round((at or time.time()) - entry['t'], 3)
+
+    def set_timescale(self, ts, why):
+        """demo_timescale, skipped when that speed is already set."""
+        want = f'{float(ts):g}'
+        if self.ts_now == want:
+            return False
+        self.cmd(f'demo_timescale {want}', why=why)
+        return True
+
+    def take_trace(self):
+        out = self.trace[self.trace_sent:]
+        self.trace_sent = len(self.trace)
+        return out
 
     def refresh_console(self):
         # After a level load the console can be visible without its input
@@ -342,8 +419,9 @@ class Driver:
             self._set_console(False)
             time.sleep(0.3)
             if not self.bar_in(self.frame(1280)):
+                self.bar_hidden = True
                 return
-            self.cmd('demoui', settle=0.3)
+            self.cmd('demoui', settle=0.3, why='hide demo bar')
             self.bar_toggled = not self.bar_toggled
         self._set_console(False)
         time.sleep(0.3)
@@ -390,7 +468,7 @@ class Driver:
         self.refresh_console()
         if self.log.last(r'CSGO_GAME_UI_STATE_INGAME') or self.demo:
             at = self.log.mark()
-            self.cmd('disconnect')
+            self.cmd('disconnect', why='leave the current demo')
             try:
                 self.log.wait(r'CSGO_GAME_UI_STATE_MAINMENU|SIGNONSTATE_NONE', at, 5, 'x', '')
             except CaptureError:
@@ -401,9 +479,9 @@ class Driver:
             if attempt:
                 self.refresh_console()
             at = self.log.mark()
-            self.cmd(f'playdemo "{path}"', typed=attempt > 0)
+            self.cmd(f'playdemo "{path}"', typed=attempt > 0, why='load demo' if not attempt else 'load demo (retry: not started)')
             try:
-                m = self.log.wait(r"\[Demo\] playing demo from '([^']*)'", at, 12, 'demo_load', 'CS2 did not start playing the demo.')
+                m = self.log.wait(r"\[Demo\] playing demo from '([^']*)'", at, 12 if attempt else 6, 'demo_load', 'CS2 did not start playing the demo.')
                 break
             except CaptureError:
                 if attempt == 0:
@@ -422,29 +500,33 @@ class Driver:
             time.sleep(3)
         time.sleep(LOAD_SETTLE_S)
         self.demo = path
+        self.demo_at = self.log.mark()
         self.watching = None
         self.tick = None
         self.exact = False
         self.paused = False
         self.view_set = False
+        self.xray = None
+        self.ts_now = None
+        self.bar_hidden = False
         return True
 
     def set_view(self, xray=False):
         want = '1' if xray else '0'
         if not self.view_set:
             self.refresh_console()
-            self.cmd(f'cl_draw_only_deathnotices {VIEW["cl_draw_only_deathnotices"]}')
+            self.cmd(f'cl_draw_only_deathnotices {VIEW["cl_draw_only_deathnotices"]}', why='capture HUD')
             self.view_set = True
         if self.xray != want:
-            self.cmd(f'spec_show_xray {want}')
+            self.cmd(f'spec_show_xray {want}', why='X-ray for this recording')
             self.xray = want
 
     def restore(self, saved):
         for k in VIEW:
-            self.cmd(f'{k} {saved[k]}')
-        self.cmd('demo_timescale 1')
+            self.cmd(f'{k} {saved[k]}', why='restore player setting')
+        self.cmd('demo_timescale 1', why='restore speed')
         if self.bar_toggled:
-            self.cmd('demoui')
+            self.cmd('demoui', why='restore demo bar')
             self.bar_toggled = False
         self.view_set = False
         self.xray = None
@@ -454,21 +536,24 @@ class Driver:
         m = self.log.last(r'skipping (?:forward |back(?:ward)? )?to demo tick (\d+) \(game tick (\d+)\)')
         return int(m.group(2)) - int(m.group(1)) if m else None
 
-    def pause_here(self):
+    def pause_here(self, why='pause'):
         """Pauses playback and returns the demo tick CS2 paused on (from its
         'paused on tick' log line), or None when it can't be read."""
         at = self.log.mark()
-        self.cmd('demo_pause', settle=0)
+        e = self.cmd('demo_pause', settle=0, why=why)
         off = self.tick_offset()
         try:
             m = self.log.wait(r'CGameRules - paused on tick (\d+)', at, 3, 'pause', '')
+            self.confirmed(e)
         except CaptureError:
             self.tick = None
+            self.exact = False
             return None
         if off is None:
             self.tick = None
             return None
         self.tick = int(m.group(1)) - off
+        self.exact = True
         return self.tick
 
     def play_to(self, target, timer=None):
@@ -479,14 +564,13 @@ class Driver:
         if self.tick is None or target <= self.tick:
             return None
         t0 = time.time()
-        margin = FF_MARGIN_REAL_S * FF_SPEED * 64
+        margin = FF_MARGIN_REAL_S * self.ff_speed * 64
         span = target - self.tick - margin
         if span > 0:
-            self.cmd(f'demo_timescale {FF_SPEED}')
-            self.ensure_focus()
-            self.con.run('demo_resume')
-            time.sleep(span / 64 / FF_SPEED)
-            got = self.pause_here()
+            self.set_timescale(self.ff_speed, 'fast-forward through a gap')
+            self.cmd('demo_resume', why='fast-forward through a gap')
+            time.sleep(span / 64 / self.ff_speed)
+            got = self.pause_here('end of fast-forward')
         else:
             got = self.tick
         if timer:
@@ -497,12 +581,16 @@ class Driver:
             return None
         return got
 
-    def _goto(self, tick, attempts=3):
+    def _goto(self, tick, attempts=3, why='seek'):
+        resynced = False
         for attempt in range(attempts):
             if attempt:
                 self.refresh_console()
             at = self.log.mark()
-            self.cmd(f'demo_gototick {int(tick)}', typed=attempt > 0)
+            self.own_targets.add(int(tick))
+            e = self.cmd(f'demo_gototick {int(tick)}', typed=attempt > 0,
+                         why=why if not attempt else f'{why} (retry: {"resync" if resynced else "no skip line"})')
+            resynced = False
             try:
                 # Skipping starts within a second when the command lands.
                 m = self.log.wait(SEEK_RX, at, 4, 'seek', '')
@@ -519,27 +607,32 @@ class Driver:
             if 'finished' not in done.group(0):
                 self.log.wait(r'Demo Skipping finished at tick \d+', done.end(), 30, 'seek', f'CS2 did not finish its resync near tick {tick}.')
                 self.resyncs_seen += 1
-                self.cmd('demo_pause')
+                self.cmd('demo_pause', why='CS2 resynced and resumed during a seek')
+                resynced = True
                 continue
+            self.confirmed(e)
             self.tick = t
             return m.group(0)
         raise CaptureError('seek', f'CS2 did not accept the seek to tick {tick}.')
 
-    def seek(self, tick, timer=None):
+    def seek(self, tick, timer=None, why='seek', long_forward='overshoot'):
         """Pauses on exactly `tick`.
 
         A backward seek always rebuilds the world from a full snapshot, so it
-        is one command. A forward seek is one command only from an exact
-        paused position and at most `short_forward` ticks (64-400 ticks
-        rendered identically live; a 1,500-tick skip once left the camera
-        stale). Otherwise it overshoots and comes back. Changing POV makes
-        CS2 skip back a tick and resume playback, so after a switch the demo
-        is paused first and the position counts as a lower bound."""
+        is one command. A forward seek is one command from an exact paused
+        position of at most `short_forward` ticks (64-400 ticks rendered
+        identically live; a 1,500-tick skip once left the camera stale).
+        Longer forward seeks either overshoot and come back
+        (long_forward='overshoot'), or (long_forward='direct') go straight
+        there and are kept only when CS2 reports it rebuilt the frame from a
+        full snapshot; otherwise a backward seek to the tick before (the
+        existing recovery) rebuilds it. Changing POV makes CS2 skip back a
+        tick and resume playback, so after a switch the demo is paused first
+        and the position counts as a lower bound. Returns the tick paused on."""
         t0 = time.time()
         tick = int(tick)
         if not self.paused:
-            self.cmd('demo_pause')
-            self.paused = True
+            self.cmd('demo_pause', why=f'pause before {why}')
         mode = 'overshoot'
         if self.tick is not None and tick < self.tick:
             mode = 'backward'
@@ -547,22 +640,33 @@ class Driver:
             mode = 'forward'
         elif self.exact and self.tick == tick:
             mode = 'none'
+        elif long_forward == 'direct' and self.tick is not None:
+            mode = 'direct'
+        landed = tick
         if mode == 'overshoot':
-            self._goto(tick + 128)
-            line = self._goto(tick)
+            self._goto(tick + 128, why=f'{why}: overshoot')
+            line = self._goto(tick, why=f'{why}: back from overshoot')
             if 'from full packet' not in line:
                 raise CaptureError('seek', 'CS2 did not rebuild the frame from a full snapshot.')
+        elif mode == 'direct':
+            line = self._goto(tick, attempts=2, why=f'{why}: long forward')
+            if 'from full packet' not in line:
+                # Skipped forward from the current state: rebuild it.
+                mode = 'direct_recovered'
+                landed = tick - 1
+                self._goto(landed, why=f'{why}: rebuild after long forward')
         elif mode != 'none':
             try:
-                self._goto(tick, attempts=2)
+                self._goto(tick, attempts=2, why=why)
             except CaptureError:
                 # No skip line: CS2 ignores a seek to the tick it is already
                 # on (our position was only a bound). Overshoot and come back.
                 if timer:
                     timer.add('seek_fallback_count', 1)
                 mode = 'overshoot'
-                self._goto(tick + 128)
-                self._goto(tick)
+                self._goto(tick + 128, why=f'{why}: overshoot (no skip line)')
+                self._goto(tick, why=f'{why}: back from overshoot')
+        self.tick = landed
         self.exact = True
         m = self.log.last(TRUEVIEW_RX)
         if m:
@@ -570,7 +674,84 @@ class Driver:
         if timer:
             timer.add('seek', time.time() - t0)
             timer.add(f'seek_{mode}_count', 1)
-        return mode
+        return landed
+
+    def goto_window(self, name, tick, tickrate, timer=None, long_forward='direct'):
+        """Reaches a recording's pre-roll tick from `name`'s view by the
+        cheapest verified route (Phase 16):
+        - same POV, forward, exact pause: one seek command for short gaps;
+          fast-forward when the gap is long and playing through it at
+          FF speed is cheaper than a long seek; else a long seek;
+        - otherwise POV first, then the seek (see pov_at).
+        Afterwards the spectated player is confirmed from CS2's log (deaths,
+        seeks and round changes can move the camera); a mismatch switches
+        and seeks again. Returns (tick paused on, route)."""
+        tick = int(tick)
+        route = 'seek'
+        if self.watching == name and self.exact and self.tick is not None and tick > self.tick + self.short_forward:
+            gap_s = (tick - self.tick) / tickrate
+            if self.ff_overhead_s + gap_s / self.ff_speed < self.seek_long_s:
+                t0 = time.time()
+                got = self.play_to(tick, timer)
+                if got is not None:
+                    route = 'ff'
+                if timer:
+                    timer.add('ff', time.time() - t0)
+        if self.watching == name:
+            at = self.log.mark()
+            landed = self.seek(tick, timer, why='next window', long_forward=long_forward)
+        else:
+            route = 'pov'
+            at = self.pov_at(name, tick, timer)
+            landed = self.tick
+        for attempt in range(3):
+            if self.watching == name and not self.resyncs(at):
+                break
+            if attempt == 2:
+                raise CaptureError('spectate', f'CS2 kept moving the camera off {name} (or resuming) at tick {tick}.')
+            # The camera moved (or CS2 resumed): switch back and seek again.
+            if timer:
+                timer.add('pov_recheck_count', 1)
+            self._trace_event('pov_recheck', want=name, watching=self.watching)
+            self.paused = False
+            self.exact = False
+            self.spectate(name, timer)
+            at = self.log.mark()
+            landed = self.seek(tick, timer, why='seek after POV recheck')
+        self.transitions[route] = self.transitions.get(route, 0) + 1
+        if timer:
+            timer.add(f'route_{route}_count', 1)
+        return landed, route
+
+    def demo_ended(self):
+        return bool(self.demo and re.search(DEMO_END_RX, self.log.read()[self.demo_at:]))
+
+    def demo_end_tick(self, tick):
+        """The demo tick where CS2 finished the demo. A seek after the end
+        reports it ("Current playback is N"); the demo is loaded again before
+        the next step anyway."""
+        at = self.log.mark()
+        self.cmd(f'demo_gototick {max(0, int(tick))}', why='read the demo end tick')
+        try:
+            m = self.log.wait(r'Current playback is (\d+)', at, 3, 'x', '')
+            return int(m.group(1))
+        except CaptureError:
+            return None
+
+    def ensure_playing(self, timer=None):
+        """Loads the demo again if CS2 has finished playing it (seen after a
+        pass reached the demo's last tick). Returns True if it reloaded."""
+        if not self.demo_ended():
+            return False
+        t0 = time.time()
+        path, self.demo = self.demo, None
+        self.trace.append({'t': time.time(), 'cmd': '(reload demo)', 'why': 'CS2 finished playing the demo', 'how': 'event'})
+        self.load_demo(path)
+        self.demo_reloads += 1
+        if timer:
+            timer.add('demo_reload', time.time() - t0)
+            timer.add('demo_reload_count', 1)
+        return True
 
     def spectate(self, name, timer=None, quick=False):
         """Switches the view to `name` (confirmed by CS2's TrueView line).
@@ -589,10 +770,11 @@ class Driver:
             tries = [False] if quick or not SAFE_NAME.match(name) else [False, True]
             for typed in tries:
                 at = self.log.mark()
-                self.cmd(f'spec_player "{name}"', typed=typed)
+                e = self.cmd(f'spec_player "{name}"', typed=typed, why='switch POV' if not typed else 'switch POV (retry typed)')
                 try:
                     m = self.log.wait(TRUEVIEW_RX, at, 1.5 if quick else 3, 'spectate', '')
                     if m.group(1) == name:
+                        self.confirmed(e)
                         if typed:
                             self.paste_failures.append('spec_player')  # typed worked where the paste didn't
                         self.watching = name
@@ -605,8 +787,10 @@ class Driver:
                 return False
             # Names that can't be typed (or didn't match): cycle targets until CS2 reports this one.
             for _ in range(12):
+                if self.demo_ended():
+                    raise CaptureError('demo_ended', 'CS2 finished playing the demo.')
                 at = self.log.mark()
-                self.cmd('spec_next', settle=0)
+                self.cmd('spec_next', settle=0, why=f'cycle to {name} (name not accepted)')
                 try:
                     m = self.log.wait(TRUEVIEW_RX, at, 4, 'spectate', '')
                 except CaptureError:
@@ -630,15 +814,16 @@ class Driver:
         if not self.spectate(name, timer, quick=True):
             if timer:
                 timer.add('pov_seek_first_count', 1)
-            self.seek(tick, timer)
+            self.seek(tick, timer, why='seek first (player not watchable here)')
             self.spectate(name, timer)
         at = self.log.mark()
-        self.seek(tick, timer)
+        self.seek(tick, timer, why='seek after POV switch')
         return at
 
     def resyncs(self, since):
         """CS2's own skip-back-and-resume lines after `since` (log offset)."""
-        return [m for m in re.finditer(RESYNC_RX, self.log.read()[since:]) if int(m.group(1)) == int(m.group(2)) - 1]
+        return [m for m in re.finditer(RESYNC_RX, self.log.read()[since:])
+                if int(m.group(1)) == int(m.group(2)) - 1 and int(m.group(1)) not in self.own_targets]
 
     def _settle_pov(self, since, timer=None):
         """After a POV change CS2 may skip back a tick and resume playback up
@@ -823,42 +1008,45 @@ class Driver:
         """One recording pass from `seg['player']`'s view over ticks
         seg.start..seg.end, cut into any number of output clips (each with
         its own window inside the segment), so overlapping windows with the
-        same POV and settings are recorded once. Frames go to every output
-        whose window covers them; each output plays at normal demo speed
-        (fps frames per demo second)."""
+        same POV and settings are recorded once and short gaps between them
+        are played through. Frames go to every output whose window covers
+        them; each output plays at normal demo speed (fps frames per demo
+        second). `stills` ([{file, tick}]) are lineup stills taken from the
+        recording: the grab nearest each tick, saved at full size.
+
+        While recording, CS2's log is watched for camera changes; each
+        output reports the first tick its view left the player
+        (`pov_left_at`), so footage from the wrong POV is never accepted."""
         start, end = int(seg['start']), int(seg['end'])
         # Per segment (Phase 15: kill clips may record at 2x), else the session's.
         ts = float(seg.get('timescale') or self.timescale)
         fps = int(seg.get('fps', 30))
         # Bounded encode queue: wait only if too many clips are still encoding.
+        waited = self.finish_encoders(self.max_pending - 1)
         if timer:
-            timer.add('encode_wait', self.finish_encoders(MAX_PENDING_ENCODES - 1))
-        else:
-            self.finish_encoders(MAX_PENDING_ENCODES - 1)
+            timer.add('encode_wait', waited)
+        self.ensure_playing(timer)
         self.set_view(bool(seg.get('xray')))
-        pre_ticks = max(PREROLL_TICKS, int(PREROLL_REAL_S * ts * tickrate))
+        pre_ticks = max(int(self.preroll_s * ts * tickrate), 16)
         want = max(0, start - pre_ticks)
-        # POV first (a switch resumes playback), then the exact seek.
-        at_seek = self.pov_at(seg['player'], want, timer)
-        if self.resyncs(at_seek):
-            # CS2 resumed after the seek: pause and seek again.
-            self.paused = False
-            self.exact = False
-            at_seek = self.log.mark()
-            self.seek(want, timer)
-            if timer:
-                timer.add('reseek_count', 1)
-        here = want
-        self.hide_demo_bar()
-        self.cmd(f'demo_timescale {ts}')
+        here, route = self.goto_window(seg['player'], want, tickrate, timer, long_forward=seg.get('long_forward', 'direct'))
+        at_seek = self.log.mark()
+        self.set_timescale(ts, 'recording speed')
         first = self.frame(1280)
+        if not self.bar_hidden or self.bar_in(first):
+            # The bar's state persists; checked on every recording's first
+            # frame (console open: the bar area is below it).
+            self.hide_demo_bar()
+            first = self.frame(1280)
         w, h = first.size
         outs = []
         for o in seg['outputs']:
-            outs.append({'file': o['file'], 'start': int(o['start']), 'end': int(o['end']),
+            outs.append({'file': o['file'], 'start': int(o['start']), 'end': int(o['end']), 'event_tick': o.get('event_tick'),
                          'frames': max(1, round((int(o['end']) - int(o['start'])) / tickrate * fps)), 'k': 0, 'enc': None,
-                         'used': set(), 'worst': 0.0})
-        schedule = sorted(((o['start'] - here) / tickrate + k / fps, i) for i, o in enumerate(outs) for k in range(o['frames']))
+                         'used': set(), 'worst': 0.0, 'hold': [], 'sent': 0})
+        stills = [{'file': x['file'], 'tick': int(x['tick']), 'best': None} for x in seg.get('stills') or []]
+        schedule = sorted([((o['start'] - here) / tickrate + k / fps, i) for i, o in enumerate(outs) for k in range(o['frames'])]
+                          + [((x['tick'] - here) / tickrate, -1 - j) for j, x in enumerate(stills)])
 
         def open_enc(o):
             return subprocess.Popen(
@@ -868,9 +1056,21 @@ class Driver:
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         grabs = 0
         t_rec = time.time()
+        povs = []  # (demo tick, player) camera changes seen while recording
+        log_at = self.log.mark()
+        next_log = 0.0
+        hold_n = max(1, int(END_HOLD_S * fps * ts + 0.999))
+        ended_at = None  # demo tick where CS2 finished the demo, if it did
+        last_poll = None  # time of the last log check that saw the demo still playing
+
+        def send(o, upto):
+            # Writes held frames (oldest first) until at most `upto` are held.
+            while len(o['hold']) > upto:
+                o['enc'].stdin.write(o['hold'].pop(0)[1])
+                o['sent'] += 1
         try:
-            self.ensure_focus()
-            self.con.run('demo_resume')  # console is open (cmd above)
+            self._set_console(True)
+            self.cmd('demo_resume', why='record')
             t0 = time.time()
             self.con.toggle()  # close it during the pre-roll
             due = lambda gt: t0 + gt / ts  # noqa: E731
@@ -883,18 +1083,37 @@ class Driver:
                 now = time.time()
                 grabs += 1
                 cur = (now, grabs, img)
+                if now >= next_log:
+                    # Camera changes (TrueView lines), placed at the demo tick playing now.
+                    for m in re.finditer(TRUEVIEW_RX, self.log.read()[log_at:]):
+                        povs.append((here + (now - t0) * ts * tickrate, m.group(1)))
+                    if re.search(DEMO_END_RX, self.log.read()[log_at:]):
+                        # Fallback if CS2 doesn't report it: the last check that saw it playing.
+                        ended_at = self.demo_end_tick(here) or int(here + ((last_poll or t0) - t0) * ts * tickrate)
+                        break
+                    log_at = self.log.mark()
+                    last_poll = now
+                    next_log = now + 0.2
                 while n < len(schedule) and due(schedule[n][0]) <= now:
                     gt, i = schedule[n]
-                    o = outs[i]
                     d = due(gt)
                     pick = prev if prev and abs(prev[0] - d) < abs(now - d) else cur
+                    if i < 0:
+                        stills[-1 - i]['best'] = (abs(pick[0] - d), pick[2])
+                        n += 1
+                        continue
+                    o = outs[i]
                     o['worst'] = max(o['worst'], abs(pick[0] - d))
                     o['used'].add(pick[1])
                     if o['enc'] is None:
+                        # The console must have closed before footage starts.
+                        o['console'] = self.console_in(pick[2])
                         o['enc'] = open_enc(o)
-                    o['enc'].stdin.write(pick[2].tobytes())
+                    o['hold'].append((o['start'] + o['k'] * tickrate / fps, pick[2].tobytes()))
                     o['k'] += 1
+                    send(o, hold_n)
                     if o['k'] == o['frames']:
+                        send(o, 0)
                         self._finish_output(o, timer)
                     n += 1
                 prev = cur
@@ -905,19 +1124,71 @@ class Driver:
         finally:
             for o in outs:
                 if o['enc'] is not None and o['k'] < o['frames']:
+                    if ended_at is not None:
+                        # Stop on the demo's last tick: drop held frames past it.
+                        o['hold'] = [f for f in o['hold'] if f[0] <= ended_at]
+                    send(o, 0)
                     self._finish_output(o, timer)
-            self.cmd('demo_pause')
-            self.paused = True
-            self.exact = False
-            self.tick = int(end)  # paused at or just after the end: earlier seeks are backward
+            for m in re.finditer(TRUEVIEW_RX, self.log.read()[log_at:]):
+                povs.append((here + (time.time() - t0) * ts * tickrate, m.group(1)))
+            # Exact pause: the next window's seek can then be one command.
+            got = None if self.demo_ended() else self.pause_here('end of recording')
+            if got is None:
+                self.tick = int(end)  # paused at or just after the end: earlier seeks are backward
+                self.exact = False
+            if povs:
+                self.watching = povs[-1][1]
             if timer and self.resyncs(at_seek):
                 timer.add('resync_during_record_count', 1)
             if timer:
                 timer.add('record', time.time() - t_rec)
                 timer.add('grabs', grabs)
-        return [{'file': o['file'], 'start': o['start'], 'end': o['end'], 'player': seg['player'], 'fps': fps, 'frames': o['frames'],
+        left = next((t for t, p in povs if p != seg['player']), None)
+        saved = []
+        for x in stills:
+            r = {'file': x['file'], 'tick': x['tick'], 'player': seg['player'], 'from_recording': True}
+            if x['best'] is None:
+                r['error'] = 'not grabbed'
+            else:
+                lag, img = x['best']
+                r['lag_ticks'] = round(lag * ts * tickrate, 2)
+                if left is not None and left <= x['tick'] + 1:
+                    r['error'] = 'camera left the player'
+                elif r['lag_ticks'] > STILL_MAX_LAG_TICKS:
+                    r['error'] = 'grab too far from the tick'
+                elif self.bar_in(img):
+                    r['error'] = 'demo bar in frame'
+                elif self.console_in(img):
+                    r['error'] = 'console in frame'
+                else:
+                    img.save(x['file'], quality=90)
+                    r.update({'width': img.width, 'height': img.height})
+            saved.append(r)
+        if ended_at is not None:
+            self.tick, self.exact, self.paused, self.watching = None, False, False, None
+            if timer:
+                timer.add('demo_end_count', 1)
+            for x in saved:
+                if x['tick'] > ended_at and 'error' not in x:
+                    x['error'] = 'demo ended'
+        res = []
+        for o in outs:
+            r = self._output(o, seg, fps, w, h, ts, tickrate, start, end, route, left)
+            if ended_at is not None and o['k'] < o['frames']:
+                if o['sent'] == 0:
+                    # Starts after the demo's last tick: there is no footage.
+                    r['error'] = 'demo_ended'
+                else:
+                    r.update({'frames': o['sent'], 'end': int(min(o['end'], ended_at)), 'stopped_at_demo_end': True})
+            res.append(r)
+        return res, saved
+
+    def _output(self, o, seg, fps, w, h, ts, tickrate, start, end, route, left):
+        return {'file': o['file'], 'start': o['start'], 'end': o['end'], 'player': seg['player'], 'fps': fps, 'frames': o['frames'],
                  'width': w, 'height': h, 'timescale': ts, 'distinct_frames': len(o['used']), 'xray': bool(seg.get('xray')),
-                 'max_lag_ticks': round(o['worst'] * ts * tickrate, 2), 'segment': [start, end]} for o in outs]
+                 'max_lag_ticks': round(o['worst'] * ts * tickrate, 2), 'segment': [start, end], 'route': route,
+                 'pov_left_at': (round(left) if left is not None and left < o['end'] else None),
+                 'console_in_frame': bool(o.get('console'))}
 
     def _finish_output(self, o, timer):
         enc = o['enc']
@@ -1071,7 +1342,9 @@ def session():
                         while not os.path.exists(LOG) and time.time() < end:
                             time.sleep(0.5)
                         Log(tail=10_000_000).wait(r'CSGO_GAME_UI_STATE_MAINMENU', 0, 180, 'cs2_start', 'CS2 did not reach the main menu after a retry.')
-                    time.sleep(3)
+                    # Was a fixed 3 s; the first command (playdemo) is confirmed
+                    # from the log and retried if the menu wasn't ready for it.
+                    time.sleep(MENU_SETTLE_S)
                 timings['menu'] = round(time.time() - t0, 3)
                 stage('Focusing the CS2 window')
                 import ukeys
@@ -1091,7 +1364,7 @@ def session():
                 # One recording pass cut into the requested clips (Phase 14).
                 timer = Timer()
                 t0 = time.time()
-                outs = d.record_segment(req, float(req.get('tickrate') or 64), timer)
+                outs, stills = d.record_segment(req, float(req.get('tickrate') or 64), timer)
                 # A faster-than-1x recording (kill clips at 2x) must be
                 # dependable: enough distinct frames and at most ~1 output
                 # frame of lag, else record the segment again at 1x.
@@ -1103,23 +1376,24 @@ def session():
                     lag = max(o['max_lag_ticks'] for o in outs)
                     timer.t['fallback_worst_distinct'] = round(min(timer.t.get('fallback_worst_distinct', 1), worst), 3)
                     timer.t['fallback_worst_lag'] = round(max(timer.t.get('fallback_worst_lag', 0), lag), 2)
-                    outs = d.record_segment({**req, 'timescale': 1}, float(req.get('tickrate') or 64), timer)
+                    outs, stills = d.record_segment({**req, 'timescale': 1}, float(req.get('tickrate') or 64), timer)
                 enc, bad = d.drain_encoded()
-                reply(req, ok=True, outputs=outs, encoded=enc, encode_failed=bad, timings={**timer.t, 'wall': round(time.time() - t0, 3)},
-                      console=dict(d.con.stats), paste_failures=list(d.paste_failures))
+                reply(req, ok=True, outputs=outs, stills=stills, encoded=enc, encode_failed=bad, timings={**timer.t, 'wall': round(time.time() - t0, 3)},
+                      console=dict(d.con.stats), paste_failures=list(d.paste_failures), trace=d.take_trace())
             elif op == 'lineup':
                 timer = Timer()
                 t0 = time.time()
+                d.ensure_playing(timer)
                 d.set_view(False)
                 shot = d.shot(int(req['tick']), req['player'], req['file'], width=int(req.get('width') or 0), timer=timer)
                 enc, bad = d.drain_encoded()
-                reply(req, ok=True, still=shot, encoded=enc, encode_failed=bad, timings={**timer.t, 'wall': round(time.time() - t0, 3)})
+                reply(req, ok=True, still=shot, encoded=enc, encode_failed=bad, timings={**timer.t, 'wall': round(time.time() - t0, 3)}, trace=d.take_trace())
             elif op == 'flush':
                 t0 = time.time()
                 d.finish_encoders(0)
                 enc, bad = d.drain_encoded()
                 reply(req, ok=True, encoded=enc, encode_failed=bad, timings={'encode_wait': round(time.time() - t0, 3)},
-                      console=dict(d.con.stats), paste_failures=list(d.paste_failures))
+                      console=dict(d.con.stats), paste_failures=list(d.paste_failures), trace=d.take_trace(), transitions=dict(d.transitions))
             elif op == 'kill':
                 reply(req, ok=True, **kill_event(d, {'nav': d.nav, **req}))
             elif op == 'utility':
@@ -1134,6 +1408,11 @@ def session():
                     d.timescale = float(req['timescale'])
                 if 'nav' in req:
                     d.nav = req['nav']
+                for k in ('ff_speed', 'seek_long_s', 'ff_overhead_s', 'preroll_s'):
+                    if k in req:
+                        setattr(d, k, float(req[k]))
+                if 'max_pending_encodes' in req:
+                    d.max_pending = max(1, int(req['max_pending_encodes']))
                 reply(req, ok=True)
             elif op == 'close':
                 break
@@ -1153,7 +1432,10 @@ def session():
                     d.frame(1280).save(os.path.join(ev, f'{stamp}-{op}-{e.code}.jpg'), quality=80)
             except Exception:  # noqa: BLE001 - evidence is best effort
                 pass
-            reply(req, ok=False, code=e.code, error=str(e))
+            if d:
+                # The position is unknown after a failed step: the next one seeks fresh.
+                d.tick, d.exact, d.paused = None, False, False
+            reply(req, ok=False, code=e.code, error=str(e), trace=d.take_trace() if d else [])
         except Exception as e:  # noqa: BLE001 - reported to the server, not swallowed
             reply(req, ok=False, code='internal', error=f'{type(e).__name__}: {e}')
     # Close: restore the player's settings; quit CS2 if this session started it

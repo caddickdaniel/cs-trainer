@@ -90,7 +90,7 @@ def run_kills(d, plan, label, ts, out):
     for st in steps:
         timer = cap.Timer()
         try:
-            outs += d.record_segment(st, 64.0, timer)
+            outs += d.record_segment(st, 64.0, timer)[0]
         except cap.CaptureError as e:
             failures.append(f'{st["player"]}: {e.code}: {e}')
             d.tick = None

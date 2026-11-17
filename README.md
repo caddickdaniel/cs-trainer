@@ -1283,6 +1283,57 @@ Lower settings and 720p saved only output size, not wall-clock time: seeking (CP
 - Game Mode shows the lineup link through the same gallery as the tactic view; not checked by hand in a live Game Mode session.
 - A run-jump or running throw with no still moment in the 3 s before release keeps the tick-before-release still, with the limitation shown.
 
+## Phase 16: faster Demo Review capture
+
+### How a capture session runs now
+- **Planned before CS2 opens** (`services/capturePlan.js`, `services/captures.js`): windows, POV, round, start/end ticks, settings and lineup still ticks are fixed first, with each window clamped to its round. Every output is tied to its stable event ID (`event` on each media item). The mapping is published as `storage/captures/<demo>/session-<id>-plan.json`.
+- **Pass schedules:** `match_player` (the default) records each player's whole match in one pass. `round_player` does the same round by round. Both merge a player's overlapping or nearby windows (gap ≤ 1.5 s) when POV, X-ray and speed match, and keep grouped events together.
+- **Stills from the recording:** a lineup still is the recorded frame nearest its tick. It must be within 2 ticks, with the camera still on the player and no demo bar or console in frame. Otherwise it falls back to a separate verified still.
+- **Transitions:** the driver goes straight from one window to the next, seeking or playing on. Long forward seeks are checked; a stale result gets a recovery seek. The POV is re-checked after deaths, seeks and round changes. Fast-forward never beat a seek on this machine, so it is used only when the measured cost says it is cheaper.
+- **Console audit:** every command is traced with its reason and timing (`session-<id>-trace.jsonl`). Speed, X-ray and POV commands are skipped when that state is already confirmed, and fixed sleeps were replaced by readiness checks from CS2's log.
+- **Encoding:** clips are encoded through a bounded queue while the next window records. Encode waits were 0 s throughout.
+- **Partial failures:** outputs that succeeded are kept. A retry, in the same session or later via `POST /api/demos/:id/captures/retry`, records only what is missing.
+- **Demo end:** if CS2 finishes the demo during a clip, the clip stops on the demo's last tick and keeps its footage. Frames are held 0.5 s before encoding, so nothing after the end is kept. A clip that would start after the end is marked as such and not retried. The next step reloads the demo.
+
+### Benchmarks (17 Nov 2026, RTX 4090, 720p/30 fps, demo `spirit-vs-g2-m3-ancient`)
+**Busy round (round 6: 7 kills, 37 throws, 18 grouped; all 44 captured each time):**
+
+| Run | Capture steps |
+|---|---|
+| Baseline (`main`, hybrid) | 266.0 s |
+| Phase 16 driver, hybrid | 229.0 s |
+| `match_player` | 174.5 s |
+| + kills at 2× | 164.9 s |
+| + 0.35 s pre-roll | 157.0 s (−41%) |
+
+Console commands fell from 325 to 167 and POV switches from 43 to 13.
+
+**Full match (522 events: 131 kills, 391 throws), measured:**
+
+| | Baseline (hybrid) | Phase 16 (`match_player`, kills 2×) |
+|---|---|---|
+| Captured | 521 / 522 | 522 / 522 |
+| Wall, queue to done | 3,280 s (54.7 min) | 2,229 s (37.2 min), **−32%** |
+| Capture steps | 3,189 s | 2,177 s |
+| Recording | 1,756 s | 1,752 s |
+| Seeking | 680 s | 304 s |
+| POV switches | 223 s (593) | 10 s (25) |
+| Separate lineup stills | 160 s (391) | 0 s (all 391 from recordings) |
+| Demo reloads after the demo ended | – | 69 s (6) |
+| Cold start: menu / demo load / close | 9.2 / 7.2 / 1.4 s | 6.9 / 4.4 / 2.7 s |
+
+- **Baseline's missing event:** the match's last kill, which it couldn't spectate at the demo's end. Phase 16 captured it, stopped on the last tick.
+- **Checks:** `tools/cs2-capture/verify16.py` found no missing frames and all 1280×720 stills good in both runs.
+- **2× kill clips:** 23 of ~225 segments fell back to 1×, automatically. Kill and death moments land within one frame of the 1× clips.
+- **Remaining repeats:** 3 typed `spec_player` retries after a paste wasn't accepted, and typed `playdemo` retries on reload. There are 2,273 traced commands in all.
+- **Remaining bottleneck:** recording itself (80% of the steps runs at demo speed), then cold start, which varies (main menu 6–56 s across runs).
+- **Verified in the site:**
+  - Zont1x's three-kill streak in round 17 opens at the selected kill with that victim's tab.
+  - Zont1x's grouped HE in round 2 opens its own lineup still, taken from the recording.
+  - A round 1 kill whose victim clip came from another player's pass (step 312 vs 113) links back to the right event.
+- **User-facing estimates** (`services/captureEstimates.js`) use this full-match run. Kills-only and utility-only totals are split from it with the planner's cost model, so they are estimates.
+- **Tools:** `scripts/capture-plan-stats.js` compares schedules without CS2. `scripts/bench-capture-session.js` and `tools/cs2-capture/bench16.py` give live timings.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

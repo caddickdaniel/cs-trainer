@@ -4,6 +4,7 @@
 // clip, own victim clips / lineups per event, media linked per capture),
 // and the live review's shared Replay Inspector selection.
 const fs = require('fs');
+const config = require('../config/env');
 const path = require('path');
 const { expect } = require('chai');
 const { connection, reseed, teamWithMember } = require('./helpers');
@@ -24,6 +25,10 @@ const none = { smoke: 0, flash: 0, molly: 0, he: 0, decoy: 0 };
 const buys = (list) => list.map(([uid, c]) => ({ user_id: uid, slot: null, ...none, ...c, kit: false }));
 
 describe('phase 15', () => {
+  // These tests describe the Phase 12-15 hybrid schedule at 1x.
+  let pinned;
+  before(() => { pinned = [config.captureSchedule, config.captureKillTimescale]; config.captureSchedule = 'hybrid'; config.captureKillTimescale = 1; });
+  after(() => { [config.captureSchedule, config.captureKillTimescale] = pinned; });
   describe('route pickups', () => {
     // Player 1 stands at (0.5, 0.5) and drops a flash there (lands at 0.4 s).
     const dropBoard = (routes, extra = {}) => ({

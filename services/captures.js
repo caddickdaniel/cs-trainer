@@ -426,6 +426,36 @@ function victimLastAliveTick(round, victim, killTick) {
 }
 
 
+// Each queued capture with its round, event and (throws) the setup analysis
+// for its lineup still: the stable aim before the throw's setup movement,
+// from the demo's per-tick samples (one parse for the whole batch).
+async function prepareItems(demo, items, demoFile, timings = {}) {
+  const prepared = [];
+  const roundsCache = new Map();
+  for (const it of items) {
+    if (!roundsCache.has(it.round_number)) roundsCache.set(it.round_number, await roundData(demo.demo_id, it.round_number).catch(() => null));
+    const round = roundsCache.get(it.round_number);
+    prepared.push({ it, round, ev: round && round.events[it.event_index] });
+  }
+  const players = (demo.meta && demo.meta.players) || [];
+  const tickrate = demo.tickrate || 64;
+  const throwReqs = [];
+  for (const p of prepared) {
+    if (p.it.kind !== 'utility' || !p.ev || p.ev.throw_tick == null) continue;
+    const name = (players.find((x) => x.index === p.ev.player) || {}).name;
+    if (name) throwReqs.push({ key: String(p.it.capture_id), name, tick: p.ev.throw_tick, lookback: Math.round((throwSetup.LOOKBACK_S + 0.5) * tickrate) });
+  }
+  const ts = Date.now();
+  const samples = await driver.throws(demoFile, throwReqs);
+  timings.setup_parse = (Date.now() - ts) / 1000;
+  const byKey = new Map(throwReqs.map((r) => [r.key, r]));
+  for (const p of prepared) {
+    const req = byKey.get(String(p.it.capture_id));
+    if (req) p.setup = throwSetup.analyse(samples[req.key] || [], req.tick, tickrate);
+  }
+  return prepared;
+}
+
 // ---- Worker ---------------------------------------------------------------
 
 let busy = false;
@@ -446,6 +476,84 @@ async function runOnce() {
   } finally {
     busy = false;
   }
+}
+
+// Options for the pass schedules from config (see capturePlan.schedule).
+const scheduleOpts = () => ({
+  timescale: config.captureTimescale, killTimescale: config.captureKillTimescale,
+  mergeGapS: config.captureMergeGapS, stillExtendS: config.captureStillExtendS,
+});
+
+// Every event's planned outputs: which recording (step) supplies each file.
+function manifest(plan, steps) {
+  const byFile = new Map();
+  steps.forEach((st, i) => {
+    if (st.op === 'segment') {
+      for (const o of st.outputs) byFile.set(o.file, i);
+      for (const l of st.stills || []) byFile.set(l.file, i);
+    } else byFile.set(st.file, i);
+  });
+  const events = new Map();
+  const add = (e, role, file, step, shared) => {
+    const k = e.capture_id;
+    if (!events.has(k)) events.set(k, { ...e, outputs: [] });
+    events.get(k).outputs.push({ role, file: path.basename(file), step, ...(shared ? { shared_from: shared } : {}) });
+  };
+  for (const w of plan.windows) {
+    add(w.events[0], w.role, w.file, byFile.get(w.file));
+    for (const c of w.copies || []) add(w.events.find((e) => e.capture_id === c.capture_id), w.role, c.file, byFile.get(w.file), w.capture_id);
+  }
+  for (const l of plan.lineups) add(l.events[0], 'lineup', l.file, byFile.get(l.file));
+  return { steps: steps.length, events: [...events.values()] };
+}
+
+// Console command trace (Phase 16): every command CS2 was sent, why, and how
+// long it took to submit and confirm, appended to a JSON-lines file; the
+// summary (counts, repeats, time) goes into the session's timings.
+function traceLog(file) {
+  const counts = {};
+  const why = {};
+  const repeats = {};
+  let last = null;
+  let n = 0;
+  const totals = { console_s: 0, submit_s: 0, confirm_s: 0, console_opens: 0 };
+  // A fresh file per session run (ids can repeat after a database reset).
+  let pending = fsp.writeFile(file, '').catch(() => {});
+  return {
+    add(entries, ctx) {
+      if (!entries || !entries.length) return pending;
+      const lines = [];
+      for (const e of entries) {
+        lines.push(JSON.stringify({ ...ctx, ...e }));
+        if (e.event === 'console_open') { totals.console_opens += 1; continue; }
+        if (!e.cmd) { last = null; continue; }
+        n += 1;
+        const name = e.cmd.split(' ')[0];
+        counts[name] = (counts[name] || 0) + 1;
+        const wk = `${name}: ${e.why || ''}`;
+        why[wk] = (why[wk] || 0) + 1;
+        if (last === e.cmd) repeats[wk] = (repeats[wk] || 0) + 1;
+        last = e.cmd;
+        totals.console_s += e.console_s || 0;
+        totals.submit_s += e.submit_s || 0;
+        totals.confirm_s += e.confirm_s || 0;
+      }
+      pending = pending.then(() => fsp.appendFile(file, `${lines.join('\n')}\n`)).catch(() => {});
+      return pending;
+    },
+    summary: () => ({
+      total: n, by_command: counts, by_reason: why, repeated: repeats,
+      ...Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round(v * 1000) / 1000])), file: path.basename(file),
+    }),
+  };
+}
+
+// A grouped clip is encoded once and hard-linked into each member capture
+// (copied where links aren't possible), so every event keeps its own media
+// that survives the others being recaptured.
+async function linkInto(from, to) {
+  await fsp.rm(to, { force: true });
+  try { await fsp.link(from, to); } catch { await fsp.copyFile(from, to); }
 }
 
 async function runSession(s) {
@@ -472,10 +580,66 @@ async function runSession(s) {
   const t0 = Date.now();
   const demoFile = path.join(config.demoStorageDir, demo.storage_key);
   await fsp.mkdir(stateDir(), { recursive: true });
-  const proc = driver.open(onStage);
   let failed = 0;
   let completed = 0;
+  let proc = null;
+  const mode = config.captureSchedule;
+  const work = new Map(); // capture_id -> { it, attempt, dir, need: Set(file), media: Map(file -> media), failed }
   try {
+    // ---- 1. The whole plan, before CS2 opens (Phase 16) -------------------
+    let plan = null;
+    let steps = [];
+    let inputsP = Promise.resolve({});
+    let manifestFile = null;
+    if (s.mode !== 'watch') {
+      onStage('Planning the capture');
+      const tp = Date.now();
+      const prepared = await prepareItems(demo, items, demoFile, timings);
+      for (const p of prepared) {
+        // Media kept from an earlier attempt that failed part-way: only the
+        // missing outputs are captured again.
+        const partial = (p.it.timings && p.it.timings.partial) || null;
+        const attempt = Math.max(p.it.attempt || 0, (partial && partial.attempt) || 0) + 1;
+        const dir = captureDir(s.demo_id, p.it.capture_id, attempt);
+        await fsp.rm(dir, { recursive: true, force: true });
+        await fsp.mkdir(dir, { recursive: true });
+        p.dir = dir;
+        const w = { it: p.it, attempt, dir, need: new Set(), media: new Map(), failed: null, oldDirs: [] };
+        if (partial && Array.isArray(partial.media)) {
+          const from = captureDir(s.demo_id, p.it.capture_id, partial.attempt);
+          for (const m of partial.media) {
+            try {
+              await linkInto(path.join(from, m.file), path.join(dir, m.file));
+              w.media.set(path.join(dir, m.file), { ...m, attempt, ready: true });
+              w.need.add(path.join(dir, m.file));
+            } catch { /* missing: captured again */ }
+          }
+          if (partial.attempt !== p.it.attempt) w.oldDirs.push(from);
+        }
+        p.have = [...w.media.values()].map((m) => m.role);
+        work.set(p.it.capture_id, w);
+        await db('demo_captures').where('capture_id', p.it.capture_id).update({ status: 'running', attempts: db.raw('attempts + 1'), updated_at: db.fn.now() });
+      }
+      plan = capturePlan.planWindows(demo, prepared.map((p) => ({
+        capture_id: p.it.capture_id, kind: p.it.kind, round_number: p.it.round_number, event_index: p.it.event_index, round: p.round, ev: p.ev, dir: p.dir, setup: p.setup, have: p.have,
+      })));
+      for (const w of [...plan.windows, ...plan.lineups]) work.get(w.capture_id).need.add(w.file);
+      for (const w of plan.windows) for (const c of w.copies || []) work.get(c.capture_id).need.add(c.file);
+      steps = capturePlan.schedule(plan, mode, scheduleOpts());
+      timings.schedule = { mode, ...capturePlan.scheduleStats(steps), planned: capturePlan.estimate(steps) };
+      timings.plan_s = (Date.now() - tp) / 1000;
+      // The event → output mapping, published with the session (and each
+      // capture's media names its event).
+      manifestFile = path.join(captureDir(s.demo_id), `session-${s.session_id}-plan.json`);
+      await fsp.writeFile(manifestFile, JSON.stringify(manifest(plan, steps)));
+      // Recorded input over every throw clip runs while CS2 starts.
+      const ranges = plan.windows.filter((w) => w.role === 'replay').map((w) => ({ key: w.file, name: w.player, start: w.start, end: w.end }));
+      const ti = Date.now();
+      inputsP = driver.inputs(demoFile, ranges).then((r) => { timings.inputs_parse = (Date.now() - ti) / 1000; return r; });
+    }
+
+    // ---- 2. CS2 ---------------------------------------------------------
+    proc = driver.open(onStage);
     const opened = await proc.call({
       op: 'open', state_dir: stateDir(), size: config.captureSize, profile: s.mode === 'watch' ? null : config.captureProfile,
       short_forward: config.captureShortForward, timescale: config.captureTimescale, nav: config.captureNav,
@@ -496,61 +660,14 @@ async function runSession(s) {
       if (r.demo !== demoFile || r.tick !== round.start_tick) return await finish({ status: 'failed', error_code: 'seek', error: 'CS2 did not open this demo at the round start.' });
       return await finish({ status: 'done', stage: `Round ${s.round_number} is open in CS2, paused at the round start.` });
     }
+    if (config.captureTuning) await proc.call({ op: 'set', ...config.captureTuning });
     const loaded = await proc.call({ op: 'load', demo: demoFile });
     timings.load = loaded.timings;
     if (!loaded.ok) {
       await failRest(loaded.code, loaded.error);
       return await finish({ status: 'failed', error_code: loaded.code, error: loaded.error, failed: items.length });
     }
-    // Recorded input for every utility clip in this session, in one parse.
-    const prepared = [];
-    const roundsCache = new Map();
-    for (const it of items) {
-      if (!roundsCache.has(it.round_number)) roundsCache.set(it.round_number, await roundData(s.demo_id, it.round_number).catch(() => null));
-      const round = roundsCache.get(it.round_number);
-      prepared.push({ it, round, ev: round && round.events[it.event_index] });
-    }
-    // Lineup stills: the stable aim before each throw's setup movement,
-    // from the demo's per-tick samples (one parse for the session).
-    const players = (demo.meta && demo.meta.players) || [];
-    const tickrate = demo.tickrate || 64;
-    const throwReqs = [];
-    for (const p of prepared) {
-      if (p.it.kind !== 'utility' || !p.ev || p.ev.throw_tick == null) continue;
-      const name = (players.find((x) => x.index === p.ev.player) || {}).name;
-      if (name) throwReqs.push({ key: String(p.it.capture_id), name, tick: p.ev.throw_tick, lookback: Math.round((throwSetup.LOOKBACK_S + 0.5) * tickrate) });
-    }
-    const ts = Date.now();
-    const samples = await driver.throws(demoFile, throwReqs);
-    timings.setup_parse = (Date.now() - ts) / 1000;
-    for (const p of prepared) {
-      const req = throwReqs.find((r) => r.key === String(p.it.capture_id));
-      if (req) p.setup = throwSetup.analyse(samples[req.key] || [], req.tick, tickrate);
-    }
-
-    // Plan every window before recording, then run the schedule.
-    const work = new Map(); // capture_id -> { it, attempt, dir, need: Set(file), media: Map(file -> media), failed }
-    for (const p of prepared) {
-      const attempt = (p.it.attempt || 0) + 1;
-      const dir = captureDir(s.demo_id, p.it.capture_id, attempt);
-      await fsp.rm(dir, { recursive: true, force: true });
-      await fsp.mkdir(dir, { recursive: true });
-      p.dir = dir;
-      work.set(p.it.capture_id, { it: p.it, attempt, dir, need: new Set(), media: new Map(), failed: null });
-      await db('demo_captures').where('capture_id', p.it.capture_id).update({ status: 'running', attempts: db.raw('attempts + 1'), updated_at: db.fn.now() });
-    }
-    const plan = capturePlan.planWindows(demo, prepared.map((p) => ({
-      capture_id: p.it.capture_id, kind: p.it.kind, round_number: p.it.round_number, event_index: p.it.event_index, round: p.round, ev: p.ev, dir: p.dir, setup: p.setup,
-    })));
-    for (const w of [...plan.windows, ...plan.lineups]) work.get(w.capture_id).need.add(w.file);
-    for (const w of plan.windows) for (const c of w.copies || []) work.get(c.capture_id).need.add(c.file);
-    // Recorded input over every throw clip (grouped clips: the whole window), in one parse.
-    const ranges = plan.windows.filter((w) => w.role === 'replay').map((w) => ({ key: w.file, name: w.player, start: w.start, end: w.end }));
-    const ti = Date.now();
-    const inputs = await driver.inputs(demoFile, ranges);
-    timings.inputs_parse = (Date.now() - ti) / 1000;
-    const steps = capturePlan.schedule(plan, config.captureSchedule);
-    timings.schedule = { mode: config.captureSchedule, ...capturePlan.scheduleStats(steps) };
+    const inputs = await inputsP;
     const fileOwner = new Map([...plan.windows, ...plan.lineups].map((w) => [w.file, w]));
     const sums = {};
     const addTimings = (t) => {
@@ -560,14 +677,20 @@ async function runSession(s) {
         else sums[k] = Math.round(((sums[k] || 0) + v) * 1000) / 1000;
       }
     };
+    const trace = traceLog(path.join(captureDir(s.demo_id), `session-${s.session_id}-trace.jsonl`));
 
     const failCapture = async (id, code, message) => {
       const w = work.get(id);
       if (!w || w.failed || w.done) return;
       w.failed = { code, message };
       failed += 1;
-      await fsp.rm(w.dir, { recursive: true, force: true });
-      await db('demo_captures').where('capture_id', id).update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
+      // Outputs that did succeed are kept: a retry captures only the rest.
+      const kept = [...w.media.values()].filter((m) => m.ready).map(({ ready, ...m }) => m);
+      if (!kept.length) await fsp.rm(w.dir, { recursive: true, force: true });
+      await db('demo_captures').where('capture_id', id).update({
+        status: 'failed', error_code: code, error: message, updated_at: db.fn.now(),
+        timings: JSON.stringify(kept.length ? { partial: { attempt: w.attempt, media: kept } } : {}),
+      });
       await setSession(s.session_id, { failed });
     };
     for (const sk of plan.skipped) {
@@ -584,21 +707,16 @@ async function runSession(s) {
       const old = w.it.attempt;
       await db('demo_captures').where('capture_id', id).update({
         status: 'ready', media: JSON.stringify(media), attempt: w.attempt, error: null, error_code: null,
-        timings: JSON.stringify({ schedule: config.captureSchedule }), updated_at: db.fn.now(),
+        timings: JSON.stringify({ schedule: mode }), updated_at: db.fn.now(),
       });
       // The replaced media is removed only now that the new media exists.
       if (old) await fsp.rm(captureDir(s.demo_id, id, old), { recursive: true, force: true });
       else for (const m of w.it.media || []) await fsp.rm(path.join(captureDir(s.demo_id, id), m.file), { force: true });
+      for (const d of w.oldDirs) await fsp.rm(d, { recursive: true, force: true });
       completed += 1;
       await setSession(s.session_id, { completed });
     };
-    // A grouped clip is encoded once and hard-linked into each member
-    // capture (copied where links aren't possible), so every event keeps
-    // its own media that survives the others being recaptured.
-    const linkInto = async (from, to) => {
-      await fsp.rm(to, { force: true });
-      try { await fsp.link(from, to); } catch { await fsp.copyFile(from, to); }
-    };
+    for (const id of work.keys()) await finalize(id); // everything kept from an earlier attempt
     const settleEncoded = async (reply) => {
       for (const f of reply.encoded || []) {
         const owner = fileOwner.get(f);
@@ -624,74 +742,151 @@ async function runSession(s) {
       const inp = inputs[file];
       return inp ? { inputs: { start: inp.start, bits: inp.bits, tickrate: demo.tickrate || 64, map: INPUT_BITS } } : {};
     };
+    const lineupMedia = (l, still, attempt) => ({
+      ...still, file: path.basename(l.file), attempt, role: 'lineup', type: 'image', mime: 'image/jpeg', release_tick: l.release_tick, event: l.events[0],
+      ...(l.setup ? { setup: { technique: l.setup.technique, reliable: l.setup.reliable, reason: l.setup.reason, setup_start: l.setup.setup_start, still_tick: l.setup.still_tick, note: throwSetup.describe(l.setup) } } : {}),
+      ready: true,
+    });
+    const lastEvent = (o) => Math.max(...(o.events || []).map((e) => e.event_tick ?? -Infinity), o.event_tick ?? -Infinity);
     let console_ = null;
     let pasteFailures = [];
     let stepWall = 0;
-    for (let i = 0; i < steps.length; i += 1) {
-      const st = steps[i];
-      const ids = st.op === 'segment' ? [...new Set(st.outputs.map((o) => o.capture_id))] : [st.capture_id];
-      if (ids.every((id) => work.get(id).failed)) continue;
-      onStage(`${st.op === 'segment' ? `Recording ${st.player}` : `Lineup still for ${st.player}`} (step ${i + 1} of ${steps.length}, round ${st.round}) · ${completed} of ${prepared.length} captured`);
+    const retry = [];
+    const lastErrors = new Map();
+    let inRetry = false;
+    // A second failure of the same output is final (a lineup still can
+    // always fall back to a separate still once).
+    const pushRetry = (x, code) => {
+      if (!inRetry || (x.op === 'lineup' && !x.fallback)) { retry.push({ ...x, fallback: x.op === 'lineup' }); return; }
+      for (const o of x.op === 'segment' ? x.outputs : [x]) lastErrors.set(o.capture_id, { code, error: code === 'pov' ? 'CS2 showed another player during this clip.' : `Capture failed (${code}).` });
+    };
+    const outstanding = (o) => { const w = work.get(o.capture_id); return w && !w.failed && !w.done && !(w.media.get(o.file) || {}).ready; };
+
+    const runStep = async (st, label, isRetry) => {
+      const outputs = st.op === 'segment' ? st.outputs.filter(outstanding) : [];
+      const stills = st.op === 'segment' ? (st.stills || []).filter(outstanding) : [];
+      if (st.op === 'segment' && !outputs.length && !stills.length) return true;
+      if (st.op === 'lineup' && !outstanding(st)) return true;
+      onStage(`${st.op === 'segment' ? `Recording ${st.player}` : `Lineup still for ${st.player}`} (${label}, round ${st.round}) · ${completed} of ${work.size} captured`);
       const req = st.op === 'segment'
         ? {
           op: 'segment', tickrate: st.tickrate, player: st.player, xray: st.xray, start: st.start, end: st.end, fps: 30,
           // Kill-only segments can use the faster kill speed; anything with a
           // throw clip records at the session speed.
-          ...(st.outputs.every((o) => o.role === 'killer_clip' || o.role === 'victim_clip') && config.captureKillTimescale !== config.captureTimescale
+          ...(outputs.every((o) => o.role === 'killer_clip' || o.role === 'victim_clip') && config.captureKillTimescale !== config.captureTimescale
             ? { timescale: config.captureKillTimescale } : {}),
-          outputs: st.outputs.map((o) => ({ file: o.file, start: o.start, end: o.end })),
+          outputs: outputs.map((o) => ({ file: o.file, start: o.start, end: o.end, event_tick: lastEvent(o) })),
+          stills: stills.map((l) => ({ file: l.file, tick: l.tick })),
         }
         : { op: 'lineup', player: st.player, tick: st.tick, file: st.file, width: 0 };
+      if (st.op === 'segment' && isRetry) {
+        // Only the missing outputs, so the recording can be shorter.
+        req.start = Math.min(...outputs.map((o) => o.start), ...stills.map((l) => l.tick - capturePlan.STILL_LEAD_TICKS));
+        req.end = Math.max(...outputs.map((o) => o.end), ...stills.map((l) => l.tick + 1));
+      }
       const reply = await proc.call(req);
       addTimings(reply.timings);
       stepWall += (reply.timings && reply.timings.wall) || 0;
       if (reply.console) console_ = reply.console;
       if (reply.paste_failures) pasteFailures = reply.paste_failures;
-      if (!reply.ok) {
-        for (const id of ids) await failCapture(id, reply.code || 'capture_failed', reply.error || 'Capture failed.');
-        if (FATAL.has(reply.code)) {
-          for (const [id] of work) await failCapture(id, reply.code, `Not captured: ${reply.error}`);
-          return await finish({ status: 'failed', error_code: reply.code, error: reply.error, failed, completed });
-        }
-        continue;
-      }
+      await trace.add(reply.trace, { step: label, op: st.op, player: st.player, ok: reply.ok, code: reply.code });
+      if (!reply.ok) return reply;
       if (st.op === 'segment') {
         for (const out of reply.outputs) {
           const w = fileOwner.get(out.file);
+          if (out.error) {
+            // The demo ended before this clip started: there is no footage to
+            // retry for. (A clip the end cut short is kept, stopped on the
+            // demo's last tick: out.stopped_at_demo_end.)
+            for (const id of [w.capture_id, ...(w.copies || []).map((c) => c.capture_id)]) {
+              lastErrors.set(id, { code: out.error, error: 'The demo ends before this clip starts.' });
+            }
+            continue;
+          }
+          // Footage is accepted only from the right POV up to its event, and
+          // without the console in its first frame.
+          if (out.console_in_frame) {
+            sums.console_rejected_count = (sums.console_rejected_count || 0) + 1;
+            pushRetry({ ...st, op: 'segment', outputs: [w], stills: [], why: 'console' }, 'console');
+            continue;
+          }
+          if (out.pov_left_at != null && out.pov_left_at <= lastEvent(w)) {
+            sums.pov_rejected_count = (sums.pov_rejected_count || 0) + 1;
+            pushRetry({ ...st, op: 'segment', outputs: [w], stills: [], why: 'pov' }, 'pov');
+            continue;
+          }
           const base = {
-            ...out, role: w.role, type: 'video', mime: 'video/webm',
+            ...out, role: w.role, type: 'video', mime: 'video/webm', event: w.events[0],
             ...(w.role === 'replay' ? inputMedia(w.file) : {}), ...(w.group ? { group: w.group } : {}), ready: false,
           };
           work.get(w.capture_id).media.set(out.file, { ...base, file: path.basename(out.file), attempt: work.get(w.capture_id).attempt, event_tick: w.event_tick });
           for (const c of w.copies || []) {
             const cw = work.get(c.capture_id);
-            if (cw && !cw.failed) cw.media.set(c.file, { ...base, file: path.basename(c.file), attempt: cw.attempt, event_tick: c.event_tick });
+            if (cw && !cw.failed) cw.media.set(c.file, { ...base, file: path.basename(c.file), attempt: cw.attempt, event_tick: c.event_tick, event: w.events.find((e) => e.capture_id === c.capture_id) || null });
           }
+        }
+        for (const sv of reply.stills || []) {
+          const l = fileOwner.get(sv.file);
+          if (sv.error) {
+            // Not usable from the recording: a separate verified still.
+            sums.still_fallback_count = (sums.still_fallback_count || 0) + 1;
+            pushRetry({ op: 'lineup', ...l, why: sv.error }, 'still');
+            continue;
+          }
+          work.get(l.capture_id).media.set(l.file, lineupMedia(l, sv, work.get(l.capture_id).attempt));
+          await finalize(l.capture_id);
         }
       } else {
         const l = fileOwner.get(st.file);
-        work.get(st.capture_id).media.set(st.file, {
-          ...reply.still, file: path.basename(st.file), attempt: work.get(st.capture_id).attempt, role: 'lineup', type: 'image', mime: 'image/jpeg',
-          release_tick: l.release_tick, ...(l.setup ? { setup: { technique: l.setup.technique, reliable: l.setup.reliable, reason: l.setup.reason, setup_start: l.setup.setup_start, still_tick: l.setup.still_tick, note: throwSetup.describe(l.setup) } } : {}),
-          ready: true,
-        });
+        work.get(st.capture_id).media.set(st.file, lineupMedia(l, reply.still, work.get(st.capture_id).attempt));
         await finalize(st.capture_id);
       }
       await settleEncoded(reply);
+      return reply;
+    };
+    const fatal = async (reply) => {
+      for (const [id] of work) await failCapture(id, reply.code, `Not captured: ${reply.error}`);
+      return finish({ status: 'failed', error_code: reply.code, error: reply.error, failed, completed });
+    };
+
+    // ---- 3. The schedule, then one retry of whatever is missing ---------
+    for (let i = 0; i < steps.length; i += 1) {
+      const st = steps[i];
+      const reply = await runStep(st, `step ${i + 1} of ${steps.length}`, false);
+      if (reply === true || reply.ok) continue;
+      if (FATAL.has(reply.code)) return await fatal(reply);
+      retry.push({ ...st, why: reply.code, error: reply.error });
+    }
+    timings.retried_steps = retry.length;
+    inRetry = true;
+    for (let i = 0; i < retry.length; i += 1) {
+      const st = retry[i];
+      const reply = await runStep(st, `retry ${i + 1} of ${retry.length}`, true);
+      if (reply === true || reply.ok) continue;
+      if (FATAL.has(reply.code)) return await fatal(reply);
+      const ids = st.op === 'segment' ? [...st.outputs, ...(st.stills || [])].map((o) => o.capture_id) : [st.capture_id];
+      for (const id of ids) lastErrors.set(id, reply);
     }
     const flushed = await proc.call({ op: 'flush' });
     addTimings(flushed.timings);
     if (flushed.console) console_ = flushed.console;
     if (flushed.paste_failures) pasteFailures = flushed.paste_failures;
+    await trace.add(flushed.trace, { step: 'flush', op: 'flush' });
     await settleEncoded(flushed);
-    for (const [id, w] of work) if (!w.done && !w.failed) await failCapture(id, 'incomplete', 'Not all of this event\'s views were captured.');
+    for (const [id, w] of work) {
+      if (w.done || w.failed) continue;
+      const r = lastErrors.get(id);
+      await failCapture(id, r ? r.code || 'capture_failed' : 'incomplete', r ? r.error || 'Capture failed.' : 'Not all of this event\'s views were captured.');
+    }
     timings.steps = sums;
     timings.steps_wall = Math.round(stepWall * 1000) / 1000;
     timings.console = console_;
     timings.paste_failures = pasteFailures;
+    timings.transitions = flushed.transitions || null;
+    timings.commands = trace.summary();
     return await finish({
       status: failed && !completed ? 'failed' : 'done', completed, failed,
-      total: prepared.length,
+      total: work.size,
       stage: failed ? `${completed} captured, ${failed} failed.` : `${completed} captured.`,
     });
   } catch (e) {
@@ -700,13 +895,13 @@ async function runSession(s) {
   } finally {
     // Closes the CS2 this session launched (also after a failure); a watch
     // session leaves it open.
-    const closed = await proc.close();
+    const closed = proc ? await proc.close() : null;
     timings.close = closed && closed.timings;
     timings.total = (Date.now() - t0) / 1000;
-    // Time not spent in CS2 steps (startup, load, recording steps, close):
-    // waits between steps, planning, database writes.
-    const busy = ((timings.open && timings.open.menu) || 0) + ((timings.load && timings.load.demo_load) || 0)
-      + (timings.steps_wall || 0) + ((timings.steps && timings.steps.encode_wait) || 0) + ((timings.close && timings.close.close) || 0) + (timings.inputs_parse || 0) + (timings.setup_parse || 0);
+    // Time not spent in planning or CS2 steps (startup, load, recording
+    // steps, close): waits between steps and database writes.
+    const busy = (timings.plan_s || 0) + ((timings.open && timings.open.menu) || 0)
+      + ((timings.load && timings.load.demo_load) || 0) + (timings.steps_wall || 0) + ((timings.steps && timings.steps.encode_wait) || 0) + ((timings.close && timings.close.close) || 0);
     timings.idle = Math.max(0, Math.round((timings.total - busy) * 1000) / 1000);
     await setSession(s.session_id, { timings: JSON.stringify(timings) }).catch(() => {});
   }
@@ -734,7 +929,7 @@ async function start() {
 
 module.exports = {
   CAPTURE_VERSION, INPUT_BITS, SELECTIONS, status, list, request, queueBatch, requestBatch, cancelPending, onDemoReady, watchRound, retryFailed, currentSession, mediaFile, start,
-  victimLastAliveTick, selectEvents,
+  victimLastAliveTick, selectEvents, prepareItems,
   // Tests: swap the CS2 driver and enable the queue without a real game.
   _test: {
     setDriver(d) { driver = d ? { ...pythonDriver, ...d } : pythonDriver; lastCheck = { at: 0, checks: null }; },

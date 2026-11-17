@@ -65,21 +65,33 @@ module.exports = {
   // overshoot and come back: forward skips left stale views in benchmarks).
   captureSize: (process.env.CAPTURE_SIZE || '1280x720').split('x').map(Number),
   captureTimescale: Number(process.env.CAPTURE_TIMESCALE) || 1,
-  // Kill-only segments (killer / victim clips) can record at 2x (Phase 15:
+  // Kill-only segments (killer / victim clips) record at 2x (Phase 15:
   // 60+ grabs/s retimed to normal-speed 30 fps; a 2x segment with under 75%
-  // distinct frames or over 3 ticks of lag is recorded again at 1x). Opt-in:
-  // round 17 recorded 18% faster with no fallbacks, but in round 3 five
-  // segments fell back (as low as 62% distinct), costing more than it saved,
-  // so the proven 1x path stays the default.
-  captureKillTimescale: Number(process.env.CAPTURE_KILL_TIMESCALE) || 1,
+  // distinct frames or over 3 ticks of lag is recorded again at 1x). Phase 16
+  // made it the default: on the full 522-event match 23 of ~225 kill
+  // segments fell back and every clip still checked out (no missing frames,
+  // kill/death moments within a frame of 1x). CAPTURE_KILL_TIMESCALE=1 keeps
+  // every recording at 1x.
+  captureKillTimescale: Number(process.env.CAPTURE_KILL_TIMESCALE) || 2,
   // Video profile while capturing: 'capture' (low settings, 720p window,
   // muted) or 'native' (the player's own quality settings).
   captureProfile: process.env.CAPTURE_PROFILE || 'capture',
   // How clips reach their pre-roll: 'seek' (verified seek) or 'play' (play
   // through nearby gaps at 8x, falling back to the seek). Phase 13 benchmarks.
   captureNav: process.env.CAPTURE_NAV || 'seek',
-  // Batch order (Phase 14): chronological | player | hybrid (see capturePlan.js).
-  captureSchedule: process.env.CAPTURE_SCHEDULE || 'hybrid',
+  // Batch order: chronological | player | hybrid (Phase 14) | match_player |
+  // round_player (Phase 16; see capturePlan.js). match_player (each player's
+  // whole match in one pass, lineup stills taken from the recording) was
+  // fastest: full match 37.2 min vs 54.7 min for hybrid, 17 Nov 2026.
+  captureSchedule: process.env.CAPTURE_SCHEDULE || 'match_player',
+  // Phase 16: pass schedules merge a player's windows across gaps up to this
+  // long, and take lineup stills from recordings that start up to this much
+  // earlier (seconds; see capturePlan.js).
+  captureMergeGapS: process.env.CAPTURE_MERGE_GAP_S != null ? Number(process.env.CAPTURE_MERGE_GAP_S) : undefined,
+  captureStillExtendS: process.env.CAPTURE_STILL_EXTEND_S != null ? Number(process.env.CAPTURE_STILL_EXTEND_S) : undefined,
+  // Driver tuning overrides (JSON: ff_speed, seek_long_s, ff_overhead_s,
+  // max_pending_encodes) for benchmarks.
+  captureTuning: process.env.CAPTURE_TUNING ? JSON.parse(process.env.CAPTURE_TUNING) : null,
   captureShortForward: process.env.CAPTURE_SHORT_FORWARD != null ? Number(process.env.CAPTURE_SHORT_FORWARD) : 400,
   captureStorageDir: path.resolve(process.env.CAPTURE_STORAGE_DIR
     || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'captures-test' : 'captures')),
