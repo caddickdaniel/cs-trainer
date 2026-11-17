@@ -66,7 +66,7 @@ def run_steps(d, steps, label, out, paste=True):
         ts = time.time()
         try:
             if st['op'] == 'segment':
-                outs = d.record_segment(st, float(st.get('tickrate') or 64), timer)
+                outs, _ = d.record_segment(st, float(st.get('tickrate') or 64), timer)
                 per.append({'op': 'segment', 'player': st['player'], 'n': len(outs), 'ticks': st['end'] - st['start'], 'wall': round(time.time() - ts, 3), 'outputs': outs})
             else:
                 d.set_view(False)

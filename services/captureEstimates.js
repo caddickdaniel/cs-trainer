@@ -1,24 +1,26 @@
 // Capture time estimates shown to users, from measured runs on the capture
-// machine (see README, Phase 12 benchmarks). `measured` is false until real
+// machine (see README, Phase 16 benchmarks). `measured` is false until real
 // benchmarks are recorded; the UI then says no estimate is available.
 const BENCH = {
   measured: true,
   // Seconds, measured live on 17 Nov 2026 (RTX 4090) with the capture
-  // profile (CS2 muted, -novid, 1280x720, low settings), 1x recording,
-  // pasted console commands and the hybrid batch schedule (one recording per
-  // POV for overlapping windows, POV-first seeks, no fixed waits). Sources:
-  // tools/cs2-capture/bench14.py (round 3: 6 kills + 10 throws, 107 s) and
-  // the website (round 17: 6 kills + 5 throws, 100 s of steps, 121 s total).
-  // Per-event figures are fitted to those two rounds (within about 10%).
-  cold_start: 10, // launch → main menu (5.9–10.4 s) → focused
-  demo_load: 6, // playdemo → seekable (4.3–6.0 s, 253 MB demo)
-  per_kill: 11, // killer + victim clips, no stills
-  per_utility: 5.5, // clip + lineup still
+  // profile (CS2 muted, -novid, 1280x720, low settings), pasted console
+  // commands and the Phase 16 match_player schedule (one pass per player
+  // over the whole match, lineup stills taken from the recording, kill clips
+  // at 2x with a 1x fallback). Source: a full-match run of
+  // spirit-vs-g2-m3-ancient.dem (131 kills + 391 throws, all 522 captured:
+  // 2,229 s wall, 2,177 s of capture steps; scripts/bench-capture-session.js).
+  // per_kill / per_utility split those measured steps by the planner's cost
+  // model (kills-only and utility-only runs are ESTIMATES from that split,
+  // not separately measured).
+  cold_start: 10, // launch → main menu (6.9–9.1 s) → focused
+  demo_load: 6, // playdemo → seekable (4.4–7.2 s, 253 MB demo)
+  per_kill: 5.6, // killer + victim clips (recorded in each player's pass)
+  per_utility: 3.7, // clip + lineup still from the same recording
   first_event_extra: 3, // the first event also sets up the view (hide demo bar etc.)
-  close: 3, // restore settings and quit CS2 (2.8 s)
+  close: 3, // restore settings and quit CS2 (1.4–2.7 s)
   // Recorded events in spirit-vs-g2-m3-ancient.dem (18 rounds), used for
-  // full-match estimates before a demo is parsed. Full-match times are
-  // ESTIMATES from the per-event sample, not a measured full-match run.
+  // full-match estimates before a demo is parsed.
   typical_kills: 131,
   typical_utility: 391,
   measured_on: '2026-11-17',

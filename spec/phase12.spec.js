@@ -70,6 +70,10 @@ function fakeTool({ fail = {}, open = { ok: true, pid: 4242, launched: true, foc
 }
 
 describe('phase 12', () => {
+  // These tests describe the Phase 12-15 hybrid schedule at 1x.
+  let pinned;
+  before(() => { pinned = [config.captureSchedule, config.captureKillTimescale]; config.captureSchedule = 'hybrid'; config.captureKillTimescale = 1; });
+  after(() => { [config.captureSchedule, config.captureKillTimescale] = pinned; });
   const replay = demo();
   const round = replay.rounds[0].data;
   const kill = round.events.findIndex((e) => e.type === 'kill');
@@ -290,7 +294,9 @@ describe('phase 12', () => {
       const p = plan.planWindows(d, items());
       expect(p.windows.find((w) => w.capture_id === 2)).to.include({ role: 'replay', player: 'alpha', start: 236, end: 364 });
       // Without setup samples the still is the tick before release (Phase 15 picks an earlier aim frame when it can).
-      expect(p.lineups).to.deep.equal([{ capture_id: 2, role: 'lineup', player: 'alpha', round: 1, tick: 299, release_tick: 300, setup: null, file: '/u/lineup.jpg' }]);
+      expect(p.lineups.map(({ events, ...l }) => l)).to.deep.equal([{ capture_id: 2, role: 'lineup', player: 'alpha', round: 1, tick: 299, release_tick: 300, setup: null, file: '/u/lineup.jpg' }]);
+      // Each output names its timeline event (Phase 16).
+      expect(p.lineups[0].events).to.deep.equal([{ capture_id: 2, round_number: 1, event_index: null, kind: 'utility', event_tick: 300 }]);
       const unlinked = plan.planWindows(d, [{ ...items()[1], ev: { ...round.events[smoke], throw_tick: null } }]);
       expect(unlinked.lineups).to.deep.equal([]);
     });
