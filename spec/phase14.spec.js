@@ -4,11 +4,13 @@
 // Play Phase timeline. Updated for Phase 15: pickups follow from routes
 // (spec/phase15.spec.js covers them in detail).
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { expect } = require('chai');
 const { reseed, teamWithMember } = require('./helpers');
 const U = require('../domain/utility');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 const player = (id, uid, x = 0.5, y = 0.5) => ({ id, kind: 'player', x, y, level: 'main', user_id: uid, label: '', images: [] });
 const util = (id, kind, uid, extra = {}) => ({ id, kind, x: 0.4, y: 0.4, level: 'main', user_id: uid, label: '', images: [], ...extra });
 

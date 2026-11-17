@@ -10,6 +10,7 @@ const { connection, reseed, signUp, teamWithMember } = require('./helpers');
 const { buildReplay, REPLAY_VERSION, SMOKE_TICKS } = require('../services/demoParse');
 const demoJobs = require('../services/demoJobs');
 const { createHotkeyManager, validateAccelerator, DEFAULT_BINDINGS } = require('../desktop/src/hotkeys');
+const { navigationTarget } = require('../desktop/src/navigation');
 const { ensureDemoData } = require('../db/lib/demo');
 const fixtures = require('../db/data/demo');
 
@@ -127,6 +128,23 @@ describe('phase 6', () => {
       const dup = createHotkeyManager({ globalShortcut: os, onAction: () => {} });
       dup.setBindings({ tactic_next: DEFAULT_BINDINGS.phase_next });
       expect(dup.enable().failed.map((f) => f.action)).to.deep.equal(['tactic_next']);
+    });
+  });
+
+  describe('desktop window navigation', () => {
+    const app = 'http://localhost:9090';
+    it('keeps CS Trainer and Steam sign-in in the window so the sign-in returns to the app', () => {
+      expect(navigationTarget('http://localhost:9090/api/auth/steam/start?intent=signin', app)).to.equal('app');
+      expect(navigationTarget('https://steamcommunity.com/openid/login?openid.mode=checkid_setup', app)).to.equal('signin');
+      expect(navigationTarget('https://login.steampowered.com/jwt/finalizelogin', app)).to.equal('signin');
+      expect(navigationTarget('http://localhost:9090/api/auth/steam/callback?state=x', app)).to.equal('app');
+    });
+    it('sends everything else to the system browser', () => {
+      expect(navigationTarget('https://store.steampowered.com/', app)).to.equal('external');
+      expect(navigationTarget('http://steamcommunity.com/openid/login', app)).to.equal('external');
+      expect(navigationTarget('https://steamcommunity.com.evil.example/openid/login', app)).to.equal('external');
+      expect(navigationTarget('http://localhost:5173/', app)).to.equal('external');
+      expect(navigationTarget('not a url', app)).to.equal('external');
     });
   });
 

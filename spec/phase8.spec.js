@@ -2,12 +2,14 @@
 // tick-derived client helpers), round notes, saving notes and annotations
 // (drafts, live review promotion, conflicts) and text annotation edits.
 const path = require('path');
+const { pathToFileURL } = require('url');
 const zlib = require('zlib');
 const { expect } = require('chai');
 const { connection, reseed, teamWithMember } = require('./helpers');
 const { buildReplay, equipmentOf, REPLAY_VERSION, statDeltas } = require('../services/demoParse');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 const steam = (n) => `7656119000000000${n}`;
 
 // Two players (alpha T, bravo CT) over two rounds, with money, armour, kit,

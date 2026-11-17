@@ -114,6 +114,9 @@ async function upload(teamId, userId, req, { title, file_name: fileName, capture
   let size = 0;
   let head = Buffer.alloc(0);
   const out = fs.createWriteStream(file, { flags: 'wx' });
+  // 'finish' fires before the file handle is released. Removing a file that is
+  // still open only marks it pending-delete on Windows, so wait for 'close'.
+  const closed = new Promise((resolve) => out.once('close', resolve));
   try {
     await new Promise((resolve, reject) => {
       const fail = (err) => { req.unpipe(out); out.destroy(); reject(err); };
@@ -138,8 +141,10 @@ async function upload(teamId, userId, req, { title, file_name: fileName, capture
       out.on('finish', resolve);
       req.pipe(out);
     });
+    await closed;
     if (size < 8) throw badRequest('The file is empty or too small to be a demo', 'not_a_demo');
   } catch (err) {
+    await closed;
     await fsp.rm(file, { force: true });
     throw err;
   }

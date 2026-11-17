@@ -20,7 +20,7 @@
     "db:demo": "node scripts/seed-demo.js",
     "db:sample-calendar": "node scripts/seed-practice-calendar.js",
     "demos:reprocess": "node scripts/reprocess-demos.js",
-    "cs2:assets": "tools/cs2-asset-extraction/work/venv/bin/python tools/cs2-asset-extraction/build_assets.py",
+    "cs2:assets": "node scripts/cs2-assets.js",
     "migrate:make": "knex migrate:make",
     "migrate:latest": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
@@ -31,7 +31,8 @@
     "dev:client": "npm run dev --workspace client",
     "build": "npm run build --workspace client",
     "start": "node listen.js",
-    "test": "NODE_ENV=test node scripts/db-create.js --test && NODE_ENV=test mocha",
+    "serve": "npm run build && node scripts/serve.js",
+    "test": "node scripts/db-create.js --test && mocha",
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspace client",
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
@@ -80,5 +81,8 @@
       "@laihoe/demoparser2-linux-arm-gnueabihf": "0.42.2",
       "@laihoe/demoparser2-linux-x64-musl": "0.42.2"
     }
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
   }
 }

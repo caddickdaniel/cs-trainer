@@ -15,6 +15,9 @@ const U = require('../domain/utility');
 const { ensureSharedTactics, sharedTacticSnapshots } = require('../db/lib/sharedTactics');
 
 const DEMO_BYTES = Buffer.concat([Buffer.from('PBDEMS2\0', 'latin1'), Buffer.alloc(64, 1)]);
+// Windows has no bzip2 on PATH; Git for Windows ships one.
+const GIT_BZIP2 = 'C:\\Program Files\\Git\\usr\\bin\\bzip2.exe';
+const BZIP2 = process.platform === 'win32' && fs.existsSync(GIT_BZIP2) ? `"${GIT_BZIP2}"` : 'bzip2';
 
 function syntheticDemo() {
   const events = [
@@ -303,7 +306,7 @@ describe('phase 5', () => {
       expect((await owner.post(`/api/teams/${teamId}/demos/share-code`).send({ share_code: code }).expect(503)).body.code).to.equal('replay_provider_missing');
       expect((await owner.post(`/api/teams/${teamId}/demos/share-code`).send({ share_code: 'nope' }).expect(400)).body.code).to.equal('invalid_share_code');
 
-      const replay = await listen((req, res) => res.end(execSync('bzip2 -c', { input: DEMO_BYTES })));
+      const replay = await listen((req, res) => res.end(execSync(`${BZIP2} -c`, { input: DEMO_BYTES })));
       let asked = null;
       config.matchReplayProviderUrl = await listen((req, res) => {
         asked = req.url;

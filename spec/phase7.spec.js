@@ -4,11 +4,13 @@
 // (with type stripping) loads them directly.
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { expect } = require('chai');
 const { RANKS } = require('../domain/catalogue');
 const { buildReplay, groupFlights, REPLAY_VERSION, TRAIL_STEP } = require('../services/demoParse');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 
 describe('phase 7', () => {
   describe('rank requirement display', () => {
