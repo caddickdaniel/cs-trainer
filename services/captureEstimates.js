@@ -3,22 +3,25 @@
 // benchmarks are recorded; the UI then says no estimate is available.
 const BENCH = {
   measured: true,
-  // Seconds, measured live on 16 Nov 2026 (RTX 4090) with the capture
-  // profile: CS2 muted (-nosound, -novid) in a 1280x720 window with low
-  // settings, clips recorded at 1x (faster recording dropped key frames),
-  // verified seeks. Sources: tools/cs2-capture/bench13.py and website runs.
-  cold_start: 11, // launch → main menu (8.6–11.4 s) → focused (+0–1 s)
-  demo_load: 19, // playdemo → seekable (18.4–19.6 s, 253 MB demo)
-  per_kill: 26.5, // killer + victim clips and stills (26.3–28.1 s; ~35 s in dense smoke)
-  per_utility: 13.5, // clip + lineup (13.0–14.1 s)
-  first_event_extra: 6, // the first event also sets up the view (hide demo bar etc.)
-  close: 4, // restore settings and quit CS2 (3.4–5.0 s)
+  // Seconds, measured live on 17 Nov 2026 (RTX 4090) with the capture
+  // profile (CS2 muted, -novid, 1280x720, low settings), 1x recording,
+  // pasted console commands and the hybrid batch schedule (one recording per
+  // POV for overlapping windows, POV-first seeks, no fixed waits). Sources:
+  // tools/cs2-capture/bench14.py (round 3: 6 kills + 10 throws, 107 s) and
+  // the website (round 17: 6 kills + 5 throws, 100 s of steps, 121 s total).
+  // Per-event figures are fitted to those two rounds (within about 10%).
+  cold_start: 10, // launch → main menu (5.9–10.4 s) → focused
+  demo_load: 6, // playdemo → seekable (4.3–6.0 s, 253 MB demo)
+  per_kill: 11, // killer + victim clips, no stills
+  per_utility: 5.5, // clip + lineup still
+  first_event_extra: 3, // the first event also sets up the view (hide demo bar etc.)
+  close: 3, // restore settings and quit CS2 (2.8 s)
   // Recorded events in spirit-vs-g2-m3-ancient.dem (18 rounds), used for
   // full-match estimates before a demo is parsed. Full-match times are
   // ESTIMATES from the per-event sample, not a measured full-match run.
   typical_kills: 131,
   typical_utility: 391,
-  measured_on: '2026-11-16',
+  measured_on: '2026-11-17',
 };
 
 function forCounts(kills, utility) {

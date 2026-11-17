@@ -35,10 +35,26 @@ const pct = (v: number) => `${Math.round(v * 1000) / 10}%`;
 const metres = (units: number) => `${units.toLocaleString('en-GB')} units (≈${(units * 0.0254).toFixed(1)} m)`;
 const levelName = (l: string) => (l === 'lower' ? 'lower floor' : 'main floor');
 
+// A clip with its own loading and error state (one slot never waits on another).
+function ClipVideo({ url, title, videoRef }: { url: string; title: string; videoRef?: Ref<HTMLVideoElement> }) {
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  return (
+    <>
+      <video ref={videoRef} src={url} controls loop muted playsInline preload="metadata" aria-label={title}
+        onLoadedData={() => setState('ready')} onCanPlay={() => setState('ready')} onError={() => setState('error')} />
+      {state !== 'ready' ? (
+        <div className="clip-state" role="status">{state === 'loading' ? <><span className="inspector-spinner" aria-hidden="true" /> Loading clip…</> : 'This clip could not be loaded.'}</div>
+      ) : null}
+    </>
+  );
+}
+
 // One media slot: the captured image or clip when it exists, otherwise why not.
-function MediaFrame({ title, note, media, capture, status, zoom, crosshair, videoRef, overlay, children }: {
+function MediaFrame({ title, note, media, capture, status, zoom, crosshair, videoRef, overlay, missing, children }: {
   title: string; note?: string; media: CaptureMedia | null; capture: Capture | null; status: CaptureStatus | null;
-  zoom?: number; crosshair?: boolean; videoRef?: Ref<HTMLVideoElement>; overlay?: ReactNode; children?: ReactNode;
+  zoom?: number; crosshair?: boolean; videoRef?: Ref<HTMLVideoElement>; overlay?: ReactNode;
+  // This slot has no media although the capture finished (e.g. one POV only).
+  missing?: string; children?: ReactNode;
 }) {
   const busy = capture && (capture.status === 'queued' || capture.status === 'running');
   if (media) {
@@ -48,7 +64,7 @@ function MediaFrame({ title, note, media, capture, status, zoom, crosshair, vide
           {media.xray ? <span className="xray-badge" title="Spectator X-ray was on: players are outlined through walls, smoke and flashes, which the player could not see.">X-ray enabled</span> : null}</figcaption>
         <div className="inspector-media__frame captured">
           {media.type === 'video'
-            ? <video ref={videoRef} src={media.url} controls loop muted playsInline preload="auto" aria-label={title} />
+            ? <ClipVideo key={media.url} url={media.url} title={title} videoRef={videoRef} />
             : <img src={media.url} alt={`${title}, captured from CS2 at tick ${media.tick}`} style={zoom && zoom > 1 ? { transform: `scale(${zoom})` } : undefined} />}
           {/* Thin crosshair through the aim point (the frame centre, where CS2
               draws the crosshair); the zoom scales about the same point. */}
@@ -71,7 +87,7 @@ function MediaFrame({ title, note, media, capture, status, zoom, crosshair, vide
   if (capture?.status === 'running') { heading = 'Capturing from CS2…'; detail = 'CS2 is seeking to the moment and recording this view.'; }
   else if (capture?.status === 'queued') { heading = 'Queued for capture'; detail = status?.available ? 'Waiting for the capture worker.' : (status?.reason ?? ''); }
   else if (capture?.status === 'failed') { heading = 'Capture failed'; detail = capture.error ?? 'Unknown error.'; }
-  else if (capture?.status === 'ready') { heading = 'Not captured'; detail = 'There was no view to capture for this player.'; }
+  else if (capture?.status === 'ready') { heading = 'Not captured'; detail = missing ?? 'There was no view to capture for this player.'; }
   else if (status?.enabled) { heading = 'Not captured yet'; }
   return (
     <figure className="inspector-media">
@@ -211,7 +227,6 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
   };
   const busy = capture?.status === 'queued' || capture?.status === 'running';
   const [confirm, setConfirm] = useState(false);
-  const [pov, setPov] = useState<'killer' | 'victim'>('killer');
 
   // Asks the server to capture the selected event (validated there); the
   // result appears through the polled status.
@@ -326,25 +341,16 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
           </p>
           <p className="muted small">Round {roundNumber} · {at(event.tick)} · tick {event.tick}{flags.length ? ` · ${flags.join(', ')}` : ''}</p>
           {nav}
-          <div className="row tight pov-switch" role="group" aria-label="Whose view">
-            {(['killer', 'victim'] as const).map((r) => (
-              <button key={r} type="button" className={`btn small${pov === r ? ' primary' : ' ghost'}`} aria-pressed={pov === r} onClick={() => setPov(r)}>
-                {r === 'killer' ? `Killer · ${killerName}` : `Victim · ${name(event.victim)}`}</button>
-            ))}
+          {/* Phase 14: both views stacked, killer above victim; each shows its
+              own state, so a missing POV never hides the other. */}
+          <div className="pov-stack">
+            <MediaFrame title={`Killer POV — ${killerName}`} note="1 s either side of the kill"
+              media={mediaFor('killer_clip') ?? mediaFor('killer_still', 'killer')} capture={capture} status={status}
+              missing={capture?.status === 'ready' && !mediaFor('killer_clip', 'killer_still', 'killer') ? (event.attacker == null || event.attacker === event.victim ? 'No killer view: this kill has no player killer.' : 'The killer\'s view could not be captured.') : undefined}>{captureButton}</MediaFrame>
+            <MediaFrame title={`Victim POV — ${name(event.victim)}`} note="1 s either side of the death (after it, CS2 shows its death camera)"
+              media={mediaFor('victim_clip') ?? mediaFor('victim_still', 'victim')} capture={capture} status={status}
+              missing={capture?.status === 'ready' && !mediaFor('victim_clip', 'victim_still', 'victim') ? 'The victim\'s view could not be captured.' : undefined}>{captureButton}</MediaFrame>
           </div>
-          {pov === 'killer' ? (
-            <>
-              <MediaFrame title={`Killer POV — ${killerName}`} note="2 s centred on the kill" media={mediaFor('killer_clip')} capture={capture} status={status}>{captureButton}</MediaFrame>
-              <MediaFrame title="Killer still" note={`kill tick ${event.tick}`} media={mediaFor('killer_still', 'killer')} capture={capture} status={status}>{captureButton}</MediaFrame>
-            </>
-          ) : (
-            <>
-              <MediaFrame title={`Victim POV — ${name(event.victim)}`} note="2 s centred on the death (after it, CS2 shows its death camera)" media={mediaFor('victim_clip')} capture={capture} status={status}>{captureButton}</MediaFrame>
-              <MediaFrame title="Victim still"
-                note={k.victimTick != null ? `last recorded alive tick ${k.victimTick} (${Math.round(((event.tick - k.victimTick) / tickrate) * 1000)} ms before death), not the death frame` : 'no alive sample before death'}
-                media={mediaFor('victim_still', 'victim')} capture={capture} status={status}>{captureButton}</MediaFrame>
-            </>
-          )}
           {capture?.media.length && captureButton ? <div className="row tight">{captureButton}</div> : null}
           {confirmDialog}
           {requestError ? <p className="error-text small">{requestError}</p> : null}
@@ -366,8 +372,8 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
             ) : '—'}</dd>
           </dl>
           <div className="row wrap tight inspector-exports">
-            {download(mediaFor(`${pov}_clip`), `Export ${pov} clip (WebM)`, 'webm')}
-            {download(mediaFor(`${pov}_still`, pov), `Export ${pov} still`, 'jpg')}
+            {download(mediaFor('killer_clip'), 'Export killer clip (WebM)', 'webm')}
+            {download(mediaFor('victim_clip'), 'Export victim clip (WebM)', 'webm')}
           </div>
         </div>
       </section>

@@ -105,6 +105,27 @@ def apply_profile(text, values):
     return text
 
 
+def steam_logged_on(timeout=60):
+    """Waits until the Steam client reports a log-on (CS2 started while
+    Steam is still logging in stalls on an error dialog). True if logged on."""
+    log = os.path.join(STEAM, 'logs', 'connection_log.txt')
+    end = time.time() + timeout
+    while True:
+        try:
+            with open(log, 'rb') as f:
+                f.seek(max(0, os.path.getsize(log) - 20000))
+                tail = f.read().decode('utf-8', 'replace')
+            on = tail.rfind('[Logged On')
+            off = max(tail.rfind('[Logged Off'), tail.rfind('[Logging On'), tail.rfind('[Connecting'))
+            if on != -1 and on > off:
+                return True
+        except OSError:
+            return True  # no log to check: don't block the launch
+        if time.time() > end:
+            return False
+        time.sleep(1)
+
+
 class Instance:
     """One CS2 process for a capture session (launched by us, or reused)."""
 
@@ -137,6 +158,8 @@ class Instance:
         if not rt:
             raise RuntimeError('cs2_missing|The Steam Linux Runtime (sniper) is missing; start CS2 from Steam once.')
         self.root = root
+        if not steam_logged_on(90):
+            raise RuntimeError('steam|Steam is not logged in yet, so CS2 can\'t start. Open Steam and try again.')
         before = set(cs2_pids())
         if before:
             raise RuntimeError('cs2_running|CS2 is already running without -condebug, so capture can\'t confirm its steps. Close CS2 and try again.')
@@ -228,6 +251,15 @@ class Instance:
             except OSError:
                 pass
         self.backups = []
+        # Clipboard text a crashed session didn't give back (ukeys.Console).
+        clip = os.path.join(self.state_dir, 'clipboard.txt') if self.state_dir else None
+        if clip and os.path.exists(clip):
+            try:
+                import xclip
+                xclip.restore_detached(open(clip, encoding='utf-8').read())
+                os.remove(clip)
+            except Exception:  # noqa: BLE001 - best effort
+                pass
         if self.log_existed is False and self.log_path and os.path.exists(self.log_path):
             try:
                 os.remove(self.log_path)

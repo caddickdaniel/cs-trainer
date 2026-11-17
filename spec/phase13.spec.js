@@ -153,14 +153,13 @@ describe('phase 13', () => {
         open: () => ({
           async call(req) {
             calls.push(req);
-            if (req.op === 'open') return { ok: true, timings: {} };
-            if (req.op === 'load') return { ok: true, timings: {} };
-            const povs = Object.fromEntries(Object.entries(req.povs).map(([role, p]) => {
-              fs.writeFileSync(p.clip_file, 'fixture');
-              if (p.still_file) fs.writeFileSync(p.still_file, 'fixture');
-              return [role, { clip: { file: p.clip_file, player: p.player }, ...(p.still_file ? { still: { file: p.still_file, tick: p.still_tick, player: p.player } } : {}) }];
-            }));
-            return { ok: true, povs, timings: {} };
+            if (req.op === 'open' || req.op === 'load') return { ok: true, timings: {} };
+            if (req.op === 'segment') {
+              const outputs = req.outputs.map((o) => { fs.writeFileSync(o.file, 'fixture'); return { file: o.file, start: o.start, end: o.end, player: req.player }; });
+              return { ok: true, outputs, encoded: outputs.map((o) => o.file), timings: {} };
+            }
+            if (req.op === 'flush') return { ok: true, encoded: [], timings: {} };
+            return { ok: false, code: 'bad_job', error: 'unexpected' };
           },
           async close() { return { closed: true }; },
         }),
@@ -169,12 +168,11 @@ describe('phase 13', () => {
       const d = await uploadParsed(owner, teamId, 'kill');
       await owner.post(`/api/demos/${d.demo_id}/captures/batch`).send({ selection: 'kill', player: alphas[1], pending: true }).expect(202);
       await captures._test.runOnce();
-      const kill = calls.find((c) => c.op === 'kill');
-      expect(Object.keys(kill.povs).sort()).to.deep.equal(['killer', 'victim']);
-      expect(kill.povs.victim.player).to.equal('bravo');
+      const segs = calls.filter((c) => c.op === 'segment');
+      expect(segs.map((c) => c.player).sort()).to.deep.equal(['alpha', 'bravo']);
       const row = await connection('demo_captures').where({ demo_id: d.demo_id, kind: 'kill' }).first();
       expect(row.status).to.equal('ready');
-      expect(row.media.map((m) => m.role)).to.deep.equal(['killer_clip', 'killer_still', 'victim_clip', 'victim_still']);
+      expect(row.media.map((m) => m.role)).to.deep.equal(['killer_clip', 'victim_clip']);
     });
   });
 });

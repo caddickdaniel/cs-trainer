@@ -46,6 +46,9 @@ function utilityFor(plan, key, phaseIndex) {
     buy: p.buy, kit: p.kit, bomb: p.bomb,
     available: at.start,
     planned: at.used,
+    dropped: at.dropped || {},
+    picked: at.picked || {},
+    cost: p.cost ?? 0,
     over: p.over.filter((o) => o.phase === phaseIndex),
   };
 }

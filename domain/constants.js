@@ -63,6 +63,8 @@ exports.LIMITS = {
   pictureMaxSide: 4096,
   playerInviteDays: 7,
   holds: 20,
+  // Drop and pickup actions per phase (Phase 14).
+  actions: 30,
   noteChars: 200,
   // Shared tactics use Player 1-5 slots.
   slots: 5,

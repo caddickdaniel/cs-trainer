@@ -1098,6 +1098,109 @@ Lower settings and 720p saved only output size, not wall-clock time: seeking (CP
   - Capturing these would need another way to confirm the POV.
 - Recorded input may also be missing from such demos; the overlay then shows "Input not recorded".
 
+## Phase 14: faster capture, stacked kill videos, buy costs, drops and Play Phase
+
+### Tactics
+- **Player browser (Tactic view):** any team member can click through the roster to read each player's role, their instruction for the current phase, and this phase's throws, drops and pickups. The selection stays when the phase changes. A player with nothing this phase shows "No instructions for … in …". Browsing gives no edit or Game Mode control.
+- **Buy-list prices and total cost:**
+  - Prices: Flash $200 (max 2), Smoke $300, HE $300, Molotov $400 (T) / Incendiary $500 (CT), Decoy $50, Defuse kit $400 (CT only); one each except flashes.
+  - Each player's cost comes from their starting buy list, and the buy list shows a **Total cost**. The utility summary has a Cost column with a breakdown tooltip.
+  - Decoys are new in loadouts; older tactics load with 0. The server validates limits and the 4-grenade cap on save.
+- **Drop and Pickup actions:**
+  - **Drop:** a player drops an item at a point placed on the radar. It leaves their inventory and shows as "on ground" in later phases.
+  - **Pickup:** links to one specific drop and adds the item to the receiver.
+  - **Rules (client and server, `domain/utility.js` mirrored by `client/src/lib/utility.ts`):** a pickup can't come before its drop (same phase: later in that player's order), and a drop can't be picked up twice. Plans that use an item a player doesn't have, or go over the buy limits, are flagged.
+  - **Inventory:** derived deterministically, phase by phase in step order.
+  - **Share and import:** actions are kept through share/import, mapped to Player 1–5 slots.
+- **Per-player throw order:** the Utility order panel sets each player's sequence of throws, drops and pickups (stored as `seq`).
+- **Play Phase:** animates the current phase on the board.
+  - **Movement:** players move along their routes from their saved positions at CS2 running pace (230 u/s), scaled to each map's radar. Players without a route stay put.
+  - **Utility:** each player throws in their set order, 0.5 s apart; players run independently. Drops and pickups update the inventory chips; a pickup waits for its drop.
+  - **Preview only:** the board can't be edited while playing, and Stop / Replay / changing phase resets it. Nothing is saved.
+- Local trial data: `node scripts/seed-phase14-demo.js` creates a lead, an ordinary member and a T and a CT tactic (development only).
+
+### Capture
+- **Kill events:** the inspector shows **Killer POV above Victim POV** as two stacked videos, each with its own loading / unavailable state. There are no POV tabs and no kill stills; older captures still show their stills. Utility keeps its lineup still and replay clip.
+- **Planned from demo ticks before launch (`services/capturePlan.js`):**
+  - Every output is a window 1 s either side of the event (tick rate from the demo), clamped to the round.
+  - Kill: killer and victim clips; X-ray on for flash-affected and through-smoke kills.
+  - Utility: a replay clip around the release, plus a lineup still on the tick before release.
+  - Clips stay 720p / 30 fps at 1×.
+- **Schedules (`CAPTURE_SCHEDULE`, default `hybrid`):**
+  - **chronological:** tick order.
+  - **player:** each player's windows together.
+  - **hybrid:** per round and POV, windows that overlap and share settings (X-ray) are recorded once and cut into each clip's own window.
+  - Lineup stills go just before their throw's segment.
+- **One demo load per batch.** Up to 3 clips encode in the background while recording continues (bounded queue).
+- **Console input:**
+  - Commands are pasted in full and submitted with one Enter (`tools/cs2-capture/xclip.py` serves the X11 clipboard).
+  - Your clipboard text is saved first and put back afterwards. It is also saved to disk so a crashed run can restore it. Only text can be restored.
+  - Esc, the console key and Enter stay single keypresses.
+  - Each command is checked through CS2's log. A paste that shows no effect is retried typed and counted as a paste failure.
+  - Focus is checked before input.
+- **Startup:**
+  - CS2 starts with `-novid`; Esc dismisses an intro if one appears (none did).
+  - The launcher waits for Steam to be logged in, and retries the launch once if the main menu never appears.
+  - The demo load waits for CS2's readiness lines instead of a fixed 6 s.
+- **Seeking:**
+  - **POV first:** the view switches before the seek, because a switch resumes playback; the seek then pauses exactly. If the player can't be watched where the demo is (dead there), the tool seeks first, switches, and seeks again.
+  - **Forward seeks:** one forward command when the paused position is exact and ≤ 400 ticks ahead; otherwise a backward seek or overshoot-and-back.
+  - **Stalled seeks:** a seek CS2 ignores (already on that tick) falls back to overshoot-and-back.
+  - **Resync detection:** CS2 sometimes skips to the previous tick and resumes ~1 s after a pause. The tool detects these lines after a seek and seeks again. The stillness check uses frames 0.3 s apart.
+
+### Live results (17 Nov 2026, RTX 4090, `spirit-vs-g2-m3-ancient.dem`)
+**Startup and input:**
+
+| | Phase 13 | Phase 14 |
+|---|---|---|
+| Launch → main menu | 8.6–11.4 s | 5.9–10.4 s (no intro seen; `-novid` confirmed) |
+| Demo load | 18.4–19.6 s | 4.3–6.0 s |
+| Close | 3.4–5.0 s | 2.8 s |
+| Console submission, 181 commands | 72.8 s typed | 13.7–14.7 s pasted (≈0.08 s each) |
+
+**Seeking** (still at a fixed tick compared with the overshoot reference):
+- Forward 64 / 200 / 400 ticks took 0.18–0.28 s; overshoot-and-back took 1.35–1.46 s.
+- The stills matched the reference (mean pixel difference 2.3–2.5, from the HUD weapon highlight).
+- **Gaps:** through a 600-tick gap, fast-forward at 8× plus the exact seek took 2.1 s; seeking alone took 0.58–0.62 s. Seeking is kept.
+
+**Round 3 schedules** (6 kills + 10 throws = 22 clips + 10 lineup stills; start, load and close excluded):
+
+| Schedule | Wall-clock | POV switches | Outputs | Failures |
+|---|---|---|---|---|
+| Phase 13 baseline (clips + kill stills) | 284.6 s | | 16 events | 0 |
+| chronological, typed | 208.2 s | 20 | 18 / 22 | 4 (POV first on dead players; fixed below) |
+| chronological | 148.3 s | 25 | 22 / 22 | 0 |
+| player | 126.4 s | 13 | 22 / 22 | 0 |
+| hybrid, 1.6 s wait after each POV switch | 145.9 s | 22 | 21 / 22 | 1 (ignored seek; fallback added) |
+| **hybrid** | **107.3 s** | 24 | 22 / 22 | 0 |
+
+- **Clip checks:** all decoded at 60/60 frames, worst lag 1.1 ticks, about 1 MB per clip.
+- **Kill moment:** each victim clip switches to the death camera at the middle frame.
+- **Lineups:** each lineup still is the thrower's view on the tick before release.
+- **No resync wait:** the post-switch wait never caught a resync and cost about 1.2 s per switch, so it is off (`RESYNC_WAIT_S = 0`). Detection stays on.
+- **Hybrid result:** **2.65× faster** than Phase 13 for the same round.
+
+**Website, Capture this round** (round 17, Kills & Utility, hybrid):
+- **Phase 14:** 11 of 11 ready in **121 s total**:
+  - CS2 start 10.4 s;
+  - load 4.3 s;
+  - steps 100.4 s;
+  - close 2.8 s;
+  - 1 seek fallback used.
+- **Phase 13:** 271 s for the same round.
+- **Inspector:** both kill videos loaded at 1280×720 / 2.0 s, stacked; utility showed its 1280×720 lineup still and replay.
+
+**Full-match estimate** (ESTIMATE, not a measured full-match run; per-event figures fitted to rounds 3 and 17, for 131 kills and 391 throws):
+- Kills & Utility: about 1.0 h (was 2.4 h);
+- Kills only: about 24 min (was 59 min);
+- Utility only: about 36 min (was 1.5 h).
+
+### Still needed / not verified
+- Lineup stills are still a separate exact-tick still within the same pass. A 30 fps recording samples every ~2 ticks while playing, so the frame on the tick before release can't be identified reliably from it; pulling stills from the recording was not adopted.
+- Spectating needs CS2's TrueView log lines (see Phase 13 limitations). A player CS2 can't spectate at the current position is handled by seeking first.
+- Clipboard restore covers text only; images or files on the clipboard are lost during a capture.
+- Share/import with drops and pickups is covered by API tests, not checked by hand in the browser.
+
 ## Contact
 
 Daniel Caddick, caddickdaniel93@gmail.com

@@ -201,6 +201,11 @@ interface Props {
   fitReserve?: number;
   // The tactic's side: fire markers show a molotov (T) or an incendiary (CT).
   side?: string | null;
+  // Items dropped in earlier phases and still on the ground (Phase 14).
+  ground?: { id: string; kind: string; x: number; y: number; level: string }[];
+  // While set, a click on the board places something (e.g. a drop) here
+  // instead of using the current tool.
+  onPlace?: (p: Point) => void;
 }
 
 type Drag =
@@ -221,6 +226,7 @@ export function throwPath(board: Board, m: Marker, level: Level) {
 export function MapBoard({
   board, map, level = 'main', onMarkerActivate, players, onChange, tool = 'select', selectedId = null, onSelect,
   activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay, bomb = null, fitReserve = 16, side = null,
+  ground = [], onPlace,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const frameRef = useFitToViewport<HTMLDivElement>(fitReserve);
@@ -254,6 +260,11 @@ export function MapBoard({
   const update = (next: Partial<Board>) => onChange?.({ ...board, holds, ...next });
 
   const handleBackgroundDown = (e: PointerEvent<SVGSVGElement>) => {
+    if (onPlace && e.button === 0) {
+      const at = toPoint(e);
+      if (at) onPlace(at);
+      return;
+    }
     if (!editable || e.button !== 0) return;
     const p = toPoint(e);
     if (!p) return;
@@ -590,6 +601,37 @@ export function MapBoard({
         {markers.filter((m) => areaKinds.includes(m.kind)).map(renderMarker)}
         {markers.filter((m) => !areaKinds.includes(m.kind) && m.kind !== 'player').map(renderMarker)}
         {markers.filter((m) => m.kind === 'player').map(renderMarker)}
+        {/* Drops and pickups (Phase 14), and earlier drops still on the ground. */}
+        <g data-layer="utility-actions" pointerEvents="none">
+          {ground.filter((g) => (g.level ?? 'main') === level).map((g) => (
+            <g key={`ground-${g.id}`} transform={`translate(${g.x * SIZE},${g.y * SIZE})`} opacity="0.7" data-ground-item={g.id}>
+              <rect x="-17" y="-17" width="34" height="34" rx="5" fill="none" stroke="#bbb" strokeWidth="2" strokeDasharray="4 3" />
+              <UtilityGlyph kind={g.kind} color="#bbb" r={12} side={side} />
+              <text y="31" textAnchor="middle" fontSize="13" fill="#ddd" stroke="#000" strokeWidth="3" paintOrder="stroke">on ground</text>
+            </g>
+          ))}
+          {(board.actions ?? []).filter((a) => (a.level ?? 'main') === level).map((a) => {
+            const color = colorOf(a);
+            const kind = a.type === 'drop' ? a.kind : (board.actions ?? []).find((d) => d.id === a.drop_id)?.kind
+              ?? ground.find((g) => g.id === a.drop_id)?.kind;
+            return (
+              <g key={a.id} transform={`translate(${a.x * SIZE},${a.y * SIZE})`} data-action={a.type} data-action-id={a.id}>
+                {a.type === 'drop' ? (
+                  <>
+                    <rect x="-17" y="-17" width="34" height="34" rx="5" fill="none" stroke={color} strokeWidth="3" strokeDasharray="5 3" />
+                    {kind ? <UtilityGlyph kind={kind} color={color} r={12} side={side} /> : null}
+                    <text y="32" textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{initials(a)} drop</text>
+                  </>
+                ) : (
+                  <>
+                    <circle r="23" fill="none" stroke={color} strokeWidth="3" strokeDasharray="2 4" />
+                    <text y="-27" textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{initials(a)} picks up</text>
+                  </>
+                )}
+              </g>
+            );
+          })}
+        </g>
         {overlay}
       </svg>
     </div>

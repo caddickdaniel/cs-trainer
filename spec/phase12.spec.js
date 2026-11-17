@@ -53,20 +53,15 @@ function fakeTool({ fail = {}, open = { ok: true, pid: 4242, launched: true, foc
         if (fail[req.op]) return { ok: false, ...fail[req.op] };
         if (req.op === 'load') return { ok: true, loaded: true, timings: { demo_load: 2 } };
         if (req.op === 'watch') return { ok: true, demo: req.demo, tick: req.tick, timings: { seek: 1 } };
-        if (req.op === 'kill') {
-          const povs = {};
-          for (const [role, p] of Object.entries(req.povs)) {
-            povs[role] = {
-              clip: { file: write(p.clip_file), start: req.start, end: req.end, player: p.player, fps: 30, xray: req.xray },
-              ...(p.still_file ? { still: { file: write(p.still_file), tick: p.still_tick, player: p.player, xray: req.xray } } : {}),
-            };
-          }
-          return { ok: true, povs, timings: { seek: 1, record: 4 } };
+        // Phase 14 protocol: recording segments cut into clips, lineup stills, flush.
+        const kindOf = (r) => (r.op === 'lineup' || (r.outputs || []).some((o) => o.file.endsWith('replay.webm')) ? 'utility' : 'kill');
+        if ((req.op === 'segment' || req.op === 'lineup') && fail[kindOf(req)]) return { ok: false, ...fail[kindOf(req)] };
+        if (req.op === 'segment') {
+          const outputs = req.outputs.map((o) => ({ file: write(o.file), start: o.start, end: o.end, player: req.player, fps: 30, xray: req.xray, width: 1280, height: 720 }));
+          return { ok: true, outputs, encoded: outputs.map((o) => o.file), encode_failed: [], timings: { record: 4, wall: 5 } };
         }
-        if (req.op === 'utility') {
-          return { ok: true, clip: { file: write(req.clip_file), start: req.start, end: req.end, player: req.player, fps: 30 },
-            ...(req.lineup_file ? { lineup: { file: write(req.lineup_file), tick: req.lineup_tick, player: req.player } } : {}), timings: { record: 4 } };
-        }
+        if (req.op === 'lineup') return { ok: true, still: { file: write(req.file), tick: req.tick, player: req.player, width: 1280, height: 720 }, encoded: [], timings: { wall: 2 } };
+        if (req.op === 'flush') return { ok: true, encoded: [], encode_failed: [], timings: {} };
         return { ok: false, code: 'bad_job', error: 'unknown' };
       },
       async close() { closed += 1; return { closed: true, timings: { close: 1 } }; },
@@ -163,7 +158,8 @@ describe('phase 12', () => {
       captures._test.setDriver(tool);
       const { owner, d, s } = await batch();
       expect(await captures._test.runOnce()).to.equal(true);
-      expect(tool.calls.map((c) => c.op)).to.deep.equal(['open', 'load', 'utility', 'kill']);
+      // Hybrid schedule: the lineup, then the smoke clip, then killer and victim views.
+      expect(tool.calls.map((c) => c.op)).to.deep.equal(['open', 'load', 'lineup', 'segment', 'segment', 'segment', 'flush']);
       expect(tool.closed()).to.equal(1);
       expect(tool.calls[1].demo).to.equal(path.join(config.demoStorageDir, d.storage_key));
       const done = await connection('capture_sessions').where('session_id', s.session_id).first();
@@ -173,12 +169,12 @@ describe('phase 12', () => {
       const list = (await owner.get(`/api/demos/${d.demo_id}/captures`).expect(200)).body;
       const k = list.captures.find((c) => c.kind === 'kill');
       expect(k.status).to.equal('ready');
-      expect(k.media.map((m) => [m.role, m.type])).to.deep.equal([['killer_clip', 'video'], ['killer_still', 'image'], ['victim_clip', 'video'], ['victim_still', 'image']]);
+      // Phase 14: killer and victim clips only (no point-of-kill stills).
+      expect(k.media.map((m) => [m.role, m.type])).to.deep.equal([['killer_clip', 'video'], ['victim_clip', 'video']]);
       // Through-smoke kill: X-ray on, and the media says so.
       expect(k.media.every((m) => m.xray === true)).to.equal(true);
-      // Killer still at the kill tick, victim still at the last alive sample.
-      expect(k.media.find((m) => m.role === 'killer_still').tick).to.equal(500);
-      expect(k.media.find((m) => m.role === 'victim_still').tick).to.equal(496);
+      // One second either side of the kill.
+      expect(k.media.map((m) => [m.start, m.end])).to.deep.equal([[436, 564], [436, 564]]);
       await owner.get(k.media[0].url).expect(200);
       const u = list.captures.find((c) => c.kind === 'utility');
       const clip = u.media.find((m) => m.role === 'replay');
@@ -204,7 +200,7 @@ describe('phase 12', () => {
       captures._test.setDriver(tool);
       const { s } = await batch();
       await captures._test.runOnce();
-      expect(tool.calls.map((c) => c.op)).to.deep.equal(['open', 'load', 'utility']);
+      expect(tool.calls.map((c) => c.op)).to.deep.equal(['open', 'load', 'lineup']);
       const done = await connection('capture_sessions').where('session_id', s.session_id).first();
       expect(done).to.include({ status: 'failed', error_code: 'cs2_closed', completed: 0, failed: 2 });
       const rows = await connection('demo_captures').where('session_id', s.session_id);
@@ -272,31 +268,30 @@ describe('phase 12', () => {
     });
   });
 
-  describe('job building', () => {
-    const meta = { players: replay.meta.players };
-    const d = { tickrate: 64, meta };
+  describe('capture planning', () => {
+    const plan = require('../services/capturePlan');
+    const d = { tickrate: 64, meta: { players: replay.meta.players } };
+    const items = (r = round) => [
+      { capture_id: 1, kind: 'kill', round_number: 1, round: r, ev: r.events[kill], dir: '/k' },
+      { capture_id: 2, kind: 'utility', round_number: 1, round: r, ev: r.events[smoke], dir: '/u' },
+    ];
 
-    it('centres kill clips on the kill, clamped to the round, with the right stills', () => {
-      const ev = round.events[kill];
-      const job = captures.buildJob(d, round, ev, 'kill', '/x');
-      expect(job).to.include({ op: 'kill', start: 436, end: 564, xray: true });
-      expect(job.povs.killer).to.include({ player: 'alpha', still_tick: 500 });
-      expect(job.povs.victim).to.include({ player: 'bravo', still_tick: 496 });
-      // Near the round start the clip is clamped, not shifted.
-      const early = captures.buildJob(d, { ...round, start_tick: 480 }, ev, 'kill', '/x');
-      expect(early).to.include({ start: 480, end: 564 });
-      const late = captures.buildJob(d, { ...round, end_tick: 520 }, ev, 'kill', '/x');
-      expect(late).to.include({ start: 436, end: 520 });
-      // No flash or smoke: no X-ray.
-      expect(captures.buildJob(d, round, { ...ev, through_smoke: false }, 'kill', '/x').xray).to.equal(false);
-      expect(captures.buildJob(d, round, { ...ev, through_smoke: false, attacker_blind: true }, 'kill', '/x').xray).to.equal(true);
+    it('plans killer and victim clips one second either side of the kill, clamped to the round', () => {
+      const p = plan.planWindows(d, items());
+      expect(p.windows.filter((w) => w.capture_id === 1).map((w) => [w.role, w.player, w.start, w.end, w.xray]))
+        .to.deep.equal([['killer_clip', 'alpha', 436, 564, true], ['victim_clip', 'bravo', 436, 564, true]]);
+      expect(plan.planWindows(d, items({ ...round, start_tick: 480 })).windows[0]).to.include({ start: 480, end: 564 });
+      expect(plan.planWindows(d, items({ ...round, end_tick: 520 })).windows[0]).to.include({ start: 436, end: 520 });
+      const noSmoke = [{ ...items()[0], ev: { ...round.events[kill], through_smoke: false } }];
+      expect(plan.planWindows(d, noSmoke).windows[0].xray).to.equal(false);
     });
 
-    it('builds a throw clip around the release and the lineup the tick before', () => {
-      const job = captures.buildJob(d, round, round.events[smoke], 'utility', '/x');
-      expect(job).to.include({ op: 'utility', player: 'alpha', start: 236, end: 364, lineup_tick: 299 });
-      const unlinked = captures.buildJob(d, round, { ...round.events[smoke], throw_tick: null }, 'utility', '/x');
-      expect(unlinked.lineup_file).to.equal(undefined);
+    it('plans the throw clip around the release and a lineup the tick before', () => {
+      const p = plan.planWindows(d, items());
+      expect(p.windows.find((w) => w.capture_id === 2)).to.include({ role: 'replay', player: 'alpha', start: 236, end: 364 });
+      expect(p.lineups).to.deep.equal([{ capture_id: 2, role: 'lineup', player: 'alpha', round: 1, tick: 299, file: '/u/lineup.jpg' }]);
+      const unlinked = plan.planWindows(d, [{ ...items()[1], ev: { ...round.events[smoke], throw_tick: null } }]);
+      expect(unlinked.lineups).to.deep.equal([]);
     });
   });
 });
