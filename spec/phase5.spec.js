@@ -213,7 +213,7 @@ describe('phase 5', () => {
       const [p1, p2] = [owner.user.user_id, member.user.user_id];
       const { tactic } = (await owner.post(`/api/teams/${teamId}/tactics`).send(buyDoc(p1, p2)).expect(201)).body;
       let s = (await owner.post(`/api/teams/${teamId}/game-session`).send({ tactic_id: tactic.tactic_id }).expect(201)).body.session;
-      expect(s.my_utility).to.deep.include({ buy: { smoke: 1, flash: 2, molly: 0, he: 0 }, available: { smoke: 1, flash: 2, molly: 0, he: 0 } });
+      expect(s.my_utility).to.deep.include({ buy: { smoke: 1, flash: 2, molly: 0, he: 0, decoy: 0 }, available: { smoke: 1, flash: 2, molly: 0, he: 0, decoy: 0 } });
       expect(s.my_utility.planned).to.include({ flash: 1, smoke: 0 }); // the reference smoke is not a throw
       expect(s.utility.find((u) => u.user_id === p2)).to.include({ bomb: true });
       expect(s.bomb_carrier).to.deep.equal({ user_id: p2, slot: null });
@@ -243,9 +243,9 @@ describe('phase 5', () => {
       ];
       const [plan] = U.utilityPlan({ loadouts: [{ user_id: 1, he: 1 }], phases, side: 'T' });
       expect(plan.phases.map((p) => p.used.he)).to.deep.equal([1, 1]);
-      expect(plan.over).to.deep.equal([{ phase: 1, kind: 'he', planned: 1, available: 0 }]);
+      expect(plan.over.map(({ phase, kind, planned, available, type }) => ({ phase, kind, planned, available, type }))).to.deep.equal([{ phase: 1, kind: 'he', planned: 1, available: 0, type: 'unavailable' }]);
       expect(U.loadoutsFromThrows([{ board: { markers: [{ id: 'a', kind: 'flash', user_id: 3 }, { id: 'b', kind: 'flash', user_id: 3 }, { id: 'c', kind: 'flash', user_id: 3 }] } }]))
-        .to.deep.equal([{ user_id: 3, slot: null, smoke: 0, flash: 2, molly: 0, he: 0, kit: false }]);
+        .to.deep.equal([{ user_id: 3, slot: null, smoke: 0, flash: 2, molly: 0, he: 0, decoy: 0, kit: false }]);
     });
 
     it('carries buy lists and the bomb through Player 1-5 slots when sharing', async () => {
@@ -254,7 +254,7 @@ describe('phase 5', () => {
       const { tactic } = (await owner.post(`/api/teams/${teamId}/tactics`).send(buyDoc(p1, p2)).expect(201)).body;
       const { tactic: listing } = (await owner.post(`/api/tactics/${tactic.tactic_id}/share`).send({}).expect(200)).body;
       expect(JSON.stringify(listing)).to.not.include(`"user_id":${p1}`);
-      expect(listing.loadouts).to.deep.equal([{ user_id: null, slot: 1, smoke: 1, flash: 2, molly: 0, he: 0, kit: false }]);
+      expect(listing.loadouts).to.deep.equal([{ user_id: null, slot: 1, smoke: 1, flash: 2, molly: 0, he: 0, decoy: 0, kit: false }]);
       expect(listing.bomb_carrier).to.deep.equal({ user_id: null, slot: 2 });
       expect(listing.phases[0].board.markers.find((m) => m.id === 's-ref').reference).to.equal(true);
     });

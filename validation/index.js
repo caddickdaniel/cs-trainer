@@ -249,6 +249,8 @@ const marker = z.object({
   path: z.array(z.object({ x: coord, y: coord })).max(C.LIMITS.bouncePoints).optional(),
   // Lineup screenshots (uploaded via POST /api/teams/:team_id/lineup-images).
   images: z.array(lineupImage).max(C.LIMITS.imagesPerMarker).optional().default([]),
+  // Utility only (Phase 14): position in the thrower's order for this phase.
+  seq: z.number().int().min(0).max(99).optional(),
 }).refine((m) => !m.images.length || C.LINEUP_KINDS.includes(m.kind), {
   message: 'Only utility and note markers can have lineup screenshots',
   path: ['images'],
@@ -281,12 +283,31 @@ const hold = z.object({
   length: z.number().finite().min(0.02).max(0.6),
 });
 
+// Drop and pickup (Phase 14): a player leaves a utility item on the map, or
+// picks up a specific earlier drop (drop_id). Both take a place in the
+// player's order for the phase (seq).
+const action = z.object({
+  id: clientId,
+  type: z.enum(['drop', 'pickup']),
+  user_id: id.nullable().optional().default(null),
+  slot,
+  kind: z.enum(['smoke', 'flash', 'molly', 'he', 'decoy']).optional(),
+  drop_id: clientId.optional(),
+  x: coord,
+  y: coord,
+  level,
+  seq: z.number().int().min(0).max(99).optional(),
+}).refine((a) => a.user_id != null || a.slot != null, 'A drop or pickup needs a player or a player slot')
+  .refine((a) => a.type !== 'drop' || a.kind, { message: 'Choose the item being dropped', path: ['kind'] })
+  .refine((a) => a.type !== 'pickup' || a.drop_id, { message: 'Choose the dropped item to pick up', path: ['drop_id'] });
+
 const board = z.object({
   markers: z.array(marker).max(C.LIMITS.markers).default([]),
   routes: z.array(route).max(C.LIMITS.routes).default([]),
   holds: z.array(hold).max(C.LIMITS.holds).default([]),
+  actions: z.array(action).max(C.LIMITS.actions).default([]),
 }).superRefine((b, ctx) => {
-  const ids = [...b.markers, ...b.routes, ...b.holds].map((x) => x.id);
+  const ids = [...b.markers, ...b.routes, ...b.holds, ...b.actions].map((x) => x.id);
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Board item ids must be unique' });
   const players = new Set(b.markers.filter((m) => m.kind === 'player').map((m) => m.id));
   b.holds.forEach((h, i) => {
@@ -328,9 +349,11 @@ const loadout = z.object({
   flash: z.number().int().min(0).max(U.BUY_LIMITS.flash).default(0),
   molly: z.number().int().min(0).max(U.BUY_LIMITS.molly).default(0),
   he: z.number().int().min(0).max(U.BUY_LIMITS.he).default(0),
+  // Phase 14; older buy lists have none.
+  decoy: z.number().int().min(0).max(U.BUY_LIMITS.decoy).default(0),
   kit: z.boolean().default(false),
 }).refine((l) => l.user_id != null || l.slot != null, 'A buy list needs a player or a player slot')
-  .refine((l) => l.smoke + l.flash + l.molly + l.he <= U.MAX_GRENADES, `A player can carry at most ${U.MAX_GRENADES} grenades`);
+  .refine((l) => l.smoke + l.flash + l.molly + l.he + l.decoy <= U.MAX_GRENADES, `A player can carry at most ${U.MAX_GRENADES} grenades`);
 const owner = z.object({ user_id: id.nullable().optional().default(null), slot })
   .refine((o) => o.user_id != null || o.slot != null, 'Choose a player or a player slot');
 const playerColor = z.object({ user_id: id.nullable().optional().default(null), slot, color: z.enum(C.PLAYER_COLOR_IDS) })
@@ -365,9 +388,14 @@ const tacticDocumentBase = z.object({
 const checkLevels = (doc, ctx) => {
   if (doc.side !== 'T' && doc.bomb_carrier) ctx.addIssue({ code: 'custom', path: ['bomb_carrier'], message: 'Only T tactics have a bomb carrier' });
   if (doc.side !== 'CT') doc.loadouts.forEach((l, i) => { if (l.kit) ctx.addIssue({ code: 'custom', path: ['loadouts', i, 'kit'], message: 'Defuse kits are CT only' }); });
+  // Drops and pickups across phases: a pickup takes an existing earlier drop,
+  // after it, and each drop once.
+  for (const e of U.actionErrors(doc.phases)) {
+    ctx.addIssue({ code: 'custom', path: ['phases', e.phase, 'board', 'actions', e.id], message: e.message });
+  }
   const allowed = C.mapLevels(doc.map);
   doc.phases.forEach((p, pi) => {
-    [...p.board.markers, ...p.board.routes].forEach((item) => {
+    [...p.board.markers, ...p.board.routes, ...p.board.actions].forEach((item) => {
       if (!allowed.includes(item.level)) {
         ctx.addIssue({
           code: 'custom',

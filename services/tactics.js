@@ -61,6 +61,8 @@ function normaliseBoard(board) {
     markers: (b.markers || []).map((m) => ({ slot: null, ...m })),
     routes: (b.routes || []).map((r) => ({ slot: null, ...r })),
     holds: b.holds || [],
+    // Drop and pickup actions (Phase 14); older boards have none.
+    actions: (b.actions || []).map((a) => ({ slot: null, ...a })),
   };
 }
 
@@ -98,6 +100,7 @@ async function assertAssigneesAreMembers(trx, teamId, doc) {
     phase.board.routes.forEach((r) => r.user_id != null && ids.add(r.user_id));
   }
   (doc.loadouts || []).forEach((l) => l.user_id != null && ids.add(l.user_id));
+  for (const phase of doc.phases) (phase.board.actions || []).forEach((x) => x.user_id != null && ids.add(x.user_id));
   if (doc.bomb_carrier && doc.bomb_carrier.user_id != null) ids.add(doc.bomb_carrier.user_id);
   (doc.player_colors || []).forEach((c) => c.user_id != null && ids.add(c.user_id));
   if (!ids.size) return;

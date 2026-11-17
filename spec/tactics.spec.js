@@ -28,6 +28,7 @@ describe('tactic documents', () => {
       markers: b.markers.map((m) => ({ ...m, slot: null })),
       routes: b.routes.map((r) => ({ ...r, slot: null })),
       holds: [],
+      actions: [],
     });
     expect(reopened.tactic.phases[0].board).to.deep.equal(withDefaults(doc.phases[0].board));
     expect(reopened.tactic.phases[0].board.markers[1]).to.include({ x: 0.123456, y: 0.654321 });

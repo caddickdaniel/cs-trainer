@@ -26,12 +26,21 @@ export interface Marker {
   // Utility only: intermediate bounce points from the thrower to this marker
   // (drawn by hand; not a simulated trajectory). Absent = straight line.
   path?: Point[];
+  // Utility only: position in the thrower's order for the phase (Phase 14).
+  seq?: number;
   images?: (LineupImage & { url?: string })[];
 }
 export interface Route { id: string; level?: Level; user_id: number | null; slot?: number | null; color: string; points: Point[] }
 // Angle a player covers, anchored to their player marker.
 export interface Hold { id: string; marker_id: string; angle: number; spread: number; length: number }
-export interface Board { markers: Marker[]; routes: Route[]; holds?: Hold[] }
+// Drop / pickup (Phase 14): a player leaves an item on the map, or takes a
+// specific earlier drop. `seq` orders a player's actions within the phase.
+export interface BoardAction {
+  id: string; type: 'drop' | 'pickup'; user_id: number | null; slot?: number | null;
+  kind?: 'smoke' | 'flash' | 'molly' | 'he' | 'decoy'; drop_id?: string;
+  x: number; y: number; level?: Level; seq?: number;
+}
+export interface Board { markers: Marker[]; routes: Route[]; holds?: Hold[]; actions?: BoardAction[] }
 
 export interface Assignment {
   user_id: number | null;
@@ -64,13 +73,14 @@ export interface PlayerRef { user_id: number | null; slot: number | null }
 // One player's buy list for the round.
 export type PlayerColorId = 'orange' | 'green' | 'blue' | 'yellow' | 'purple';
 export interface PlayerColor extends PlayerRef { color: PlayerColorId }
-export interface Loadout extends PlayerRef { smoke: number; flash: number; molly: number; he: number; kit: boolean }
-export type GrenadeCounts = { smoke: number; flash: number; molly: number; he: number };
+export interface Loadout extends PlayerRef { smoke: number; flash: number; molly: number; he: number; decoy?: number; kit: boolean }
+export type GrenadeCounts = { smoke: number; flash: number; molly: number; he: number; decoy: number };
 // A player's utility at the current Game Mode phase.
 export interface PlayerUtility extends PlayerRef {
   buy: GrenadeCounts; kit: boolean; bomb: boolean;
   available: GrenadeCounts; planned: GrenadeCounts;
-  over: { phase: number; kind: keyof GrenadeCounts; planned: number; available: number }[];
+  over: { phase: number; kind: keyof GrenadeCounts; planned: number; available: number; type?: 'unavailable' | 'drop_unavailable' | 'over_limit'; id?: string }[];
+  dropped?: Partial<GrenadeCounts>; picked?: Partial<GrenadeCounts>; cost?: number;
 }
 
 export interface TacticDocument extends Omit<TacticFields, 'map' | 'side' | 'economy'> {

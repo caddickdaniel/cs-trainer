@@ -71,7 +71,9 @@ module.exports = {
   // How clips reach their pre-roll: 'seek' (verified seek) or 'play' (play
   // through nearby gaps at 8x, falling back to the seek). Phase 13 benchmarks.
   captureNav: process.env.CAPTURE_NAV || 'seek',
-  captureShortForward: process.env.CAPTURE_SHORT_FORWARD != null ? Number(process.env.CAPTURE_SHORT_FORWARD) : 0,
+  // Batch order (Phase 14): chronological | player | hybrid (see capturePlan.js).
+  captureSchedule: process.env.CAPTURE_SCHEDULE || 'hybrid',
+  captureShortForward: process.env.CAPTURE_SHORT_FORWARD != null ? Number(process.env.CAPTURE_SHORT_FORWARD) : 400,
   captureStorageDir: path.resolve(process.env.CAPTURE_STORAGE_DIR
     || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'captures-test' : 'captures')),
   // Public origin of the app (scheme://host[:port]) used for Steam sign-in

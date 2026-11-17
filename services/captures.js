@@ -26,6 +26,7 @@ const { loadDemo } = require('./demos');
 const db = require('../db/connection');
 const config = require('../config/env');
 const estimates = require('./captureEstimates');
+const capturePlan = require('./capturePlan');
 
 const UTILITY = ['smoke', 'flash', 'he', 'fire'];
 const SELECTIONS = ['all', 'kill', 'utility'];
@@ -409,61 +410,7 @@ function victimLastAliveTick(round, victim, killTick) {
   return null;
 }
 
-// Two seconds centred on `tick`, clamped to the round.
-function window2s(round, tick, tickrate) {
-  const lo = round.start_tick ?? round.first_tick;
-  const hi = round.end_tick ?? Number.MAX_SAFE_INTEGER;
-  return { start: Math.max(lo, Math.round(tick - tickrate)), end: Math.min(hi, Math.round(tick + tickrate)) };
-}
-
-// The capture job for one event. Players are identified by their in-demo
-// names; nothing here comes from the client.
-function buildJob(demo, round, ev, kind, dir) {
-  const players = (demo.meta && demo.meta.players) || [];
-  const nameOf = (i) => (i == null ? null : (players.find((p) => p.index === i) || {}).name || null);
-  const tickrate = demo.tickrate || 64;
-  if (kind === 'kill') {
-    const { start, end } = window2s(round, ev.tick, tickrate);
-    const killer = ev.attacker != null && ev.attacker !== ev.victim ? nameOf(ev.attacker) : null;
-    const victim = nameOf(ev.victim);
-    const vt = victimLastAliveTick(round, ev.victim, ev.tick);
-    const povs = {};
-    if (killer) povs.killer = { player: killer, clip_file: path.join(dir, 'killer.webm'), still_file: path.join(dir, 'killer.jpg'), still_tick: ev.tick };
-    if (victim) povs.victim = { player: victim, clip_file: path.join(dir, 'victim.webm'), ...(vt != null ? { still_file: path.join(dir, 'victim.jpg'), still_tick: vt } : {}) };
-    if (!Object.keys(povs).length) return null;
-    // Flash or smoke decided the kill: X-ray on (and labelled) so the players
-    // can be seen at all; the plain view would only show white or grey.
-    const xray = !!(ev.attacker_blind || ev.flash_assist || ev.through_smoke);
-    return { op: 'kill', tickrate, start, end, xray, povs };
-  }
-  const thrower = nameOf(ev.player);
-  if (!thrower) return null;
-  const center = ev.throw_tick != null ? ev.throw_tick : ev.tick;
-  const { start, end } = window2s(round, center, tickrate);
-  return {
-    op: 'utility', tickrate, start, end, player: thrower, clip_file: path.join(dir, 'replay.webm'),
-    // Lineup: the thrower's view the tick before the grenade leaves the hand,
-    // at the window's own resolution (lineup_width 0).
-    ...(ev.throw_tick != null ? { lineup_file: path.join(dir, 'lineup.jpg'), lineup_tick: ev.throw_tick - 1, lineup_width: 0 } : {}),
-  };
-}
-
-function mediaFromReply(job, reply, attempt, inputs) {
-  const base = (m) => ({ ...m, file: path.basename(m.file), attempt });
-  const out = [];
-  if (job.op === 'kill') {
-    for (const role of ['killer', 'victim']) {
-      const p = reply.povs && reply.povs[role];
-      if (!p) continue;
-      if (p.clip) out.push({ ...base(p.clip), role: `${role}_clip`, type: 'video', mime: 'video/webm' });
-      if (p.still) out.push({ ...base(p.still), role: `${role}_still`, type: 'image', mime: 'image/jpeg' });
-    }
-  } else {
-    if (reply.clip) out.push({ ...base(reply.clip), role: 'replay', type: 'video', mime: 'video/webm', ...(inputs ? { inputs } : {}) });
-    if (reply.lineup) out.push({ ...base(reply.lineup), role: 'lineup', type: 'image', mime: 'image/jpeg' });
-  }
-  return out;
-}
+const { window2s } = capturePlan;
 
 // ---- Worker ---------------------------------------------------------------
 
@@ -561,49 +508,119 @@ async function runSession(s) {
     const inputs = await driver.inputs(demoFile, ranges);
     timings.inputs_parse = (Date.now() - ti) / 1000;
 
-    for (let i = 0; i < prepared.length; i += 1) {
-      const { it, round, ev } = prepared[i];
-      onStage(`Capturing ${it.kind === 'kill' ? 'kill' : 'utility'} ${i + 1} of ${prepared.length} (round ${it.round_number})`);
-      const attempt = (it.attempt || 0) + 1;
-      await db('demo_captures').where('capture_id', it.capture_id).update({ status: 'running', attempts: db.raw('attempts + 1'), updated_at: db.fn.now() });
-      const fail = async (code, message) => {
-        failed += 1;
-        await db('demo_captures').where('capture_id', it.capture_id).update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
-        await setSession(s.session_id, { failed });
-      };
-      if (!ev) { await fail('event_missing', 'The event is no longer in this round.'); continue; }
-      const dir = captureDir(s.demo_id, it.capture_id, attempt);
+    // Plan every window before recording, then run the schedule.
+    const work = new Map(); // capture_id -> { it, attempt, dir, need: Set(file), media: Map(file -> media), failed }
+    for (const p of prepared) {
+      const attempt = (p.it.attempt || 0) + 1;
+      const dir = captureDir(s.demo_id, p.it.capture_id, attempt);
       await fsp.rm(dir, { recursive: true, force: true });
       await fsp.mkdir(dir, { recursive: true });
-      const job = buildJob(demo, round, ev, it.kind, dir);
-      if (!job) { await fail('nothing_to_capture', 'There is no player view to capture for this event (no known killer, victim or thrower).'); continue; }
-      const te = Date.now();
-      const reply = await proc.call(job);
+      p.dir = dir;
+      work.set(p.it.capture_id, { it: p.it, attempt, dir, need: new Set(), media: new Map(), failed: null });
+      await db('demo_captures').where('capture_id', p.it.capture_id).update({ status: 'running', attempts: db.raw('attempts + 1'), updated_at: db.fn.now() });
+    }
+    const plan = capturePlan.planWindows(demo, prepared.map((p) => ({ capture_id: p.it.capture_id, kind: p.it.kind, round_number: p.it.round_number, round: p.round, ev: p.ev, dir: p.dir })));
+    for (const w of [...plan.windows, ...plan.lineups]) work.get(w.capture_id).need.add(w.file);
+    const steps = capturePlan.schedule(plan, config.captureSchedule);
+    timings.schedule = { mode: config.captureSchedule, ...capturePlan.scheduleStats(steps) };
+    const fileOwner = new Map([...plan.windows, ...plan.lineups].map((w) => [w.file, w]));
+    const sums = {};
+    const addTimings = (t) => { for (const [k, v] of Object.entries(t || {})) sums[k] = Math.round(((sums[k] || 0) + v) * 1000) / 1000; };
+
+    const failCapture = async (id, code, message) => {
+      const w = work.get(id);
+      if (!w || w.failed || w.done) return;
+      w.failed = { code, message };
+      failed += 1;
+      await fsp.rm(w.dir, { recursive: true, force: true });
+      await db('demo_captures').where('capture_id', id).update({ status: 'failed', error_code: code, error: message, updated_at: db.fn.now() });
+      await setSession(s.session_id, { failed });
+    };
+    for (const sk of plan.skipped) {
+      await failCapture(sk.capture_id, sk.code, sk.code === 'event_missing' ? 'The event is no longer in this round.'
+        : 'There is no player view to capture for this event (no known killer, victim or thrower).');
+    }
+    // A capture is ready once all its clips are encoded and its still saved.
+    const finalize = async (id) => {
+      const w = work.get(id);
+      if (!w || w.failed || w.done || [...w.need].some((f) => !w.media.has(f) || !w.media.get(f).ready)) return;
+      w.done = true;
+      const order = ['killer_clip', 'victim_clip', 'replay', 'lineup'];
+      const media = [...w.media.values()].map(({ ready, ...m }) => m).sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
+      const old = w.it.attempt;
+      await db('demo_captures').where('capture_id', id).update({
+        status: 'ready', media: JSON.stringify(media), attempt: w.attempt, error: null, error_code: null,
+        timings: JSON.stringify({ schedule: config.captureSchedule }), updated_at: db.fn.now(),
+      });
+      // The replaced media is removed only now that the new media exists.
+      if (old) await fsp.rm(captureDir(s.demo_id, id, old), { recursive: true, force: true });
+      else for (const m of w.it.media || []) await fsp.rm(path.join(captureDir(s.demo_id, id), m.file), { force: true });
+      completed += 1;
+      await setSession(s.session_id, { completed });
+    };
+    const settleEncoded = async (reply) => {
+      for (const f of reply.encoded || []) {
+        const owner = fileOwner.get(f);
+        const m = owner && work.get(owner.capture_id).media.get(f);
+        if (m) { m.ready = true; await finalize(owner.capture_id); }
+      }
+      for (const f of reply.encode_failed || []) {
+        const owner = fileOwner.get(f);
+        if (owner) await failCapture(owner.capture_id, 'encode', 'Encoding the clip failed.');
+      }
+    };
+    const inputMedia = (id) => {
+      const inp = inputs[String(id)];
+      return inp ? { inputs: { start: inp.start, bits: inp.bits, tickrate: demo.tickrate || 64, map: INPUT_BITS } } : {};
+    };
+    let console_ = null;
+    let pasteFailures = [];
+    let stepWall = 0;
+    for (let i = 0; i < steps.length; i += 1) {
+      const st = steps[i];
+      const ids = st.op === 'segment' ? [...new Set(st.outputs.map((o) => o.capture_id))] : [st.capture_id];
+      if (ids.every((id) => work.get(id).failed)) continue;
+      onStage(`${st.op === 'segment' ? `Recording ${st.player}` : `Lineup still for ${st.player}`} (step ${i + 1} of ${steps.length}, round ${st.round}) · ${completed} of ${prepared.length} captured`);
+      const req = st.op === 'segment'
+        ? { op: 'segment', tickrate: st.tickrate, player: st.player, xray: st.xray, start: st.start, end: st.end, fps: 30, outputs: st.outputs.map((o) => ({ file: o.file, start: o.start, end: o.end })) }
+        : { op: 'lineup', player: st.player, tick: st.tick, file: st.file, width: 0 };
+      const reply = await proc.call(req);
+      addTimings(reply.timings);
+      stepWall += (reply.timings && reply.timings.wall) || 0;
+      if (reply.console) console_ = reply.console;
+      if (reply.paste_failures) pasteFailures = reply.paste_failures;
       if (!reply.ok) {
-        await fsp.rm(dir, { recursive: true, force: true });
-        await fail(reply.code || 'capture_failed', reply.error || 'Capture failed.');
+        for (const id of ids) await failCapture(id, reply.code || 'capture_failed', reply.error || 'Capture failed.');
         if (FATAL.has(reply.code)) {
-          await failRest(reply.code, `Not captured: ${reply.error}`, i + 1);
-          failed += prepared.length - i - 1;
+          for (const [id] of work) await failCapture(id, reply.code, `Not captured: ${reply.error}`);
           return await finish({ status: 'failed', error_code: reply.code, error: reply.error, failed, completed });
         }
         continue;
       }
-      const inp = inputs[String(it.capture_id)];
-      const media = mediaFromReply(job, reply, attempt, inp ? { start: inp.start, bits: inp.bits, tickrate: demo.tickrate || 64, map: INPUT_BITS } : null);
-      const old = it.attempt;
-      await db('demo_captures').where('capture_id', it.capture_id).update({
-        status: 'ready', media: JSON.stringify(media), attempt, error: null, error_code: null,
-        timings: JSON.stringify({ ...reply.timings, total: (Date.now() - te) / 1000 }), updated_at: db.fn.now(),
-      });
-      // The replaced media is removed only now that the new media exists.
-      if (old) await fsp.rm(captureDir(s.demo_id, it.capture_id, old), { recursive: true, force: true });
-      else {
-        for (const m of it.media || []) await fsp.rm(path.join(captureDir(s.demo_id, it.capture_id), m.file), { force: true });
+      if (st.op === 'segment') {
+        for (const out of reply.outputs) {
+          const w = fileOwner.get(out.file);
+          work.get(w.capture_id).media.set(out.file, {
+            ...out, file: path.basename(out.file), attempt: work.get(w.capture_id).attempt, role: w.role, type: 'video', mime: 'video/webm',
+            event_tick: w.event_tick, ...(w.role === 'replay' ? inputMedia(w.capture_id) : {}), ready: false,
+          });
+        }
+      } else {
+        work.get(st.capture_id).media.set(st.file, { ...reply.still, file: path.basename(st.file), attempt: work.get(st.capture_id).attempt, role: 'lineup', type: 'image', mime: 'image/jpeg', ready: true });
+        await finalize(st.capture_id);
       }
-      completed += 1;
-      await setSession(s.session_id, { completed });
+      await settleEncoded(reply);
     }
+    const flushed = await proc.call({ op: 'flush' });
+    addTimings(flushed.timings);
+    if (flushed.console) console_ = flushed.console;
+    if (flushed.paste_failures) pasteFailures = flushed.paste_failures;
+    await settleEncoded(flushed);
+    for (const [id, w] of work) if (!w.done && !w.failed) await failCapture(id, 'incomplete', 'Not all of this event\'s views were captured.');
+    timings.steps = sums;
+    timings.steps_wall = Math.round(stepWall * 1000) / 1000;
+    timings.console = console_;
+    timings.paste_failures = pasteFailures;
     return await finish({
       status: failed && !completed ? 'failed' : 'done', completed, failed,
       total: prepared.length,
@@ -618,6 +635,11 @@ async function runSession(s) {
     const closed = await proc.close();
     timings.close = closed && closed.timings;
     timings.total = (Date.now() - t0) / 1000;
+    // Time not spent in CS2 steps (startup, load, recording steps, close):
+    // waits between steps, planning, database writes.
+    const busy = ((timings.open && timings.open.menu) || 0) + ((timings.load && timings.load.demo_load) || 0)
+      + (timings.steps_wall || 0) + ((timings.steps && timings.steps.encode_wait) || 0) + ((timings.close && timings.close.close) || 0) + (timings.inputs_parse || 0);
+    timings.idle = Math.max(0, Math.round((timings.total - busy) * 1000) / 1000);
     await setSession(s.session_id, { timings: JSON.stringify(timings) }).catch(() => {});
   }
 }
@@ -644,7 +666,7 @@ async function start() {
 
 module.exports = {
   CAPTURE_VERSION, INPUT_BITS, SELECTIONS, status, list, request, queueBatch, requestBatch, cancelPending, onDemoReady, watchRound, retryFailed, currentSession, mediaFile, start,
-  victimLastAliveTick, buildJob, selectEvents,
+  victimLastAliveTick, selectEvents,
   // Tests: swap the CS2 driver and enable the queue without a real game.
   _test: {
     setDriver(d) { driver = d ? { ...pythonDriver, ...d } : pythonDriver; lastCheck = { at: 0, checks: null }; },

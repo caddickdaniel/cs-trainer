@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { KIT_ICON } from '../lib/constants';
 import { UtilityIcon } from './UtilityIcon';
 import type { GrenadeCounts, Loadout, Phase, PlayerRef, PlayerUtility } from '../lib/types';
-import { GRENADES, GRENADE_LABEL, describeCounts, refKey, utilityPlan } from '../lib/utility';
+import { GRENADES, GRENADE_LABEL, PRICES, describeCounts, issueText, itemLabel, money, priceOf, refKey, utilityPlan, type PlayerPlan } from '../lib/utility';
 
 // The CT defuse kit (a loadout item, never drawn on the radar). The text
 // label always goes with it so it reads at small sizes. Uses, in order: CS2's
@@ -61,8 +61,8 @@ export function UtilityCard({ u, phaseIndex, side }: { u: PlayerUtility; phaseIn
         </>
       )}
       {describeCounts(u.planned) ? <p className="call-utility"><strong>Throw this phase:</strong> {describeCounts(u.planned)}</p> : null}
-      {u.over.map((o) => (
-        <p key={o.kind} className="error-text small">The plan has you throw {o.planned} {GRENADE_LABEL[o.kind][o.planned === 1 ? 0 : 1]} but you only have {o.available}. Tell your IGL.</p>
+      {u.over.map((o, i) => (
+        <p key={`${o.kind}${i}`} className="error-text small">{o.type ? issueText({ ...o, type: o.type, id: o.id ?? '' }, side) : `The plan has you throw ${o.planned} ${GRENADE_LABEL[o.kind][o.planned === 1 ? 0 : 1]} but you only have ${o.available}.`} Tell your IGL.</p>
       ))}
       {extras}
     </div>
@@ -98,21 +98,28 @@ export function TeamUtility({ list, name, side }: { list: PlayerUtility[]; name:
   );
 }
 
+// "2 × Flash $200 = $400 …" for a buy list's cost tooltip.
+export function buyBreakdown(p: Pick<PlayerPlan, 'buy' | 'kit'>, side: string | null) {
+  const parts = GRENADES.filter((g) => p.buy[g]).map((g) => `${p.buy[g]} × ${itemLabel(g, side)} ${money(priceOf(g, side))}`);
+  if (side === 'CT' && p.kit) parts.push(`Defuse kit ${money(PRICES.kit)}`);
+  return parts.join(' + ') || 'Nothing to buy';
+}
+
 // Viewer / shared preview: each player's buy list and what they have at the
 // start of the phase being shown (derived from earlier phases).
 export function BuyListSummary({ loadouts, bomb, phases, phaseIndex, side, name }: {
   loadouts: Loadout[]; bomb: PlayerRef | null | undefined; phases: Phase[]; phaseIndex: number; side: string | null;
   name: (r: PlayerRef) => string;
 }) {
-  const plan = utilityPlan(loadouts, phases);
-  const owners = [...plan.values()];
+  const plan = utilityPlan(loadouts, phases, side);
+  const owners: PlayerPlan[] = [...plan.values()];
   const bombKey = side === 'T' ? refKey(bomb) : null;
-  if (bombKey && !plan.has(bombKey) && bomb) owners.push({ key: bombKey, buy: { smoke: 0, flash: 0, molly: 0, he: 0 }, kit: false, phases: [], over: [] });
+  if (bombKey && !plan.has(bombKey) && bomb) owners.push({ key: bombKey, buy: { smoke: 0, flash: 0, molly: 0, he: 0, decoy: 0 }, kit: false, cost: 0, phases: [], over: [] });
   if (!owners.length) return <p className="muted small">No buy lists yet.</p>;
   const refOf = (key: string): PlayerRef => (key.startsWith('u') ? { user_id: Number(key.slice(1)), slot: null } : { user_id: null, slot: Number(key.slice(1)) });
   return (
     <table className="table compact utility-table">
-      <thead><tr><th>Player</th><th>Buys</th><th>{phaseIndex === 0 ? 'Throws now' : 'Has now'}</th></tr></thead>
+      <thead><tr><th>Player</th><th>Buys</th><th className="num">Cost</th><th>{phaseIndex === 0 ? 'Throws now' : 'Has now'}</th></tr></thead>
       <tbody>
         {owners.map((p) => {
           const at = p.phases[phaseIndex];
@@ -120,9 +127,12 @@ export function BuyListSummary({ loadouts, bomb, phases, phaseIndex, side, name 
           return (
             <tr key={p.key} className={over.length ? 'over' : ''}>
               <td>{name(refOf(p.key))}{bombKey === p.key ? <> <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /></> : null}</td>
-              <td>{describeCounts(p.buy) || '—'}{side === 'CT' && p.kit ? <span className="kit-label">, <KitIcon /> defuse kit</span> : null}</td>
-              <td>{at ? (phaseIndex === 0 ? describeCounts(at.used) : describeCounts(at.start)) || '—' : '—'}
-                {over.length ? <span className="error-text"> · plans more than they have</span> : null}</td>
+              <td>{describeCounts(p.buy, side) || '—'}{side === 'CT' && p.kit ? <span className="kit-label">, <KitIcon /> defuse kit</span> : null}</td>
+              <td className="num" title={buyBreakdown(p, side)}>{money(p.cost)}</td>
+              <td>{at ? (phaseIndex === 0 ? describeCounts(at.used, side) : describeCounts(at.start, side)) || '—' : '—'}
+                {at && (describeCounts(at.dropped) || describeCounts(at.picked)) ? <span className="muted small">
+                  {describeCounts(at.dropped) ? ` · drops ${describeCounts(at.dropped, side)}` : ''}{describeCounts(at.picked) ? ` · picks up ${describeCounts(at.picked, side)}` : ''}</span> : null}
+                {over.length ? <span className="error-text"> · {over.map((o) => issueText(o, side)).join(' ')}</span> : null}</td>
             </tr>
           );
         })}
