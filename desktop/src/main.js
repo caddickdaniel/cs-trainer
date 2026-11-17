@@ -10,8 +10,12 @@ const path = require('path');
 const fs = require('fs');
 const { app, BrowserWindow, globalShortcut, ipcMain, session, shell } = require('electron');
 const { createHotkeyManager, normaliseBindings } = require('./hotkeys');
+const { navigationTarget } = require('./navigation');
 
-const APP_URL = new URL(process.env.CS_TRAINER_URL || 'http://localhost:5173');
+// The installed app pairs with the production server (`npm run serve`, :9090);
+// `npm start` here pairs with the Vite dev server. CS_TRAINER_URL overrides both.
+const DEFAULT_URL = app.isPackaged ? 'http://localhost:9090' : 'http://localhost:5173';
+const APP_URL = new URL(process.env.CS_TRAINER_URL || DEFAULT_URL);
 const configFile = () => path.join(app.getPath('userData'), 'hotkeys.json');
 
 let win = null;
@@ -73,14 +77,20 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
-  // Stay on CS Trainer; other links open in the normal browser.
+  // Stay on CS Trainer (and Steam's sign-in pages, so the sign-in returns
+  // here); other links open in the normal browser. Server redirects are checked
+  // too: sign-in starts as a same-origin link that the server redirects to Steam.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== APP_URL.origin) { event.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); }
-  });
+  const keepInWindow = (event, url) => {
+    if (navigationTarget(url, APP_URL.origin) !== 'external') return;
+    event.preventDefault();
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+  };
+  win.webContents.on('will-navigate', keepInWindow);
+  win.webContents.on('will-redirect', keepInWindow);
   // A full reload or crash leaves Game Mode, so the hotkeys stop with it.
   win.webContents.on('did-start-navigation', (details) => { if (details.isMainFrame && !details.isSameDocument) stopHotkeys(); });
   win.webContents.on('render-process-gone', stopHotkeys);

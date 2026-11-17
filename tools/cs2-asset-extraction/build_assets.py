@@ -29,15 +29,27 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 RAW = HERE / 'work' / 'raw' / 'panorama' / 'images'
 OUT = ROOT / 'client' / 'public' / 'assets' / 'cs2'
-VRF = HERE / 'bin' / 'vrf' / 'Source2Viewer-CLI'
+IS_WIN = os.name == 'nt'
+VRF = HERE / 'bin' / 'vrf' / ('Source2Viewer-CLI.exe' if IS_WIN else 'Source2Viewer-CLI')
 VPK_NAME = 'pak01_dir.vpk'
 FILTER = 'panorama/images/icons/equipment/,panorama/images/hud/deathnotice/,panorama/images/hud/teamcounter/,panorama/images/hud/radar/,panorama/images/icons/ui/'
+
+if IS_WIN:
+    # CairoSVG needs the Cairo DLL; the GTK3 runtime (winget install
+    # tschoonj.GTKForWindows) provides it. GTK_BIN overrides the folder.
+    for gtk in (os.environ.get('GTK_BIN'), r'C:\Program Files\GTK3-Runtime Win64\bin'):
+        if gtk and os.path.isdir(gtk):
+            os.add_dll_directory(gtk)
+            os.environ['PATH'] = gtk + os.pathsep + os.environ.get('PATH', '')
+            break
 
 try:
     import cairosvg
     from PIL import Image, ImageDraw
-except ImportError:
-    sys.exit('Run with tools/cs2-asset-extraction/work/venv/bin/python (pip install cairosvg pillow).')
+except (ImportError, OSError) as e:
+    venv_python = r'work\venv\Scripts\python.exe' if IS_WIN else 'work/venv/bin/python'
+    extra = ' and the GTK3 runtime for Cairo (winget install tschoonj.GTKForWindows)' if IS_WIN else ''
+    sys.exit(f'Run with tools/cs2-asset-extraction/{venv_python} (pip install cairosvg pillow){extra}. ({e})')
 
 # ---- Catalogue -----------------------------------------------------------------
 # (id, display name, source path under panorama/images, demo/game weapon ids)
@@ -125,10 +137,18 @@ def find_vpk():
     env = os.environ.get('CS2_DIR')
     candidates = [Path(env)] if env else []
     libraries = [Path.home() / '.local/share/Steam', Path.home() / '.steam/steam', Path.home() / '.steam/root']
+    if IS_WIN:
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as k:
+                libraries.insert(0, Path(winreg.QueryValueEx(k, 'SteamPath')[0]))
+        except OSError:
+            libraries.insert(0, Path(r'C:\Program Files (x86)\Steam'))
     for lib in list(libraries):
         vdf = lib / 'steamapps/libraryfolders.vdf'
         if vdf.exists():
-            libraries += [Path(p) for p in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors='ignore'))]
+            # VDF escapes backslashes in Windows paths.
+            libraries += [Path(p.replace('\\\\', '\\')) for p in re.findall(r'"path"\s+"([^"]+)"', vdf.read_text(errors='ignore'))]
     for lib in libraries:
         candidates.append(lib / 'steamapps/common/Counter-Strike Global Offensive/game/csgo')
     for c in candidates:

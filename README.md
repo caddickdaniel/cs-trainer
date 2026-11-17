@@ -72,6 +72,31 @@ NODE_ENV=production DATABASE_URL=... SESSION_SECRET=... TRUST_PROXY=1 npm start
 
 In production, Express serves `client/dist` and the API from one origin, with no CORS. Session cookies are `Secure`, so the app must be served over HTTPS. Set `TRUST_PROXY` to the number of proxies in front of it.
 
+### Running on one machine (Windows or Linux)
+
+`npm run serve` builds the client, applies migrations and serves the production build at <http://localhost:9090>, with no shell-specific `NODE_ENV=...` syntax. It is for a single PC over plain HTTP: cookies drop the `Secure` flag and `APP_ORIGIN` defaults to `http://localhost:9090`, so Steam sign-in returns there. It never reseeds. Use `npm start` behind HTTPS for a real deployment.
+
+On Windows (PowerShell), with Git, Node.js and PostgreSQL installed (`winget install Git.Git OpenJS.NodeJS.LTS PostgreSQL.PostgreSQL.18`):
+
+```powershell
+Copy-Item .env.example .env   # set DATABASE_URL / TEST_DATABASE_URL to postgres://postgres:<password>@localhost:5432/...
+npm install
+npm run setup                 # first time only
+npm run serve                 # http://localhost:9090
+```
+
+`npm run dev`, `npm test` and `npm run check` also work on Windows. The desktop app below connects to `npm run serve` by default when installed.
+
+**First-person capture on Windows** (Replay Inspector, same features as Linux). The tool's platform layer ([tools/cs2-capture/cs2plat.py](tools/cs2-capture/cs2plat.py)) picks the Windows helpers in [wincs2.py](tools/cs2-capture/wincs2.py): CS2 is started as `cs2.exe` with the same arguments, commands go in with `SendInput` scan codes and Ctrl+V (the player's clipboard is put back), frames are copied from the desktop at CS2's window (keep CS2 visible; capture focuses it), and clips are encoded to the same VP8 WebM with FFmpeg instead of GStreamer.
+
+```powershell
+winget install Python.Python.3.12 Gyan.FFmpeg
+python -m pip install pillow psutil
+# .env: CAPTURE_WORKER=on   (CAPTURE_PYTHON overrides the `python` command)
+```
+
+**CS2 icons on Windows** (`npm run cs2:assets`): download `cli-windows-x64.zip` from the same ValveResourceFormat 20.1 release (SHA-256 `67aaf8a6…3aa3`) into `tools/cs2-asset-extraction/bin/vrf/`, install the GTK3 runtime for CairoSVG's Cairo (`winget install tschoonj.GTKForWindows`), then `python -m venv tools\cs2-asset-extraction\work\venv` and `tools\cs2-asset-extraction\work\venv\Scripts\pip install cairosvg==2.7.1 pillow==11.3.0`. Rebuild (`npm run serve` does) so the icons are served.
+
 ## Scripts
 
 | Command | What it does |
@@ -705,7 +730,7 @@ npm run demos:reprocess     # optional: upgrade existing demos now instead of in
 ### Windows desktop app
 
 The IGL runs CS Trainer in the desktop app on a second monitor. Teammates keep using a normal browser.
-- **Sign-in.** The app loads the normal web app (`CS_TRAINER_URL`, default `http://localhost:5173`), so sign-in, the API and the Game Mode screen are the same as in a browser.
+- **Sign-in.** The app loads the normal web app (`CS_TRAINER_URL`; default `http://localhost:9090` for the installed app, i.e. `npm run serve`, and `http://localhost:5173` for `npm start` in `desktop/`), so sign-in, the API and the Game Mode screen are the same as in a browser.
 - **Hotkeys.** Global hotkeys are registered in the Electron main process with `globalShortcut` and sent to the page. The page runs exactly the same commands as the buttons, including the version check and the server's IGL check. Queuing a tactic (previous/next tactic) never starts a round; only "Start new round" does.
 - **Narrow bridge.** The page can only get, set, enable and disable the six bindings and receive the pressed action (`desktop/src/preload.js`). IPC from any other origin is refused, and navigation away from CS Trainer is blocked.
 - **When hotkeys are active.**
@@ -724,7 +749,7 @@ Run and package (on Windows, from `desktop/`, separate from the web app's instal
 ```sh
 cd desktop
 npm install
-set CS_TRAINER_URL=https://your-cs-trainer-host   # or leave unset for http://localhost:5173
+set CS_TRAINER_URL=https://your-cs-trainer-host   # or leave unset (see Sign-in above)
 npm start                                          # run
 npm run dist                                       # NSIS installer + portable .exe in desktop/dist
 ```
@@ -913,6 +938,8 @@ Real POV screenshots and clips are recorded by the CS2 client playing the demo o
 - **Control:** console commands are typed into CS2 through a **uinput virtual keyboard** (`ukeys.py`). On GNOME Wayland the compositor treats it as real hardware; Steam's udev rules (`60-steam-input.rules`) already give the logged-in user `/dev/uinput`. Nothing is typed unless the CS2 window has input focus, checked before every command.
 - **Confirmation:** every step is checked against CS2's own `console.log` (`-condebug`): the demo loaded, the seek **finished at the exact tick**, which player is being watched. The console's open/closed state and paused playback are checked from the pixels.
 - **Capture:** the CS2 window's pixels are read through XWayland (`xgrab.py`), scaled to 1280×720 (lineups at 2560×1440 for the crosshair zoom) and saved as JPEG. Clips are frames sampled while the demo plays at 0.2× speed (30 fps output, timing checked against the clock) and encoded to WebM (VP8) with GStreamer.
+- **Windows:** the same steps through `wincs2.py` (SendInput scan codes, desktop copy of CS2's window, FFmpeg's libvpx); see "Running on one machine" above. The tool reads and writes its pipes as UTF-8 on both systems, so Unicode player names reach `spec_player` intact.
+- **Demos from older CS2 builds:** CS2 turns TrueView off when the demo and client versions differ ("TrueView is DISABLED as per cl_demo_predict=1"), and without TrueView no POV switch can be confirmed. Capture sets `cl_demo_predict 2` before each load and restores the player's value afterwards (verified 17 Nov on Windows: demo 14169 on client 14197).
 - **What makes the frames trustworthy:** every seek goes past the target and back, so CS2 rebuilds the frame from a full snapshot (a long forward skip while paused left stale positions on screen). Spectator X-ray is turned off (it outlines players through walls, which the player didn't see) and the HUD is reduced to crosshair and kill feed. The demo playback bar is detected in the pixels and hidden. All of these settings are put back afterwards.
 - **Queue:** requests are stored in `demo_captures` and run one at a time by the worker in the API process (there is one CS2). Media is cached under `storage/captures/<demo>/<capture>/` and served only to members of the demo's team. Deleting a demo deletes its captures. A kill takes about 20–30 s; a throw (clip and lineup) about 30–40 s; loading a different demo adds about 20 s.
 

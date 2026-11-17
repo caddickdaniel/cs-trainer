@@ -2,11 +2,13 @@
 // and event permissions, notification Clear All / History, viewing others'
 // roles in Game Mode, utility throw paths, and the shared client helpers.
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { expect } = require('chai');
 const { addMember, connection, reseed, tacticDoc, teamWithMember } = require('./helpers');
 const { applyTeamColors } = require('../services/teamColors');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 
 describe('phase 10', () => {
   beforeEach(reseed);

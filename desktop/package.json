@@ -16,7 +16,8 @@
   "build": {
     "appId": "dev.cs-trainer.desktop",
     "productName": "CS Trainer",
-    "files": ["src/**/*", "package.json"],
+    "files": ["src/**/*", "package.json", "!node_modules/**/*"],
+    "npmRebuild": false,
     "directories": { "output": "dist" },
     "win": { "target": ["nsis", "portable"] }
   }

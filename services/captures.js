@@ -34,6 +34,9 @@ const SELECTIONS = ['all', 'kill', 'utility'];
 // Bump when capture output changes so old cached media isn't reused.
 const CAPTURE_VERSION = 1;
 const SCRIPT = path.join(__dirname, '..', 'tools', 'cs2-capture', 'capture.py');
+// Windows installs Python as `python`; CAPTURE_PYTHON overrides either.
+const PYTHON = process.env.CAPTURE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const IS_WINDOWS = process.platform === 'win32';
 const INPUTS_CHILD = path.join(__dirname, '..', 'workers', 'demo-inputs-child.js');
 const THROWS_CHILD = path.join(__dirname, '..', 'workers', 'demo-throws-child.js');
 const MEDIA_NAME = /^[a-z_]+\.(jpg|webm)$/;
@@ -52,7 +55,7 @@ const stateDir = () => path.join(config.captureStorageDir, 'cs2-session');
 
 function runPython(args, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', ['-I', SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(PYTHON, ['-I', SCRIPT, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
@@ -72,7 +75,7 @@ function runPython(args, timeoutMs) {
 
 // A running `capture.py session`: call(op) → reply; close() → closed info.
 function openPythonSession(onStage) {
-  const child = spawn('python3', ['-I', SCRIPT, 'session'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(PYTHON, ['-I', SCRIPT, 'session'], { stdio: ['pipe', 'pipe', 'pipe'] });
   let nextId = 1;
   const waiting = new Map();
   let closed = null;
@@ -160,10 +163,17 @@ function readiness(c) {
   if (!enabled) {
     return { ready: false, reason: 'First-person capture is turned off on this server. It runs on a machine with CS2 installed, with CAPTURE_WORKER=on.' };
   }
-  if (!c || c.error) return { ready: false, reason: `The capture tool could not run${c && c.error ? ` (${c.error})` : ''}.` };
-  if (!c.cs2_installed || !c.runtime) return { ready: false, reason: 'CS2 (and the Steam Linux Runtime) must be installed on this machine to capture.' };
+  if (!c || c.error) {
+    const hint = IS_WINDOWS ? ' Install Python 3 with Pillow and psutil (`python -m pip install pillow psutil`).' : '';
+    return { ready: false, reason: `The capture tool could not run${c && c.error ? ` (${c.error})` : ''}.${hint}` };
+  }
+  if (!c.cs2_installed || !c.runtime) {
+    return { ready: false, reason: IS_WINDOWS ? 'CS2 must be installed in a Steam library on this PC to capture.' : 'CS2 (and the Steam Linux Runtime) must be installed on this machine to capture.' };
+  }
   if (!c.uinput) return { ready: false, reason: 'The capture tool needs access to /dev/uinput (Steam\'s input rules grant it) to control CS2.' };
-  if (!c.encoder) return { ready: false, reason: 'GStreamer\'s VP8 encoder (vp8enc) is needed to encode clips.' };
+  if (!c.encoder) {
+    return { ready: false, reason: IS_WINDOWS ? 'FFmpeg with the VP8 encoder (libvpx) is needed to encode clips (`winget install Gyan.FFmpeg`).' : 'GStreamer\'s VP8 encoder (vp8enc) is needed to encode clips.' };
+  }
   if (c.cs2_running && !c.cs2_usable) return { ready: false, reason: 'CS2 is open without the console log, so capture can\'t confirm its steps. Close CS2: capture starts its own.' };
   return { ready: true, reason: 'Capture launches CS2 on this PC, takes control of its window and closes it when done.' };
 }

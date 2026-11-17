@@ -6,6 +6,7 @@
 const fs = require('fs');
 const config = require('../config/env');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { expect } = require('chai');
 const { connection, reseed, teamWithMember } = require('./helpers');
 const U = require('../domain/utility');
@@ -16,7 +17,8 @@ const { buildReplay } = require('../services/demoParse');
 const demoJobs = require('../services/demoJobs');
 const captures = require('../services/captures');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 const player = (id, uid, x, y, level = 'main') => ({ id, kind: 'player', x, y, level, user_id: uid, label: '', images: [] });
 const util = (id, kind, uid, x, y, extra = {}) => ({ id, kind, x, y, level: 'main', user_id: uid, label: '', images: [], ...extra });
 const route = (id, uid, pts, level = 'main') => ({ id, level, user_id: uid, color: '#fff', points: pts.map(([x, y]) => ({ x, y })) });
@@ -225,7 +227,7 @@ describe('phase 15', () => {
       const killers = p.windows.filter((w) => w.role === 'killer_clip');
       expect(killers.map((w) => [w.capture_id, w.start, w.end, (w.copies || []).map((c) => c.capture_id)])).to.deep.equal([[1, 936, 1314, [2, 3]], [4, 1636, 1764, []]]);
       expect(killers[0].group.members.map((m) => [m.capture_id, m.event_index, m.event_tick])).to.deep.equal([[1, 1, 1000], [2, 2, 1100], [3, 3, 1250]]);
-      expect(killers[0].copies.map((c) => c.file)).to.deep.equal(['/c2/killer.webm', '/c3/killer.webm']);
+      expect(killers[0].copies.map((c) => c.file)).to.deep.equal([path.join('/c2', 'killer.webm'), path.join('/c3', 'killer.webm')]);
       expect(p.windows.filter((w) => w.role === 'victim_clip')).to.have.length(4);
       // Different capture settings (X-ray) never share a pass.
       const x = plan([kill(1, 1, 1000), kill(2, 2, 1100, { through_smoke: true })]);

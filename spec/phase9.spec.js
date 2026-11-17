@@ -2,10 +2,12 @@
 // CS2 asset mapping, and (when built) the extracted asset set itself.
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { expect } = require('chai');
 const { buildReplay, REPLAY_VERSION } = require('../services/demoParse');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 const steam = (n) => `7656119000000000${n}`;
 
 // Round with a flash-assisted wallbang headshot, a team kill, a suicide, two

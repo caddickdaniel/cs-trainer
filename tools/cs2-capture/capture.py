@@ -39,18 +39,34 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PIL import ImageChops, ImageStat  # noqa: E402
 
-import xconsole as xc  # noqa: E402
+import cs2plat as plat  # noqa: E402
 
-GAME = os.path.expanduser('~/.local/share/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo')
+xc = plat.window()
+
+
+def _game_dir():
+    if plat.IS_WIN:
+        import launcher
+        root, _ = launcher.game_root()
+        return os.path.join(root or '', 'csgo')
+    return os.path.expanduser('~/.local/share/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo')
+
+
+GAME = _game_dir()
 LOG = os.path.join(GAME, 'console.log')
 SAFE_NAME = re.compile(r'^[A-Za-z0-9 _.\-]{1,32}$')
-SAFE_PATH = re.compile(r'^/[A-Za-z0-9 _./\-]+\.dem$')
+SAFE_PATH = (re.compile(r'^[A-Za-z]:[\\/][A-Za-z0-9 _.\\/\-]+\.dem$') if plat.IS_WIN
+             else re.compile(r'^/[A-Za-z0-9 _./\-]+\.dem$'))
 # Convars changed while capturing, restored afterwards. Spectator X-ray
 # outlines players through walls, which the player didn't see, so it is off
 # unless an event asks for it (flash / through-smoke kills, labelled). The
 # HUD is reduced to crosshair and kill feed (also hides the demo bar).
-VIEW = {'spec_show_xray': '0', 'cl_draw_only_deathnotices': '1'}
-DEFAULTS = {'spec_show_xray': '1', 'cl_draw_only_deathnotices': '0'}
+# cl_demo_predict 2 keeps TrueView (whose log lines confirm every POV switch)
+# for demos recorded on an older CS2 build: at the default 1, CS2 turns TrueView
+# off when the demo and client versions differ ("TrueView is DISABLED as per
+# cl_demo_predict=1"), so no POV switch could be confirmed. Set before each load.
+VIEW = {'spec_show_xray': '0', 'cl_draw_only_deathnotices': '1', 'cl_demo_predict': '2'}
+DEFAULTS = {'spec_show_xray': '1', 'cl_draw_only_deathnotices': '0', 'cl_demo_predict': '1'}
  # Readiness tuning (measured; see README Phase 14).
 INPUT_READY_S = 0.25     # console input accepts keys this long after it shows
 LOAD_SETTLE_S = 1.0      # after CS2 reports a spectator prediction post-load
@@ -105,28 +121,35 @@ def stage(text):
     emit({'stage': text})
 
 
+def same_path(a, b):
+    """Windows paths compare without regard to slash style or case."""
+    if plat.IS_WIN:
+        return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+    return a == b
+
+
 def cs2_pid():
-    out = subprocess.run(['pgrep', '-x', 'cs2'], capture_output=True, text=True).stdout.split()
-    return int(out[0]) if out else None
+    pids = plat.cs2_pids()
+    return pids[0] if pids else None
 
 
 def uinput_ok():
-    return os.access('/dev/uinput', os.W_OK)
+    return plat.input_ok()
 
 
 def status():
     import launcher
     root, lib = launcher.game_root()
     pid, usable = launcher.Instance(None).find_running()
-    gst = subprocess.run(['gst-inspect-1.0', 'vp8enc'], capture_output=True).returncode == 0
-    return {'cs2_installed': bool(root), 'runtime': bool(lib and launcher.runtime(lib)), 'uinput': uinput_ok(), 'encoder': gst,
+    return {'cs2_installed': bool(root), 'runtime': bool(lib and launcher.runtime(lib)), 'uinput': uinput_ok(),
+            'encoder': bool(plat.encoder()), 'encoder_tool': plat.encoder(), 'platform': 'windows' if plat.IS_WIN else 'linux',
             'cs2_running': pid is not None, 'cs2_usable': bool(usable)}
 
 
 def user_convars():
     """The player's saved values for the convars this changes (defaults if unset)."""
     vals = dict(DEFAULTS)
-    root = os.path.expanduser('~/.local/share/Steam/userdata')
+    root = os.path.join(plat.steam_root(), 'userdata')
     try:
         for uid in os.listdir(root):
             p = os.path.join(root, uid, '730/local/cfg/cs2_user_convars_0_slot0.vcfg')
@@ -201,9 +224,8 @@ class Timer:
 
 class Driver:
     def __init__(self, win, short_forward=0, timescale=0.5, paste=True, state_dir=None):
-        import ukeys
-        import xgrab
-        self.xgrab = xgrab
+        ukeys = plat.keys()
+        self.xgrab = plat.frames()
         self.ukeys = ukeys
         self.win = win
         self.log = Log()
@@ -273,8 +295,8 @@ class Driver:
             raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
 
     def _alive(self):
-        # pgrep costs ~6 ms; once the PID is known, /proc says if it's alive.
-        if self._pid and os.path.exists(f'/proc/{self._pid}'):
+        # Finding CS2 costs a few ms; once the PID is known, checking it is cheap.
+        if self._pid and plat.alive(self._pid):
             return True
         self._pid = cs2_pid()
         return bool(self._pid)
@@ -475,11 +497,13 @@ class Driver:
                 pass
         # The command can be lost while the main menu is still settling
         # (seen after a shader rebuild): retry with a fresh console, typed.
+        self.cmd(f'cl_demo_predict {VIEW["cl_demo_predict"]}', why='TrueView for demos from older CS2 builds')
         for attempt in range(3):
             if attempt:
                 self.refresh_console()
             at = self.log.mark()
-            self.cmd(f'playdemo "{path}"', typed=attempt > 0, why='load demo' if not attempt else 'load demo (retry: not started)')
+            arg = path.replace('\\', '/') if plat.IS_WIN else path
+            self.cmd(f'playdemo "{arg}"', typed=attempt > 0, why='load demo' if not attempt else 'load demo (retry: not started)')
             try:
                 m = self.log.wait(r"\[Demo\] playing demo from '([^']*)'", at, 12 if attempt else 6, 'demo_load', 'CS2 did not start playing the demo.')
                 break
@@ -488,7 +512,7 @@ class Driver:
                     self.paste_failures.append('playdemo')
                 if attempt == 2:
                     raise
-        if m.group(1) != path:
+        if not same_path(m.group(1), path):
             raise CaptureError('demo_load', 'CS2 opened a different demo.')
         self.log.wait(r'CSGO_GAME_UI_STATE_INGAME', at, 240, 'demo_load', 'The demo did not finish loading in CS2.')
         # Seeking straight after the load crashed CS2 once ("CopyNewEntity:
@@ -899,9 +923,7 @@ class Driver:
         first = self.frame(1280)
         w, h = first.size
         enc = subprocess.Popen(
-            ['gst-launch-1.0', '-q', 'fdsrc', 'fd=0', '!', 'rawvideoparse', f'width={w}', f'height={h}', 'format=rgb',
-             f'framerate={fps}/1', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1', 'cpu-used=4', 'target-bitrate=4000000',
-             '!', 'webmmux', '!', 'filesink', f'location={file}'],
+            plat.encoder_cmd(w, h, fps, file),
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         frames = round((end - start) / tickrate * fps)
         kept = {}
@@ -1050,9 +1072,7 @@ class Driver:
 
         def open_enc(o):
             return subprocess.Popen(
-                ['gst-launch-1.0', '-q', 'fdsrc', 'fd=0', '!', 'rawvideoparse', f'width={w}', f'height={h}', 'format=rgb',
-                 f'framerate={fps}/1', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1', 'cpu-used=4', 'target-bitrate=4000000',
-                 '!', 'webmmux', '!', 'filesink', f'location={o["file"]}'],
+                plat.encoder_cmd(w, h, fps, o['file']),
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         grabs = 0
         t_rec = time.time()
@@ -1268,7 +1288,7 @@ def watch(d, job, saved):
     timer = Timer()
     path = job['demo']
     timer.run('demo_load', d.load_demo, path)
-    if d.current_demo() != path:
+    if not same_path(d.current_demo() or '', path):
         raise CaptureError('demo_load', 'CS2 is showing a different demo.')
     d.restore(saved)
     d.seek(int(job['tick']), timer)
@@ -1347,8 +1367,7 @@ def session():
                     time.sleep(MENU_SETTLE_S)
                 timings['menu'] = round(time.time() - t0, 3)
                 stage('Focusing the CS2 window')
-                import ukeys
-                how = ukeys.focus_window(win)
+                how = plat.keys().focus_window(win)
                 if not how:
                     raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
                 timings['focus'] = round(time.time() - t0, 3)
@@ -1463,6 +1482,11 @@ def session():
 
 
 def main():
+    # The server talks UTF-8 (player names can be any Unicode). Windows would
+    # otherwise decode the pipes with the ANSI code page, and -I ignores
+    # PYTHONUTF8/PYTHONIOENCODING, so set it here.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        stream.reconfigure(encoding='utf-8')
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
     if mode == 'status':
         print(json.dumps(status()))

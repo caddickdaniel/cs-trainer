@@ -13,38 +13,48 @@
   then a virtual absolute pointer (uinput) moved to the window centre, which
   only clicks once XWayland reports the pointer inside the CS2 window (so CS2
   is the topmost surface under it).
+
+On Windows (cs2plat.py, wincs2.py) CS2 is started as cs2.exe with the same
+arguments, processes are tracked with psutil and focus uses the Win32 calls.
 """
 import glob
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import time
 
-import xconsole as xc
+import cs2plat as plat
 
-STEAM = os.path.expanduser('~/.local/share/Steam')
+xc = plat.window()
+
+STEAM = plat.steam_root()
 MARKER = 'CSTRAINER_CAPTURE_SESSION'
 
 
 def game_root():
-    libs = [STEAM, os.path.expanduser('~/.steam/steam')]
+    libs = [STEAM] + ([] if plat.IS_WIN else [os.path.expanduser('~/.steam/steam')])
     for lib in list(libs):
         try:
-            text = open(os.path.join(lib, 'steamapps/libraryfolders.vdf'), encoding='utf-8').read()
-            libs += re.findall(r'"path"\s+"([^"]+)"', text)
+            text = open(os.path.join(lib, 'steamapps', 'libraryfolders.vdf'), encoding='utf-8').read()
+            # VDF escapes backslashes in Windows paths ("C:\\Program Files (x86)\\Steam").
+            libs += [p.replace('\\\\', '\\') for p in re.findall(r'"path"\s+"([^"]+)"', text)]
         except OSError:
             pass
     for lib in libs:
-        root = os.path.join(lib, 'steamapps/common/Counter-Strike Global Offensive/game')
-        if os.path.exists(os.path.join(root, 'cs2.sh')):
+        root = os.path.join(lib, 'steamapps', 'common', 'Counter-Strike Global Offensive', 'game')
+        if os.path.exists(os.path.join(root, plat.cs2_binary_rel())):
             return root, lib
     return None, None
 
 
 def runtime(lib):
+    """What starts CS2: the Steam Linux Runtime's `run` on Linux, cs2.exe itself
+    on Windows (there is no runtime container there)."""
+    if plat.IS_WIN:
+        exe = os.path.join(lib, 'steamapps', 'common', 'Counter-Strike Global Offensive', 'game', plat.cs2_binary_rel()) if lib else None
+        return exe if exe and os.path.exists(exe) else None
     for cand in (os.path.join(lib, 'steamapps/common/SteamLinuxRuntime_sniper/run'), os.path.join(STEAM, 'steamapps/common/SteamLinuxRuntime_sniper/run')):
         if os.path.exists(cand):
             return cand
@@ -56,22 +66,15 @@ def video_cfgs():
 
 
 def cs2_pids():
-    out = subprocess.run(['pgrep', '-x', 'cs2'], capture_output=True, text=True).stdout.split()
-    return [int(p) for p in out]
+    return plat.cs2_pids()
 
 
 def cmdline(pid):
-    try:
-        return open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\0', b' ').decode('utf-8', 'replace')
-    except OSError:
-        return ''
+    return plat.cmdline(pid)
 
 
 def has_marker(pid, token):
-    try:
-        return f'{MARKER}={token}'.encode() in open(f'/proc/{pid}/environ', 'rb').read()
-    except OSError:
-        return False
+    return plat.environ_has(pid, f'{MARKER}={token}')
 
 
 # Capture video profile: what changes from the player's file. Lower settings
@@ -156,7 +159,8 @@ class Instance:
             raise RuntimeError('cs2_missing|CS2 is not installed in a Steam library on this machine.')
         rt = runtime(lib)
         if not rt:
-            raise RuntimeError('cs2_missing|The Steam Linux Runtime (sniper) is missing; start CS2 from Steam once.')
+            raise RuntimeError('cs2_missing|' + ('cs2.exe is missing; verify the CS2 game files in Steam.' if plat.IS_WIN
+                                                else 'The Steam Linux Runtime (sniper) is missing; start CS2 from Steam once.'))
         self.root = root
         if not steam_logged_on(90):
             raise RuntimeError('steam|Steam is not logged in yet, so CS2 can\'t start. Open Steam and try again.')
@@ -167,7 +171,8 @@ class Instance:
         # player's own settings, used when opening a demo to watch).
         os.makedirs(self.state_dir, exist_ok=True)
         for cfg in (video_cfgs() if profile else []):
-            bak = os.path.join(self.state_dir, 'video-backup-' + cfg.split('/userdata/')[1].split('/')[0] + '.txt')
+            uid = re.search(r'[\\/]userdata[\\/]([^\\/]+)', cfg).group(1)
+            bak = os.path.join(self.state_dir, 'video-backup-' + uid + '.txt')
             shutil.copy2(cfg, bak)
             self.backups.append((cfg, bak))
             text = open(cfg, encoding='utf-8').read()
@@ -184,8 +189,8 @@ class Instance:
         # ("Setting null device for -nosound" in its log). Capture only: a
         # watch session (profile None) keeps sound.
         args = ['-steam', '-novid', '-condebug', '-console'] + (['-nosound', '-windowed', '-w', str(size[0]), '-h', str(size[1])] if profile else [])
-        subprocess.Popen([rt, '--', './cs2.sh', *args],
-                         cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        cmd, cwd = ([rt, *args], os.path.dirname(rt)) if plat.IS_WIN else ([rt, '--', './cs2.sh', *args], root)
+        subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out, **plat.detached_popen_kwargs())
         self.launched = True
         end = time.time() + timeout
         while time.time() < end:
@@ -204,7 +209,7 @@ class Instance:
         self.launched = False
 
     def alive(self):
-        return self.pid is not None and os.path.exists(f'/proc/{self.pid}')
+        return self.pid is not None and plat.alive(self.pid)
 
     def wait_window(self, timeout=120):
         end = time.time() + timeout
@@ -232,13 +237,10 @@ class Instance:
             end = time.time() + timeout
             while self.alive() and time.time() < end:
                 time.sleep(0.5)
-            for sig in (signal.SIGTERM, signal.SIGKILL):
+            for force in (False, True):
                 if not self.alive():
                     break
-                try:
-                    os.kill(self.pid, sig)
-                except OSError:
-                    pass
+                plat.stop(self.pid, force)
                 time.sleep(5)
         if self.launched:
             self.restore_files()
@@ -255,8 +257,7 @@ class Instance:
         clip = os.path.join(self.state_dir, 'clipboard.txt') if self.state_dir else None
         if clip and os.path.exists(clip):
             try:
-                import xclip
-                xclip.restore_detached(open(clip, encoding='utf-8').read())
+                plat.clipboard().restore_detached(open(clip, encoding='utf-8').read())
                 os.remove(clip)
             except Exception:  # noqa: BLE001 - best effort
                 pass
@@ -287,7 +288,7 @@ class Instance:
             st = json.load(open(p))
         except (OSError, ValueError):
             return False
-        if st.get('pid') and os.path.exists(f"/proc/{st['pid']}"):
+        if st.get('pid') and plat.alive(st['pid']):
             return False  # still running; restore after it exits
         inst = Instance(state_dir)
         inst.backups = [tuple(b) for b in st.get('backups', [])]

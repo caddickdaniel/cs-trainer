@@ -2,12 +2,14 @@
 // data for kills and throws, safe export names, and the capture API (which
 // validates requests and reports that first-person capture is unavailable).
 const path = require('path');
+const { pathToFileURL } = require('url');
 const zlib = require('zlib');
 const { expect } = require('chai');
 const { connection, reseed, teamWithMember } = require('./helpers');
 const { buildReplay, REPLAY_VERSION } = require('../services/demoParse');
 
-const client = (file) => import(path.join(__dirname, '../client/src/lib', file));
+// A file:// URL, since import() rejects absolute Windows paths such as C:...
+const client = (file) => import(pathToFileURL(path.join(__dirname, '../client/src/lib', file)).href);
 const steam = (n) => `7656119000000000${n}`;
 
 // Killer (T, west) faces east at the victim (CT, east, facing north); a smoke
