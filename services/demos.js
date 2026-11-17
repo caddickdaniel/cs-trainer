@@ -30,6 +30,8 @@ const present = (d, names) => ({
   uploaded_by: d.uploaded_by ? { user_id: d.uploaded_by, user_name: names.get(d.uploaded_by) ?? null } : null,
   created_at: d.created_at,
   processed_at: d.processed_at,
+  // Upload capture option waiting for the uploader to pick players (Phase 13).
+  capture_pending: d.capture_selection || null,
 });
 
 async function userNames(ids) {

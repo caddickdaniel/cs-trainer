@@ -147,15 +147,36 @@ function InputOverlay({ media, videoRef }: { media: CaptureMedia; videoRef: RefO
   if (!inp) {
     return <div className="input-overlay unavailable" title="No recorded input was read for this clip.">Input not recorded</div>;
   }
+  const state = (k: string) => {
+    const bit = inp.map[k];
+    return bits == null || bit == null ? 'na' : (bits & (1 << bit)) ? 'on' : 'off';
+  };
+  const cap = (k: string, label: string, cls: string) => {
+    const st = state(k);
+    return (
+      <span className={`kc ${cls} ${st}`} data-key={k}
+        title={st === 'na' ? `${k}: not recorded at this tick` : `${INPUT_ACTION[k]} (default key ${k})${st === 'on' ? ': held' : ''}`}>{label}</span>
+    );
+  };
+  // Laid out like the keys: W above A S D, Shift left of them, Ctrl under
+  // Shift beside a wide Space; the mouse on the right with M1 / M2.
   return (
-    <div className="input-overlay" aria-label="Recorded actions at this frame">
-      {INPUT_KEYS.map((k) => {
-        const bit = inp.map[k];
-        const state = bits == null || bit == null ? 'na' : (bits & (1 << bit)) ? 'on' : 'off';
-        return <span key={k} className={`key ${state} ${k.length > 1 ? 'wide' : ''}`}
-          title={state === 'na' ? `${k}: not recorded at this tick` : `${INPUT_ACTION[k]} (default key ${k})${state === 'on' ? ': held' : ''}`}>{k}</span>;
-      })}
-      <span className="input-overlay__note">{bits === null ? 'no input recorded here' : 'recorded actions · default keys'}</span>
+    <div className="input-overlay" role="img" aria-label={`Recorded actions: ${INPUT_KEYS.filter((k) => state(k) === 'on').join(', ') || 'none'}`}
+      title={bits === null ? 'No input recorded at this tick' : 'Recorded actions, shown with CS2 default keys (physical keys are not recorded)'}>
+      <div className="kb">
+        {cap('W', 'W', 'k-w')}
+        {cap('Shift', 'Shift', 'k-shift')}
+        {cap('A', 'A', 'k-a')}
+        {cap('S', 'S', 'k-s')}
+        {cap('D', 'D', 'k-d')}
+        {cap('Ctrl', 'Ctrl', 'k-ctrl')}
+        {cap('Space', 'Space', 'k-space')}
+      </div>
+      <div className="mouse" aria-hidden="true">
+        {cap('LMB', 'M1', 'm1')}
+        {cap('RMB', 'M2', 'm2')}
+        <span className="mouse-body" />
+      </div>
     </div>
   );
 }

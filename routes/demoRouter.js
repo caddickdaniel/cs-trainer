@@ -84,6 +84,17 @@ demoRouter.route('/:demo_id/captures')
     res.status(202).send(await captures.request(demoId(req), me(req), v.captureRequest.parse(req.body)));
   }))
   .all(handle405);
+demoRouter.route('/:demo_id/captures/batch')
+  .post(asyncHandler(async (req, res) => {
+    const body = v.captureBatch.parse(req.body);
+    res.status(body.dry_run ? 200 : 202).send(await captures.requestBatch(demoId(req), me(req), body));
+  }))
+  .all(handle405);
+demoRouter.route('/:demo_id/capture-pending')
+  .delete(asyncHandler(async (req, res) => {
+    res.status(200).send(await captures.cancelPending(demoId(req), me(req)));
+  }))
+  .all(handle405);
 demoRouter.route('/:demo_id/captures/retry')
   .post(asyncHandler(async (req, res) => {
     res.status(202).send(await captures.retryFailed(demoId(req), me(req), v.captureRetry.parse(req.body).session_id));

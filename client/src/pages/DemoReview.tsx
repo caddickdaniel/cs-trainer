@@ -74,7 +74,82 @@ export function DemoLibraryPage() {
   return <DemoLibrary teamId={team.team_id} />;
 }
 
+const CAPTURE_LABEL = { all: 'Kills & Utility', kill: 'Kills only', utility: 'Utility only' } as const;
+
+// After an upload with a capture option has parsed: the uploader picks All
+// players or one player (by parsed identity) before anything is queued or
+// CS2 launches, then confirms the scope.
+function PendingCapture({ demo, onDone }: { demo: DemoSummary; onDone: () => void }) {
+  const selection = demo.capture_pending!;
+  const [players, setPlayers] = useState<{ index: number; name: string }[] | null>(null);
+  const [player, setPlayer] = useState<string>('all');
+  const [count, setCount] = useState<{ total: number; kills: number; utility: number; estimate_s: number | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.get<{ demo: DemoDetail }>(`/demos/${demo.demo_id}`).then((r) => setPlayers(r.demo.players)).catch((e) => setError(errorMessage(e)));
+  }, [demo.demo_id]);
+  const pick = player === 'all' ? null : Number(player);
+  const name = pick == null ? 'All players' : players?.find((p) => p.index === pick)?.name ?? 'Player';
+  // Same display name twice: tell them apart by roster position.
+  const label = (p: { index: number; name: string }) => (players && players.filter((x) => x.name === p.name).length > 1 ? `${p.name} (#${p.index + 1})` : p.name);
+  const check = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const c = await api.post<{ total: number; kills: number; utility: number; estimate_s: number | null }>(`/demos/${demo.demo_id}/captures/batch`, { selection, player: pick, dry_run: true });
+      if (!c.total) setError(`${name} has no recorded ${selection === 'kill' ? 'kills' : selection === 'utility' ? 'utility throws' : 'kills or utility'} in this demo.`);
+      else setCount(c);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const start = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/demos/${demo.demo_id}/captures/batch`, { selection, player: pick, pending: true });
+      setCount(null);
+      onDone();
+    } catch (e) {
+      setError(errorMessage(e));
+      setCount(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const skip = async () => {
+    try { await api.delete(`/demos/${demo.demo_id}/capture-pending`); onDone(); } catch (e) { setError(errorMessage(e)); }
+  };
+  return (
+    <div className="pending-capture">
+      <span className="small"><strong>Capture {CAPTURE_LABEL[selection]}</strong>: choose whose events</span>
+      <div className="row tight wrap">
+        <select aria-label="Players to capture" value={player} disabled={!players} onChange={(e) => setPlayer(e.target.value)}>
+          <option value="all">All players</option>
+          {(players ?? []).map((p) => <option key={p.index} value={String(p.index)}>{label(p)}</option>)}
+        </select>
+        <button type="button" className="btn small primary" disabled={busy || !players} onClick={check}>Capture…</button>
+        <button type="button" className="btn small ghost" onClick={skip}>Skip capture</button>
+      </div>
+      {error ? <p className="small muted" role="status">{error}</p> : null}
+      {count ? (
+        <ConfirmDialog title={`Capture ${CAPTURE_LABEL[selection]} for ${pick == null ? 'all players' : label(players!.find((p) => p.index === pick)!)}?`}
+          confirmLabel="Start capture" busy={busy} onCancel={() => setCount(null)} onConfirm={start}>
+          <p>Scope: <strong>{pick == null ? 'every player' : selection === 'kill' ? `kills made by ${name}` : selection === 'utility' ? `utility thrown by ${name}` : `kills made by ${name} and utility they threw`}</strong>
+            {pick != null && selection !== 'utility' ? ' (each kill still records both the killer and the victim view)' : ''}.</p>
+          <p>{[count.kills ? `${count.kills} kill${count.kills === 1 ? '' : 's'}` : null, count.utility ? `${count.utility} throw${count.utility === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')}
+            {count.estimate_s ? `, about ${minutes(count.estimate_s)} including starting CS2` : ''}.</p>
+          <CaptureWarning />
+        </ConfirmDialog>
+      ) : null}
+    </div>
+  );
+}
+
 function DemoLibrary({ teamId }: { teamId: number }) {
+  const { user } = useAuth();
   const lib = useLoad(() => api.get<LibraryResponse>(`/teams/${teamId}/demos`), [teamId]);
   const live = useTeamReview(teamId, 5000);
   const [file, setFile] = useState<File | null>(null);
@@ -162,7 +237,8 @@ function DemoLibrary({ teamId }: { teamId: number }) {
       {confirming && captureOpt ? (
         <ConfirmDialog title={`Upload and capture ${captureOpt === 'all' ? 'kills & utility' : captureOpt === 'kill' ? 'kills' : 'utility'}?`}
           confirmLabel="Upload and capture" onCancel={() => setConfirming(false)} onConfirm={() => upload(true)}>
-          <p>After the demo is processed, every recorded {captureOpt === 'all' ? 'kill and utility throw' : captureOpt === 'kill' ? 'kill' : 'utility throw'} is captured from CS2.</p>
+          <p>After the demo is processed you choose <strong>All players</strong> or one player; nothing is captured and CS2 doesn't start until you confirm that choice.
+            Then every matching recorded {captureOpt === 'all' ? 'kill and utility throw' : captureOpt === 'kill' ? 'kill' : 'utility throw'} is captured from CS2.</p>
           <CaptureWarning extra={<p>{estimateText(captureInfo?.estimates, captureOpt)} You can follow progress on this page.</p>} />
         </ConfirmDialog>
       ) : null}
@@ -227,6 +303,8 @@ function DemoLibrary({ teamId }: { teamId: number }) {
                     </div>
                     {d.source === 'share_code' && d.status !== 'ready' ? <div className="muted small">From share code {d.share_code}</div> : null}
                     {d.status === 'failed' ? <div className="error-text">{d.error_message}</div> : null}
+                    {d.capture_pending && d.status === 'ready' && d.uploaded_by?.user_id === user?.user_id ? <PendingCapture demo={d} onDone={() => { reload(); refreshCapture(); }} /> : null}
+                    {d.capture_pending && d.status !== 'ready' && d.status !== 'failed' ? <div className="muted small">Capture ({CAPTURE_LABEL[d.capture_pending]}) waits until processing finishes, then you choose the players.</div> : null}
                   </div>
                   <StatusPill status={d.status} />
                   {d.status === 'failed' && mine ? <button type="button" className="btn ghost small" onClick={() => act(() => api.post(`/demos/${d.demo_id}/retry`))}>Retry</button> : null}
@@ -587,6 +665,38 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 5000);
     return () => window.clearTimeout(t);
   }, [capturePending, captureStatus]);
+  // Capture this round: count first (dry run), then confirm and queue.
+  const [roundCapture, setRoundCapture] = useState<{ selection: 'all' | 'kill' | 'utility'; total: number; kills: number; utility: number; estimate_s: number | null } | null>(null);
+  const [roundCaptureMsg, setRoundCaptureMsg] = useState<string | null>(null);
+  const [roundCaptureBusy, setRoundCaptureBusy] = useState(false);
+  const checkRoundCapture = async (selection: 'all' | 'kill' | 'utility') => {
+    setRoundCaptureMsg(null);
+    setRoundCaptureBusy(true);
+    try {
+      const c = await api.post<{ total: number; kills: number; utility: number; estimate_s: number | null }>(`/demos/${demo.demo_id}/captures/batch`, { selection, round_number: roundNumber, dry_run: true });
+      if (!c.total) {
+        setRoundCaptureMsg(`Round ${roundNumber} has no recorded ${selection === 'kill' ? 'kills' : selection === 'utility' ? 'utility throws' : 'kills or utility'} to capture.`);
+      } else setRoundCapture({ selection, ...c });
+    } catch (err) {
+      setRoundCaptureMsg(errorMessage(err));
+    } finally {
+      setRoundCaptureBusy(false);
+    }
+  };
+  const startRoundCapture = async () => {
+    if (!roundCapture) return;
+    setRoundCaptureBusy(true);
+    try {
+      await api.post(`/demos/${demo.demo_id}/captures/batch`, { selection: roundCapture.selection, round_number: roundNumber });
+      setRoundCapture(null);
+      refreshCapture();
+    } catch (err) {
+      setRoundCaptureMsg(errorMessage(err));
+      setRoundCapture(null);
+    } finally {
+      setRoundCaptureBusy(false);
+    }
+  };
   const [watchConfirm, setWatchConfirm] = useState(false);
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchError, setWatchError] = useState<string | null>(null);
@@ -1008,6 +1118,16 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   return (
     <div className="stack replay-page">
       <CaptureOverlay current={captureCurrent} refresh={refreshCapture} demoId={demo.demo_id} />
+      {roundCapture ? (
+        <ConfirmDialog title={`Capture round ${roundNumber}?`} confirmLabel="Capture this round" busy={roundCaptureBusy}
+          onCancel={() => setRoundCapture(null)} onConfirm={startRoundCapture}>
+          <p>{roundCapture.selection === 'all' ? 'Kills & Utility' : roundCapture.selection === 'kill' ? 'Kills only' : 'Utility only'} in round {roundNumber}:
+            {' '}<strong>{[roundCapture.kills ? `${roundCapture.kills} kill${roundCapture.kills === 1 ? '' : 's'} (killer and victim views)` : null,
+              roundCapture.utility ? `${roundCapture.utility} throw${roundCapture.utility === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')}</strong>
+            {roundCapture.estimate_s ? <>, about {minutes(roundCapture.estimate_s)} including starting CS2.</> : '.'}</p>
+          <CaptureWarning />
+        </ConfirmDialog>
+      ) : null}
       {watchConfirm ? (
         <ConfirmDialog title={`Watch round ${roundNumber} in CS2?`} confirmLabel="Open in CS2" busy={watchBusy}
           onCancel={() => setWatchConfirm(false)} onConfirm={watchRound}>
@@ -1370,6 +1490,17 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
                 <button type="button" className="btn small" onClick={() => setWatchConfirm(true)}>
                   <Icon name="screen" size={14} /> Watch this round</button>
                 <span className="muted small">Opens round {roundNumber} in CS2</span>
+              </div>
+            ) : null}
+            {captureStatus?.enabled ? (
+              <div className="capture-round">
+                <span className="small capture-round__label">Capture this round</span>
+                <div className="row tight wrap" role="group" aria-label={`Capture round ${roundNumber} from CS2`}>
+                  {([['all', 'Kills & Utility'], ['kill', 'Kills only'], ['utility', 'Utility only']] as const).map(([v, l]) => (
+                    <button key={v} type="button" className="btn small ghost" disabled={roundCaptureBusy} onClick={() => checkRoundCapture(v)}>{l}</button>
+                  ))}
+                </div>
+                {roundCaptureMsg ? <p className="small muted" role="status">{roundCaptureMsg}</p> : null}
               </div>
             ) : null}
           </Panel>

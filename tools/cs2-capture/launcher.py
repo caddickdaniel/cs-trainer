@@ -157,7 +157,10 @@ class Instance:
         token = f'{os.getpid()}-{int(time.time())}'
         env = dict(os.environ, SteamAppId='730', SteamGameId='730', **{MARKER: token})
         out = open(os.path.join(self.state_dir, 'cs2-launch.log'), 'w')
-        args = ['-steam', '-novid', '-condebug', '-console'] + (['-windowed', '-w', str(size[0]), '-h', str(size[1])] if profile else [])
+        # -novid skips the intro movie; -nosound gives CS2 a null audio device
+        # ("Setting null device for -nosound" in its log). Capture only: a
+        # watch session (profile None) keeps sound.
+        args = ['-steam', '-novid', '-condebug', '-console'] + (['-nosound', '-windowed', '-w', str(size[0]), '-h', str(size[1])] if profile else [])
         subprocess.Popen([rt, '--', './cs2.sh', *args],
                          cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
         self.launched = True

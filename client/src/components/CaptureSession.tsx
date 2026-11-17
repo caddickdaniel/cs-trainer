@@ -12,8 +12,9 @@ export interface CaptureEstimates {
 }
 export interface CaptureSessionInfo {
   session_id: number; demo_id: number; mode: 'batch' | 'single' | 'watch'; selection: string | null; round_number: number | null;
-  status: 'queued' | 'running' | 'done' | 'failed'; stage: string | null; total: number; completed: number; failed: number;
+  status: 'preparing' | 'queued' | 'running' | 'done' | 'failed'; stage: string | null; total: number; completed: number; failed: number;
   error: string | null; error_code: string | null; started_at: string | null; finished_at: string | null; finished_ago?: number | null;
+  player_index?: number | null; player_name?: string | null;
 }
 export interface CaptureItem { capture_id: number; round_number: number; event_index: number; kind: 'kill' | 'utility'; status: string; error: string | null }
 interface Current { session: CaptureSessionInfo | null; items: CaptureItem[]; capture: { enabled: boolean; available: boolean; reason: string; estimates: CaptureEstimates } }
@@ -61,7 +62,8 @@ const dismissed = (): number[] => { try { return JSON.parse(localStorage.getItem
 const dismiss = (id: number) => { try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissed(), id].slice(-50))); } catch { /* private mode */ } };
 
 const label = (s: CaptureSessionInfo) => (s.mode === 'watch' ? `Opening round ${s.round_number} in CS2`
-  : s.mode === 'single' ? 'Capturing from CS2' : `Capturing ${s.selection === 'kill' ? 'kills' : s.selection === 'utility' ? 'utility' : 'kills and utility'} from CS2`);
+  : s.mode === 'single' ? 'Capturing from CS2'
+    : `Capturing ${s.selection === 'kill' ? 'kills' : s.selection === 'utility' ? 'utility' : 'kills and utility'}${s.round_number ? ` in round ${s.round_number}` : ''}${s.player_name ? ` for ${s.player_name}` : ''} from CS2`);
 
 // Follows the signed-in user's latest session. `onChange` fires when its
 // status or counts change (pages refresh their capture lists).
@@ -81,7 +83,7 @@ export function useCaptureSession(onChange?: (s: CaptureSessionInfo | null) => v
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [tick]);
-  const active = cur?.session && (cur.session.status === 'queued' || cur.session.status === 'running');
+  const active = cur?.session && ['preparing', 'queued', 'running'].includes(cur.session.status);
   useEffect(() => {
     const t = window.setTimeout(() => setTick((n) => n + 1), active ? 1500 : 10000);
     return () => window.clearTimeout(t);
@@ -98,7 +100,7 @@ export function CaptureOverlay({ current, refresh, demoId }: { current: Current 
   if (!s || closed.includes(s.session_id)) return null;
   // On a demo page only that demo's session; the library shows any.
   if (demoId != null && s.demo_id !== demoId) return null;
-  const running = s.status === 'queued' || s.status === 'running';
+  const running = ['preparing', 'queued', 'running'].includes(s.status);
   // Results older than six hours aren't brought back.
   const finishedLongAgo = !running && (s.finished_ago ?? 0) > 6 * 3600;
   if (finishedLongAgo) return null;
@@ -126,7 +128,7 @@ export function CaptureOverlay({ current, refresh, demoId }: { current: Current 
         <div className="capture-overlay__card">
           <span className="capture-overlay__spinner" aria-hidden="true" />
           <h2>{label(s)}</h2>
-          <p className="capture-overlay__stage">{s.status === 'queued' ? 'Waiting to start…' : s.stage ?? 'Starting…'}</p>
+          <p className="capture-overlay__stage">{s.status === 'running' ? s.stage ?? 'Starting…' : 'Waiting to start…'}</p>
           {s.mode !== 'watch' && s.total > 1 ? (
             <>
               <progress max={s.total} value={s.completed + s.failed} aria-label="Events done" />

@@ -3,16 +3,19 @@
 // benchmarks are recorded; the UI then says no estimate is available.
 const BENCH = {
   measured: true,
-  // Seconds, measured 16 Nov 2026 on the capture PC (RTX 4090, CS2 in a
-  // 1280x720 window with the player's own quality settings, clips at 1x) with
-  // spirit-vs-g2-m3-ancient.dem: tools/cs2-capture/bench.py, variant "final".
-  cold_start: 8, // launch → main menu → focused (7.1 s; up to ~55 s when CS2 rebuilds shaders)
-  demo_load: 19, // playdemo → seekable (18.9 s for a 253 MB demo)
-  per_kill: 26, // killer + victim clips and stills (25.0–27.1 s; 35 s in dense smoke)
-  per_utility: 13.5, // clip + lineup (12.8–14.7 s)
-  close: 4, // restore settings and quit CS2 (3.8 s)
-  // Recorded events in that demo (18 rounds): used for full-match estimates
-  // before the demo is parsed; afterwards the real counts are used.
+  // Seconds, measured live on 16 Nov 2026 (RTX 4090) with the capture
+  // profile: CS2 muted (-nosound, -novid) in a 1280x720 window with low
+  // settings, clips recorded at 1x (faster recording dropped key frames),
+  // verified seeks. Sources: tools/cs2-capture/bench13.py and website runs.
+  cold_start: 11, // launch → main menu (8.6–11.4 s) → focused (+0–1 s)
+  demo_load: 19, // playdemo → seekable (18.4–19.6 s, 253 MB demo)
+  per_kill: 26.5, // killer + victim clips and stills (26.3–28.1 s; ~35 s in dense smoke)
+  per_utility: 13.5, // clip + lineup (13.0–14.1 s)
+  first_event_extra: 6, // the first event also sets up the view (hide demo bar etc.)
+  close: 4, // restore settings and quit CS2 (3.4–5.0 s)
+  // Recorded events in spirit-vs-g2-m3-ancient.dem (18 rounds), used for
+  // full-match estimates before a demo is parsed. Full-match times are
+  // ESTIMATES from the per-event sample, not a measured full-match run.
   typical_kills: 131,
   typical_utility: 391,
   measured_on: '2026-11-16',
@@ -20,7 +23,8 @@ const BENCH = {
 
 function forCounts(kills, utility) {
   if (!BENCH.measured) return null;
-  return Math.round(BENCH.cold_start + BENCH.demo_load + kills * BENCH.per_kill + utility * BENCH.per_utility + BENCH.close);
+  if (!kills && !utility) return 0;
+  return Math.round(BENCH.cold_start + BENCH.demo_load + BENCH.first_event_extra + kills * BENCH.per_kill + utility * BENCH.per_utility + BENCH.close);
 }
 
 function summary() {

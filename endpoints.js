@@ -141,6 +141,8 @@ exports.endpoints = {
       'POST /api/demos/:demo_id/retry': { description: 'Queue a failed demo again' },
       'GET, POST /api/demos/:demo_id/captures': { description: 'Replay Inspector: capture status and this demo\'s captures; capture or recapture one event (launches CS2)', body: '{ kind: kill|utility, round_number, event_index, retry? }' },
       'GET /api/demos/:demo_id/captures/:capture_id/media/:file': { description: 'Captured screenshot or clip (members)' },
+      'POST /api/demos/:demo_id/captures/batch': { description: 'Capture a round and/or one player\'s kills and utility (dry_run counts first)', body: '{ selection: all|kill|utility, round_number?, player?, dry_run?, pending? }' },
+      'DELETE /api/demos/:demo_id/capture-pending': { description: 'Uploader cancels a pending upload capture option' },
       'POST /api/demos/:demo_id/captures/retry': { description: 'Requeue the failed events of a finished capture session', body: '{ session_id }' },
       'POST /api/demos/:demo_id/watch': { description: 'Open the demo in CS2 at a round start and leave it open', body: '{ round_number }' },
       'GET /api/capture-sessions/current': { description: 'Your latest capture session: stage, counts, items' },

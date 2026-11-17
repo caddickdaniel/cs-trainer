@@ -65,10 +65,12 @@ module.exports = {
   // overshoot and come back: forward skips left stale views in benchmarks).
   captureSize: (process.env.CAPTURE_SIZE || '1280x720').split('x').map(Number),
   captureTimescale: Number(process.env.CAPTURE_TIMESCALE) || 1,
-  // Video profile while capturing: 'native' keeps the player's own quality
-  // settings (only the window size changes); 'capture' lowers shadows etc.
-  // Benchmarks showed no speed gain from lower settings (seeking is CPU-bound).
-  captureProfile: process.env.CAPTURE_PROFILE || 'native',
+  // Video profile while capturing: 'capture' (low settings, 720p window,
+  // muted) or 'native' (the player's own quality settings).
+  captureProfile: process.env.CAPTURE_PROFILE || 'capture',
+  // How clips reach their pre-roll: 'seek' (verified seek) or 'play' (play
+  // through nearby gaps at 8x, falling back to the seek). Phase 13 benchmarks.
+  captureNav: process.env.CAPTURE_NAV || 'seek',
   captureShortForward: process.env.CAPTURE_SHORT_FORWARD != null ? Number(process.env.CAPTURE_SHORT_FORWARD) : 0,
   captureStorageDir: path.resolve(process.env.CAPTURE_STORAGE_DIR
     || path.join(__dirname, '..', 'storage', NODE_ENV === 'test' ? 'captures-test' : 'captures')),

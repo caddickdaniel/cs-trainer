@@ -51,7 +51,10 @@ SAFE_PATH = re.compile(r'^/[A-Za-z0-9 _./\-]+\.dem$')
 # HUD is reduced to crosshair and kill feed (also hides the demo bar).
 VIEW = {'spec_show_xray': '0', 'cl_draw_only_deathnotices': '1'}
 DEFAULTS = {'spec_show_xray': '1', 'cl_draw_only_deathnotices': '0'}
-PREROLL_TICKS = 32
+PREROLL_TICKS = 32       # minimum demo ticks played before a clip's first frame
+PREROLL_REAL_S = 0.6     # ...and at least this much real time (console closing)
+FF_SPEED = 8             # play-through navigation speed
+FF_MARGIN_REAL_S = 0.35  # stop this long (real time) before the target
 SEEK_RX = r'Demo Skipping: skipping (?:forward |back(?:ward)? )?to demo tick \d+[^\n]*'
 TRUEVIEW_RX = r'Added TrueView prediction for player slot \d+ \((.*)\)'
 
@@ -186,6 +189,7 @@ class Driver:
         self.timescale = timescale
         self.encoders = []
         self.debug_dir = None  # when set, failed checks save evidence here
+        self.nav = 'seek'      # how clips reach their pre-roll: 'seek' or 'play'
 
     def close(self):
         self.con.close()
@@ -358,6 +362,54 @@ class Driver:
         self.view_set = False
         self.xray = None
 
+    def tick_offset(self):
+        """Game tick minus demo tick, from CS2's last seek line."""
+        m = self.log.last(r'skipping (?:forward |back(?:ward)? )?to demo tick (\d+) \(game tick (\d+)\)')
+        return int(m.group(2)) - int(m.group(1)) if m else None
+
+    def pause_here(self):
+        """Pauses playback and returns the demo tick CS2 paused on (from its
+        'paused on tick' log line), or None when it can't be read."""
+        at = self.log.mark()
+        self.cmd('demo_pause', settle=0)
+        off = self.tick_offset()
+        try:
+            m = self.log.wait(r'CGameRules - paused on tick (\d+)', at, 3, 'pause', '')
+        except CaptureError:
+            self.tick = None
+            return None
+        if off is None:
+            self.tick = None
+            return None
+        self.tick = int(m.group(1)) - off
+        return self.tick
+
+    def play_to(self, target, timer=None):
+        """Play-through navigation: from a known paused tick before `target`,
+        plays at FF_SPEED and pauses just short of it. Keeps the world's
+        played history (smoke, fire) intact, unlike a seek. Returns the tick
+        it paused on, or None (caller falls back to seeking)."""
+        if self.tick is None or target <= self.tick:
+            return None
+        t0 = time.time()
+        margin = FF_MARGIN_REAL_S * FF_SPEED * 64
+        span = target - self.tick - margin
+        if span > 0:
+            self.cmd(f'demo_timescale {FF_SPEED}')
+            self.ensure_focus()
+            self.con.run('demo_resume')
+            time.sleep(span / 64 / FF_SPEED)
+            got = self.pause_here()
+        else:
+            got = self.tick
+        if timer:
+            timer.add('play_nav', time.time() - t0)
+            timer.add('play_nav_count', 1)
+        if got is None or got > target:
+            self.tick = None
+            return None
+        return got
+
     def _goto(self, tick, attempts=3):
         for attempt in range(attempts):
             if attempt:
@@ -464,13 +516,26 @@ class Driver:
             timer.add('still', time.time() - t0)
         return {'file': file, 'tick': int(tick), 'player': player, 'width': img.width, 'height': img.height}
 
-    def clip(self, start, end, player, file, tickrate, fps=30, timer=None, grab_ticks=()):
-        """Records ticks start..end from `player`'s view. Frames are sampled
-        on a clock while the demo plays at `self.timescale`; the encoder runs
-        in the background and is waited for by finish_encoders()."""
+    def clip(self, start, end, player, file, tickrate, fps=30, timer=None, grab_ticks=(), nav='seek'):
+        """Records ticks start..end from `player`'s view as a clip that plays
+        at normal demo speed (`fps` output frames per demo second).
+
+        The demo plays at `self.timescale` (1x, 2x, 4x, 8x...). Frames are
+        grabbed as fast as the window can be read and each output frame takes
+        the grab nearest its moment, so fast recording repeats frames rather
+        than drifting; `distinct_frames` reports how many different grabs
+        made it into the clip. Navigation to the pre-roll: 'seek' (verified
+        overshoot/backward seek) or 'play' (play through at FF_SPEED from the
+        current paused tick when it is before the clip, else seek)."""
         ts = self.timescale
-        pre = max(0, start - PREROLL_TICKS)
-        self.seek(pre, timer)
+        pre_ticks = max(PREROLL_TICKS, int(PREROLL_REAL_S * ts * tickrate))
+        want = max(0, start - pre_ticks)
+        here = None
+        if nav == 'play' and self.tick is not None and self.tick < want:
+            here = self.play_to(want, timer)
+        if here is None:
+            self.seek(want, timer)
+            here = want
         self.spectate(player, timer)
         self.hide_demo_bar()
         self.cmd(f'demo_timescale {ts}')
@@ -478,31 +543,51 @@ class Driver:
         w, h = first.size
         enc = subprocess.Popen(
             ['gst-launch-1.0', '-q', 'fdsrc', 'fd=0', '!', 'rawvideoparse', f'width={w}', f'height={h}', 'format=rgb',
-             f'framerate={fps}/1', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1', 'cpu-used=4', 'target-bitrate=6000000',
+             f'framerate={fps}/1', '!', 'videoconvert', '!', 'vp8enc', 'deadline=1', 'cpu-used=4', 'target-bitrate=4000000',
              '!', 'webmmux', '!', 'filesink', f'location={file}'],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         frames = round((end - start) / tickrate * fps)
-        lag = 0.0
         kept = {}
+        grabs = 0
+        used = set()
+        worst = 0.0
         t_rec = time.time()
         try:
             self.ensure_focus()
             self.con.run('demo_resume')  # console is open (cmd above)
             t0 = time.time()
             self.con.toggle()  # close it during the pre-roll
-            pre_s = (start - pre) / tickrate
-            for k in range(frames):
-                target = t0 + (pre_s + k / fps) / ts
-                now = time.time()
-                if target > now:
-                    time.sleep(target - now)
-                lag = max(lag, time.time() - target)
+            lead = (start - here) / tickrate  # demo seconds before the first frame
+
+            def due(k):  # real time at which output frame k's moment plays
+                return t0 + (lead + k / fps) / ts
+            # Wait for the pre-roll, then grab continuously.
+            first_due = due(0) - 0.02
+            if first_due > time.time():
+                time.sleep(first_due - time.time())
+            prev = None  # (time, grab id, image)
+            k = 0
+            while k < frames:
                 img = self.frame(w)
-                tk = start + k * tickrate / fps
-                for g in grab_ticks:
-                    if abs(tk - g) < 1e-6:
-                        kept[g] = img
-                enc.stdin.write(img.tobytes())
+                now = time.time()
+                grabs += 1
+                cur = (now, grabs, img)
+                # Emit every output frame whose moment has passed, from the
+                # grab closest in time (previous or this one).
+                while k < frames and due(k) <= now:
+                    pick = prev if prev and abs(prev[0] - due(k)) < abs(now - due(k)) else cur
+                    worst = max(worst, abs(pick[0] - due(k)))
+                    used.add(pick[1])
+                    tk = start + k * tickrate / fps
+                    for g in grab_ticks:
+                        if abs(tk - g) < 1e-6:
+                            kept[g] = pick[2]
+                    enc.stdin.write(pick[2].tobytes())
+                    k += 1
+                prev = cur
+                if k < frames and due(k) > time.time() + 0.004 and ts <= 1:
+                    # Real-time (or slower) recording: no need to spin.
+                    time.sleep(max(0, due(k) - time.time() - 0.003))
         except self.ukeys.FocusLost:
             raise CaptureError('focus_lost', 'CS2 lost keyboard focus during capture; nothing more was typed.')
         finally:
@@ -510,10 +595,10 @@ class Driver:
                 enc.stdin.close()
             except OSError:
                 pass
-            self.cmd('demo_pause')
-            # Paused at or just after `end`: any seek before it is backward
-            # (one command, rebuilt from a full snapshot).
-            self.tick = int(end)
+            got = self.pause_here()
+            if got is None:
+                # Paused at or just after `end`: any seek before it is backward.
+                self.tick = int(end)
             if timer:
                 timer.add('record', time.time() - t_rec)
         done = {'returncode': None, 'wait': 0.0}
@@ -527,7 +612,9 @@ class Driver:
         th.start()
         self.encoders.append((th, done, file, timer))
         return {'file': file, 'start': int(start), 'end': int(end), 'player': player, 'fps': fps, 'frames': frames,
-                'width': w, 'height': h, 'max_lag_ticks': round(lag * ts * tickrate, 2), 'timescale': ts}, kept
+                'width': w, 'height': h, 'timescale': ts, 'grabs': grabs, 'distinct_frames': len(used),
+                # Worst gap between a frame's moment and its grab, in demo ticks.
+                'max_lag_ticks': round(worst * ts * tickrate, 2)}, kept
 
     def finish_encoders(self):
         t0 = time.time()
@@ -572,7 +659,7 @@ def kill_event(d, job):
     for role, what, p in steps:
         res = out.setdefault(role, {})
         if what == 'clip':
-            res['clip'], _ = d.clip(start, end, p['player'], p['clip_file'], tickrate, timer=timer)
+            res['clip'], _ = d.clip(start, end, p['player'], p['clip_file'], tickrate, timer=timer, nav=job.get('nav', 'seek'))
         else:
             res['still'] = d.shot(p['still_tick'], p['player'], p['still_file'], timer=timer)
     d.finish_encoders()
@@ -590,7 +677,7 @@ def utility_event(d, job):
     d.set_view(False)
     res = {}
     if job.get('clip_file'):
-        res['clip'], _ = d.clip(int(job['start']), int(job['end']), job['player'], job['clip_file'], tickrate, timer=timer)
+        res['clip'], _ = d.clip(int(job['start']), int(job['end']), job['player'], job['clip_file'], tickrate, timer=timer, nav=job.get('nav', 'seek'))
     if job.get('lineup_file') and job.get('lineup_tick') is not None:
         res['lineup'] = d.shot(int(job['lineup_tick']), job['player'], job['lineup_file'], width=int(job.get('lineup_width') or 1280), timer=timer)
     d.finish_encoders()
@@ -672,7 +759,8 @@ def session():
                 if not how:
                     raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
                 timings['focus'] = round(time.time() - t0, 3)
-                d = Driver(win, short_forward=int(req.get('short_forward', 0)), timescale=float(req.get('timescale', 0.5)))
+                d = Driver(win, short_forward=int(req.get('short_forward', 0)), timescale=float(req.get('timescale', 1)))
+                d.nav = req.get('nav', 'seek')
                 reply(req, ok=True, pid=inst.pid, launched=inst.launched, focus=how, size=list(xc.window_rect(win)[2:]), timings=timings)
             elif op == 'load':
                 stage('Loading the demo in CS2')
@@ -680,9 +768,9 @@ def session():
                 loaded = d.load_demo(req['demo'])
                 reply(req, ok=True, loaded=loaded, timings={'demo_load': round(time.time() - t0, 3)})
             elif op == 'kill':
-                reply(req, ok=True, **kill_event(d, req))
+                reply(req, ok=True, **kill_event(d, {'nav': d.nav, **req}))
             elif op == 'utility':
-                reply(req, ok=True, **utility_event(d, req))
+                reply(req, ok=True, **utility_event(d, {'nav': d.nav, **req}))
             elif op == 'watch':
                 keep_open = True
                 reply(req, ok=True, **watch(d, req, saved))
@@ -691,12 +779,27 @@ def session():
                     d.short_forward = int(req['short_forward'])
                 if 'timescale' in req:
                     d.timescale = float(req['timescale'])
+                if 'nav' in req:
+                    d.nav = req['nav']
                 reply(req, ok=True)
             elif op == 'close':
                 break
             else:
                 raise CaptureError('bad_job', f'Unknown op {op}.')
         except CaptureError as e:
+            # Keep evidence of the failure (CS2's console.log is deleted at
+            # cleanup): the log tail and the current frame, in the session's
+            # state folder.
+            try:
+                if d and inst:
+                    ev = os.path.join(inst.state_dir, 'failures')
+                    os.makedirs(ev, exist_ok=True)
+                    stamp = time.strftime('%Y%m%d-%H%M%S')
+                    with open(os.path.join(ev, f'{stamp}-{op}-{e.code}.log'), 'w') as f:
+                        f.write(f'{e.code}: {e}\nrequest: {json.dumps(req)[:2000]}\n\n' + '\n'.join(d.log.read().splitlines()[-200:]))
+                    d.frame(1280).save(os.path.join(ev, f'{stamp}-{op}-{e.code}.jpg'), quality=80)
+            except Exception:  # noqa: BLE001 - evidence is best effort
+                pass
             reply(req, ok=False, code=e.code, error=str(e))
         except Exception as e:  # noqa: BLE001 - reported to the server, not swallowed
             reply(req, ok=False, code='internal', error=f'{type(e).__name__}: {e}')
