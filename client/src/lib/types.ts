@@ -29,7 +29,10 @@ export interface Marker {
   // Utility only: position in the thrower's order for the phase (Phase 14).
   seq?: number;
   images?: (LineupImage & { url?: string })[];
+  lineup?: LineupRef;
 }
+// Phase 15: the catalogue lineup a utility marker was placed from.
+export interface LineupRef { id: string; title: string; url: string; source: 'CSNADES.gg'; technique?: string; instructions?: string }
 export interface Route { id: string; level?: Level; user_id: number | null; slot?: number | null; color: string; points: Point[] }
 // Angle a player covers, anchored to their player marker.
 export interface Hold { id: string; marker_id: string; angle: number; spread: number; length: number }
@@ -540,7 +543,10 @@ export interface LiveReview {
   annotations: Annotation[];
   // The saved notepad for the round under review (null when nobody has written one).
   note: RoundNote | null;
+  // The host's Replay Inspector selection (Phase 15): event and group tab.
+  inspect?: InspectSelection | null;
 }
+export interface InspectSelection { round_number: number; event_index: number; kind: 'kill' | 'utility'; victim?: number | null; lineup?: number | null }
 
 // ---- Player Stats -----------------------------------------------------------------
 export interface StatsSource {

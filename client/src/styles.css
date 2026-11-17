@@ -940,3 +940,57 @@ img.util-icon { vertical-align: middle; object-fit: contain; }
 
 .pov-stack { display: flex; flex-direction: column; gap: 12px; }
 .clip-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: rgba(0, 0, 0, 0.55); color: #ddd; font-size: 0.85rem; pointer-events: none; }
+
+/* Phase 15: hold cones pulse gently during Play Phase (the outline stays
+   solid so the cone and its direction read at every point). */
+.board .hold-cone.pulsing { animation: hold-pulse 1.6s ease-in-out infinite; }
+@keyframes hold-pulse { 50% { fill-opacity: 0.44; } }
+@media (prefers-reduced-motion: reduce) { .board .hold-cone.pulsing { animation: none; } }
+
+/* Phase 15: phase overview utility table, fixed columns so icons and counts
+   line up from row to row. */
+.utility-table-wrap { overflow-x: auto; }
+.phase-utility { table-layout: fixed; width: 100%; min-width: 22rem; }
+.phase-utility .col-player { width: auto; }
+.phase-utility .col-nade { width: 3.1rem; }
+.phase-utility .col-cost { width: 4.4rem; }
+.phase-utility th.player { text-align: left; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phase-utility th.nade, .phase-utility td.nade { text-align: center; vertical-align: middle; padding-left: 0.2rem; padding-right: 0.2rem; }
+.phase-utility th.nade img, .phase-utility th.nade svg { display: block; margin: 0 auto; }
+.phase-utility .nade-count { display: block; font-variant-numeric: tabular-nums; font-weight: 600; line-height: 1.2; }
+.phase-utility td.none .nade-count { color: var(--muted, #8a8f98); font-weight: 400; }
+.phase-utility .nade-delta { display: flex; justify-content: center; gap: 0.25rem; font-size: 0.72rem; line-height: 1.1; color: var(--muted, #8a8f98); font-variant-numeric: tabular-nums; }
+.phase-utility .issue-row td { padding-top: 0; }
+
+/* Phase 15: phase overview player cards with All instructions. */
+.player-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.player-card { border: 1px solid var(--line, #2a2f36); border-radius: 8px; padding: 0.5rem 0.65rem; background: var(--panel-2, rgba(255,255,255,0.02)); }
+.player-card.mine { border-color: var(--gold, #d8a93b); }
+.player-card__head { display: flex; align-items: center; gap: 0.55rem; }
+.player-card__name { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.player-card__name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-card__peek { margin: 0.35rem 0 0 1.35rem; color: var(--muted, #8a8f98); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-card__body { margin: 0.45rem 0 0 1.35rem; display: grid; gap: 0.3rem; }
+.player-card__body p { margin: 0; }
+.player-card__steps { margin: 0; padding-left: 1.2rem; }
+.player-card__steps li { display: list-item; }
+.order-list .order-num { display: inline-block; min-width: 1.2rem; font-variant-numeric: tabular-nums; color: var(--muted, #8a8f98); }
+.drop-tool label { display: grid; gap: 0.2rem; }
+
+/* Phase 15: victim / lineup tabs for grouped captures. */
+.pov-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+.pov-tabs button { border: 1px solid #3a3a3a; background: #1b1b1b; color: inherit; border-radius: 6px; padding: 3px 8px; font-size: 0.8rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.pov-tabs button.on { border-color: var(--gold, #d8a93b); background: #2a2416; }
+.pov-tabs button:disabled { cursor: default; }
+.warn-text { color: #e8b04a; }
+.inspector-zoom { align-items: center; }
+
+/* Phase 15: lineup picker and attributed lineup links. */
+.lineup-picker label { display: grid; gap: 0.2rem; }
+.lineup-matches { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.lineup-matches li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lineup-confirm { display: grid; gap: 4px; border: 1px solid #5a4a20; border-radius: 6px; padding: 6px; background: #221d10; }
+.lineup-confirm ul { margin: 0; padding-left: 1.1rem; }
+.lineup-ref { display: grid; gap: 2px; margin: 2px 0 6px; }
+.lineup-ref__how { color: var(--muted, #8a8f98); }
+.lineup-ref-edit { display: grid; gap: 4px; border-bottom: 1px solid var(--line, #2a2f36); padding-bottom: 6px; }

@@ -65,6 +65,13 @@ module.exports = {
   // overshoot and come back: forward skips left stale views in benchmarks).
   captureSize: (process.env.CAPTURE_SIZE || '1280x720').split('x').map(Number),
   captureTimescale: Number(process.env.CAPTURE_TIMESCALE) || 1,
+  // Kill-only segments (killer / victim clips) can record at 2x (Phase 15:
+  // 60+ grabs/s retimed to normal-speed 30 fps; a 2x segment with under 75%
+  // distinct frames or over 3 ticks of lag is recorded again at 1x). Opt-in:
+  // round 17 recorded 18% faster with no fallbacks, but in round 3 five
+  // segments fell back (as low as 62% distinct), costing more than it saved,
+  // so the proven 1x path stays the default.
+  captureKillTimescale: Number(process.env.CAPTURE_KILL_TIMESCALE) || 1,
   // Video profile while capturing: 'capture' (low settings, 720p window,
   // muted) or 'native' (the player's own quality settings).
   captureProfile: process.env.CAPTURE_PROFILE || 'capture',

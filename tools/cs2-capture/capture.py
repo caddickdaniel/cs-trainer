@@ -54,7 +54,10 @@ DEFAULTS = {'spec_show_xray': '1', 'cl_draw_only_deathnotices': '0'}
  # Readiness tuning (measured; see README Phase 14).
 INPUT_READY_S = 0.25     # console input accepts keys this long after it shows
 LOAD_SETTLE_S = 1.0      # after CS2 reports a spectator prediction post-load
-MAX_PENDING_ENCODES = 3  # finished clips still encoding before we wait
+MAX_PENDING_ENCODES = 3
+# Faster recording (Phase 15) is kept only when it stays dependable.
+FAST_MIN_DISTINCT = 0.75
+FAST_MAX_LAG_TICKS = 3.0  # finished clips still encoding before we wait
 PREROLL_TICKS = 32       # minimum demo ticks played before a clip's first frame
 PREROLL_REAL_S = 0.6     # ...and at least this much real time (console closing)
 FF_SPEED = 8             # play-through navigation speed
@@ -202,6 +205,11 @@ class Driver:
         # ones overshoot and come back (see seek()).
         self.short_forward = short_forward
         self.timescale = timescale
+        self._pid = None
+        self._shm = None
+        self.use_shm = True
+        self.shm_check = None
+        self.resyncs_seen = 0  # CS2 resyncs that interrupted a seek (seek redone)
         # Wait for CS2's resync after a POV change (see _settle_pov); 0 skips
         # the wait and relies on detecting the resync after the seek.
         self.pov_settle_s = RESYNC_WAIT_S
@@ -210,6 +218,12 @@ class Driver:
         self.nav = 'seek'      # how clips reach their pre-roll: 'seek' or 'play'
 
     def close(self):
+        if self._shm:
+            try:
+                self._shm.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._shm = None
         self.con.close()
 
     # ---- focus and console ------------------------------------------------
@@ -221,10 +235,39 @@ class Driver:
         if not how:
             raise CaptureError('focus', 'CS2 could not be given keyboard focus (another window may be on top of it).')
 
+    def _alive(self):
+        # pgrep costs ~6 ms; once the PID is known, /proc says if it's alive.
+        if self._pid and os.path.exists(f'/proc/{self._pid}'):
+            return True
+        self._pid = cs2_pid()
+        return bool(self._pid)
+
     def frame(self, width=1280):
-        if not cs2_pid():
+        if not self._alive():
             raise CaptureError('cs2_closed', 'CS2 closed or crashed during capture.')
         try:
+            # Shared-memory grabs (Phase 15) when available, else XGetImage.
+            if self._shm is None:
+                try:
+                    self._shm = self.xgrab.ShmGrabber(self.win) if self.use_shm else False
+                    if self._shm:
+                        # Use shared memory only if it returns the same frame
+                        # as XGetImage (CS2 presents GPU buffers through XWayland).
+                        a = self._shm.grab(320).convert('L')
+                        b = self.xgrab.grab(self.win, 320).convert('L')
+                        dv = ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+                        self.shm_check = round(dv, 2)
+                        if dv > 6:
+                            self._shm.close()
+                            self._shm = False
+                except RuntimeError:
+                    self._shm = False
+            if self._shm:
+                w, h = self.xgrab.size(self.win)
+                if (w, h) == (self._shm.w, self._shm.h):
+                    return self._shm.grab(width)
+                self._shm.close()
+                self._shm = None
             return self.xgrab.grab(self.win, width)
         except RuntimeError as e:
             raise CaptureError('cs2_closed', f'Could not read the CS2 window ({e}).')
@@ -304,7 +347,12 @@ class Driver:
             self.bar_toggled = not self.bar_toggled
         self._set_console(False)
         time.sleep(0.3)
-        if self.bar_in(self.frame(1280)):
+        img = self.frame(1280)
+        if self.bar_in(img):
+            if self.debug_dir:
+                n = len(os.listdir(self.debug_dir))
+                img.save(os.path.join(self.debug_dir, f'{n:03d}_demo_ui.png'))
+                self.xgrab.grab(self.win, 1280).save(os.path.join(self.debug_dir, f'{n:03d}_demo_ui_xgetimage.png'))
             raise CaptureError('demo_ui', 'Could not hide the demo playback bar.')
 
     def still(self, gap=0.3, tries=6):
@@ -462,8 +510,18 @@ class Driver:
                 if attempt == 0:
                     self.paste_failures.append('demo_gototick')
                 continue
-            self.log.wait(rf'Demo Skipping finished at tick {int(tick)}\b', at, 90, 'seek', f'CS2 did not confirm the seek to tick {tick}.')
-            self.tick = int(tick)
+            # Done when CS2 reports the tick; but CS2 may resync right away
+            # (skip to the tick before and resume) before reporting it. Then
+            # pause and seek again instead of waiting for a line that won't come.
+            t = int(tick)
+            done = self.log.wait(rf'Demo Skipping finished at tick {t}\b|Demo Skipping: skipping to demo tick {t - 1} \(game tick \d+\) from full packet[^\n]*Current playback is {t} ',
+                                 at, 90, 'seek', f'CS2 did not confirm the seek to tick {tick}.')
+            if 'finished' not in done.group(0):
+                self.log.wait(r'Demo Skipping finished at tick \d+', done.end(), 30, 'seek', f'CS2 did not finish its resync near tick {tick}.')
+                self.resyncs_seen += 1
+                self.cmd('demo_pause')
+                continue
+            self.tick = t
             return m.group(0)
         raise CaptureError('seek', f'CS2 did not accept the seek to tick {tick}.')
 
@@ -769,7 +827,8 @@ class Driver:
         whose window covers them; each output plays at normal demo speed
         (fps frames per demo second)."""
         start, end = int(seg['start']), int(seg['end'])
-        ts = self.timescale
+        # Per segment (Phase 15: kill clips may record at 2x), else the session's.
+        ts = float(seg.get('timescale') or self.timescale)
         fps = int(seg.get('fps', 30))
         # Bounded encode queue: wait only if too many clips are still encoding.
         if timer:
@@ -855,6 +914,7 @@ class Driver:
                 timer.add('resync_during_record_count', 1)
             if timer:
                 timer.add('record', time.time() - t_rec)
+                timer.add('grabs', grabs)
         return [{'file': o['file'], 'start': o['start'], 'end': o['end'], 'player': seg['player'], 'fps': fps, 'frames': o['frames'],
                  'width': w, 'height': h, 'timescale': ts, 'distinct_frames': len(o['used']), 'xray': bool(seg.get('xray')),
                  'max_lag_ticks': round(o['worst'] * ts * tickrate, 2), 'segment': [start, end]} for o in outs]
@@ -1032,6 +1092,18 @@ def session():
                 timer = Timer()
                 t0 = time.time()
                 outs = d.record_segment(req, float(req.get('tickrate') or 64), timer)
+                # A faster-than-1x recording (kill clips at 2x) must be
+                # dependable: enough distinct frames and at most ~1 output
+                # frame of lag, else record the segment again at 1x.
+                if float(req.get('timescale') or d.timescale) > 1 and any(
+                        o['distinct_frames'] < FAST_MIN_DISTINCT * o['frames'] or o['max_lag_ticks'] > FAST_MAX_LAG_TICKS for o in outs):
+                    d.finish_encoders(0)
+                    timer.add('fallback_1x_count', 1)
+                    worst = min(o['distinct_frames'] / o['frames'] for o in outs)
+                    lag = max(o['max_lag_ticks'] for o in outs)
+                    timer.t['fallback_worst_distinct'] = round(min(timer.t.get('fallback_worst_distinct', 1), worst), 3)
+                    timer.t['fallback_worst_lag'] = round(max(timer.t.get('fallback_worst_lag', 0), lag), 2)
+                    outs = d.record_segment({**req, 'timescale': 1}, float(req.get('tickrate') or 64), timer)
                 enc, bad = d.drain_encoded()
                 reply(req, ok=True, outputs=outs, encoded=enc, encode_failed=bad, timings={**timer.t, 'wall': round(time.time() - t0, 3)},
                       console=dict(d.con.stats), paste_failures=list(d.paste_failures))

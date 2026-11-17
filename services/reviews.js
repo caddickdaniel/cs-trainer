@@ -6,6 +6,9 @@
 // Only the team's current IGL controls a review (checked on every request,
 // so an IGL transfer revokes control immediately). Teammates follow read-only.
 // Reviews are separate from Game Mode: nothing here touches game_sessions.
+// The host's Replay Inspector selection (event and victim / lineup tab) is
+// part of the state too, so followers see the event being discussed.
+const zlib = require('zlib');
 const db = require('../db/connection');
 const { badRequest, conflict, notFound } = require('../errors');
 const { requireMember, requireIgl, getAccess } = require('./access');
@@ -19,6 +22,11 @@ function positionAt(review, round, tickrate, atMs = nowMs()) {
   if (review.playing) tick += ((atMs - new Date(review.anchor_at).getTime()) / 1000) * tickrate * review.speed;
   if (round) tick = Math.min(round.end_tick, Math.max(round.start_tick, tick));
   return tick;
+}
+
+async function roundEvents(demoId, roundNumber) {
+  const row = await db('demo_rounds').where({ demo_id: demoId, round_number: roundNumber }).first('data');
+  return row ? JSON.parse(zlib.gunzipSync(row.data)).events || [] : null;
 }
 
 async function roundOf(trx, demoId, roundNumber) {
@@ -63,6 +71,8 @@ async function present(review, userId, trx = db) {
     igl: igl || null,
     can_control: Boolean(access && access.canControl),
     annotations: annotations.map((a) => demos.presentAnnotation(a, names)),
+    // The host's Replay Inspector selection (Phase 15), or null.
+    inspect: review.inspect || null,
     note: note ? (await demos.presentNotes([note]))[0] : null,
   };
 }
@@ -138,6 +148,20 @@ async function loadForControl(reviewId, userId) {
   return review;
 }
 
+// A shared inspector selection must name a kill or utility throw (and tab
+// events) in this demo.
+async function checkInspect(review, sel) {
+  if (!sel) return null;
+  const events = await roundEvents(review.demo_id, sel.round_number);
+  const ev = events && events[sel.event_index];
+  const kindOk = ev && (sel.kind === 'kill' ? ev.type === 'kill' : ['smoke', 'flash', 'he', 'fire'].includes(ev.type));
+  if (!kindOk) throw badRequest('That event is not in this demo', 'event_not_found');
+  for (const tab of ['victim', 'lineup']) {
+    if (sel[tab] != null && !events[sel[tab]]) throw badRequest('That event is not in this demo', 'event_not_found');
+  }
+  return JSON.stringify(sel);
+}
+
 // Applies one IGL command with compare-and-set on version.
 async function command(reviewId, userId, body) {
   const review = await loadForControl(reviewId, userId);
@@ -175,9 +199,16 @@ async function command(reviewId, userId, body) {
     case 'clear':
       changes = {};
       break;
+    case 'inspect':
+      changes = {};
+      break;
     default:
       throw badRequest('Unknown command', 'unknown_command');
   }
+  // The host's inspector selection can travel with any command (a seek to
+  // the selected event, a round change) or on its own ('inspect'); it never
+  // changes playback.
+  if (body.inspect !== undefined) changes.inspect = await checkInspect(review, body.inspect);
   const updated = await db.transaction(async (trx) => {
     const [row] = await trx('review_sessions')
       .where({ review_id: reviewId, status: 'active', version: body.expected_version })

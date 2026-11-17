@@ -62,7 +62,7 @@ export const BOUNCE_POINTS = 8;
 export const INVITE_TTL_HOURS = [1, 24, 72, 168] as const;
 export const LIMITS = {
   phases: 20, markers: 60, routes: 30, routePoints: 100, holds: 20, imagesPerMarker: 4, imageBytes: 8 * 1024 * 1024,
-  pictureBytes: 2 * 1024 * 1024, noteChars: 200, slots: 5,
+  pictureBytes: 2 * 1024 * 1024, noteChars: 200, slots: 5, actions: 30,
 };
 export const NOTE_SIZE = { min: 12, max: 64, default: 22, step: 2 };
 // Supplied utility icons (client/public/icons/utility).

@@ -7,7 +7,7 @@ import type { Board, Hold, Marker, MarkerKind, Point, Route } from '../lib/types
 import { PracticeYardMap } from './PracticeYardMap';
 import { landmarksFor } from '../lib/landmarks';
 
-export type Tool = 'select' | 'route' | 'hold' | MarkerKind;
+export type Tool = 'select' | 'route' | 'hold' | 'drop' | 'lineup' | MarkerKind;
 
 const SIZE = 1000;
 const round = (n: number) => Math.round(Math.min(1, Math.max(0, n)) * 10000) / 10000;
@@ -201,11 +201,14 @@ interface Props {
   fitReserve?: number;
   // The tactic's side: fire markers show a molotov (T) or an incendiary (CT).
   side?: string | null;
-  // Items dropped in earlier phases and still on the ground (Phase 14).
+  // Items lying on the map: dropped in earlier phases and not picked up, or
+  // (during Play Phase) dropped so far in this one.
   ground?: { id: string; kind: string; x: number; y: number; level: string }[];
   // While set, a click on the board places something (e.g. a drop) here
   // instead of using the current tool.
   onPlace?: (p: Point) => void;
+  // Play Phase is running: hold cones pulse.
+  playing?: boolean;
 }
 
 type Drag =
@@ -213,7 +216,8 @@ type Drag =
   | { kind: 'point'; id: string; index: number }
   | { kind: 'hold-tip'; id: string }
   | { kind: 'hold-edge'; id: string }
-  | { kind: 'bounce'; id: string; index: number };
+  | { kind: 'bounce'; id: string; index: number }
+  | { kind: 'action'; id: string };
 
 // The points a utility throw is drawn through: the thrower (route end or
 // player marker, when on this floor), each bounce point, then the marker.
@@ -226,7 +230,7 @@ export function throwPath(board: Board, m: Marker, level: Level) {
 export function MapBoard({
   board, map, level = 'main', onMarkerActivate, players, onChange, tool = 'select', selectedId = null, onSelect,
   activePlayer = null, activeSlot = null, highlightUserId = null, draftRoute = [], onDraftRoute, label = 'Tactics board', overlay, bomb = null, fitReserve = 16, side = null,
-  ground = [], onPlace,
+  ground = [], onPlace, playing = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const frameRef = useFitToViewport<HTMLDivElement>(fitReserve);
@@ -279,9 +283,9 @@ export function MapBoard({
       setThrowDraft({ kind: tool as MarkerKind, level, points: [...points, p] });
       setCursor(p);
       svgRef.current?.focus({ preventScroll: true });
-    } else if (board.markers.length < LIMITS.markers) {
+    } else if (tool !== 'drop' && tool !== 'lineup' && board.markers.length < LIMITS.markers) {
       const marker: Marker = {
-        id: newId('m'), kind: tool, x: p.x, y: p.y, level, user_id: activePlayer, slot: activePlayer == null ? activeSlot : null,
+        id: newId('m'), kind: tool as MarkerKind, x: p.x, y: p.y, level, user_id: activePlayer, slot: activePlayer == null ? activeSlot : null,
         label: '', images: [], ...(tool === 'note' ? { size: NOTE_SIZE.default } : {}),
       };
       update({ markers: [...board.markers, marker] });
@@ -338,6 +342,10 @@ export function MapBoard({
     if (!p) return;
     if (drag.kind === 'bounce') {
       update({ markers: board.markers.map((m) => (m.id === drag.id && m.path ? { ...m, path: m.path.map((pt, i) => (i === drag.index ? p : pt)) } : m)) });
+      return;
+    }
+    if (drag.kind === 'action') {
+      update({ actions: (board.actions ?? []).map((a) => (a.id === drag.id ? { ...a, x: p.x, y: p.y } : a)) });
       return;
     }
     if (drag.kind === 'marker') {
@@ -478,7 +486,7 @@ export function MapBoard({
     const edge = { x: cx + r * Math.cos(rad(h.angle + h.spread / 2)), y: cy + r * Math.sin(rad(h.angle + h.spread / 2)) };
     return (
       <g key={h.id} opacity={dim(anchor) ? 0.3 : 1} data-hold-id={h.id}>
-        <path d={conePath(cx, cy, h)} fill={color} fillOpacity={selected ? 0.38 : 0.26} stroke={color} strokeWidth={selected ? 4 : 2.5}
+        <path d={conePath(cx, cy, h)} className={playing ? 'hold-cone pulsing' : 'hold-cone'} fill={color} fillOpacity={selected ? 0.38 : 0.26} stroke={color} strokeWidth={selected ? 4 : 2.5}
           strokeDasharray="10 5" style={{ cursor: editable && (tool === 'select' || tool === 'hold') ? 'pointer' : undefined }}
           onPointerDown={(e) => { if (editable && (tool === 'select' || tool === 'hold')) { e.stopPropagation(); onSelect?.(h.id); } }} />
         {selected && editable ? (
@@ -589,7 +597,7 @@ export function MapBoard({
         </div>
       ) : null}
       <svg ref={svgRef} viewBox={`0 0 ${SIZE} ${SIZE}`} preserveAspectRatio="xMidYMid meet" role="img"
-        aria-label={label} tabIndex={editable ? 0 : undefined} className={`board${editable ? ' editable' : ''} tool-${tool}`}
+        aria-label={label} tabIndex={editable ? 0 : undefined} className={`board${editable ? ' editable' : ''}${playing ? ' playing' : ''} tool-${tool}`}
         onPointerDown={handleBackgroundDown} onPointerMove={handleMove} onKeyDown={handleKey}
         fontFamily="system-ui, sans-serif">
         <MapBackground map={map} level={level} />
@@ -601,33 +609,26 @@ export function MapBoard({
         {markers.filter((m) => areaKinds.includes(m.kind)).map(renderMarker)}
         {markers.filter((m) => !areaKinds.includes(m.kind) && m.kind !== 'player').map(renderMarker)}
         {markers.filter((m) => m.kind === 'player').map(renderMarker)}
-        {/* Drops and pickups (Phase 14), and earlier drops still on the ground. */}
-        <g data-layer="utility-actions" pointerEvents="none">
+        {/* Items on the ground (earlier drops, or this phase's during Play Phase) and this phase's drops. */}
+        <g data-layer="utility-actions">
           {ground.filter((g) => (g.level ?? 'main') === level).map((g) => (
-            <g key={`ground-${g.id}`} transform={`translate(${g.x * SIZE},${g.y * SIZE})`} opacity="0.7" data-ground-item={g.id}>
+            <g key={`ground-${g.id}`} transform={`translate(${g.x * SIZE},${g.y * SIZE})`} opacity="0.75" data-ground-item={g.id} pointerEvents="none">
               <rect x="-17" y="-17" width="34" height="34" rx="5" fill="none" stroke="#bbb" strokeWidth="2" strokeDasharray="4 3" />
               <UtilityGlyph kind={g.kind} color="#bbb" r={12} side={side} />
               <text y="31" textAnchor="middle" fontSize="13" fill="#ddd" stroke="#000" strokeWidth="3" paintOrder="stroke">on ground</text>
             </g>
           ))}
-          {(board.actions ?? []).filter((a) => (a.level ?? 'main') === level).map((a) => {
+          {(board.actions ?? []).filter((a) => a.type === 'drop' && (a.level ?? 'main') === level).map((a) => {
             const color = colorOf(a);
-            const kind = a.type === 'drop' ? a.kind : (board.actions ?? []).find((d) => d.id === a.drop_id)?.kind
-              ?? ground.find((g) => g.id === a.drop_id)?.kind;
+            const selected = a.id === selectedId;
+            const grab = editable && tool === 'select';
             return (
-              <g key={a.id} transform={`translate(${a.x * SIZE},${a.y * SIZE})`} data-action={a.type} data-action-id={a.id}>
-                {a.type === 'drop' ? (
-                  <>
-                    <rect x="-17" y="-17" width="34" height="34" rx="5" fill="none" stroke={color} strokeWidth="3" strokeDasharray="5 3" />
-                    {kind ? <UtilityGlyph kind={kind} color={color} r={12} side={side} /> : null}
-                    <text y="32" textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{initials(a)} drop</text>
-                  </>
-                ) : (
-                  <>
-                    <circle r="23" fill="none" stroke={color} strokeWidth="3" strokeDasharray="2 4" />
-                    <text y="-27" textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{initials(a)} picks up</text>
-                  </>
-                )}
+              <g key={a.id} transform={`translate(${a.x * SIZE},${a.y * SIZE})`} data-action="drop" data-action-id={a.id}
+                style={{ cursor: grab ? 'grab' : undefined }} pointerEvents={grab ? 'all' : 'none'}
+                onPointerDown={(e) => { if (grab) startDrag(e, { kind: 'action', id: a.id }, a.id); }}>
+                <rect x="-17" y="-17" width="34" height="34" rx="5" fill={selected ? '#ffffff22' : 'none'} stroke={color} strokeWidth={selected ? 4 : 3} strokeDasharray="5 3" />
+                {a.kind ? <UtilityGlyph kind={a.kind} color={color} r={12} side={side} /> : null}
+                <text y="32" textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke">{initials(a)} drop</text>
               </g>
             );
           })}

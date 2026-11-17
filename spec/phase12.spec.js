@@ -279,7 +279,7 @@ describe('phase 12', () => {
     it('plans killer and victim clips one second either side of the kill, clamped to the round', () => {
       const p = plan.planWindows(d, items());
       expect(p.windows.filter((w) => w.capture_id === 1).map((w) => [w.role, w.player, w.start, w.end, w.xray]))
-        .to.deep.equal([['killer_clip', 'alpha', 436, 564, true], ['victim_clip', 'bravo', 436, 564, true]]);
+        .to.deep.equal([['victim_clip', 'bravo', 436, 564, true], ['killer_clip', 'alpha', 436, 564, true]]);
       expect(plan.planWindows(d, items({ ...round, start_tick: 480 })).windows[0]).to.include({ start: 480, end: 564 });
       expect(plan.planWindows(d, items({ ...round, end_tick: 520 })).windows[0]).to.include({ start: 436, end: 520 });
       const noSmoke = [{ ...items()[0], ev: { ...round.events[kill], through_smoke: false } }];
@@ -289,7 +289,8 @@ describe('phase 12', () => {
     it('plans the throw clip around the release and a lineup the tick before', () => {
       const p = plan.planWindows(d, items());
       expect(p.windows.find((w) => w.capture_id === 2)).to.include({ role: 'replay', player: 'alpha', start: 236, end: 364 });
-      expect(p.lineups).to.deep.equal([{ capture_id: 2, role: 'lineup', player: 'alpha', round: 1, tick: 299, file: '/u/lineup.jpg' }]);
+      // Without setup samples the still is the tick before release (Phase 15 picks an earlier aim frame when it can).
+      expect(p.lineups).to.deep.equal([{ capture_id: 2, role: 'lineup', player: 'alpha', round: 1, tick: 299, release_tick: 300, setup: null, file: '/u/lineup.jpg' }]);
       const unlinked = plan.planWindows(d, [{ ...items()[1], ev: { ...round.events[smoke], throw_tick: null } }]);
       expect(unlinked.lineups).to.deep.equal([]);
     });

@@ -188,7 +188,7 @@ export function SharedTacticPage() {
                 </ul>
               ) : <p className="muted">No player instructions in this phase.</p>}
               <h3>Utility</h3>
-              <BuyListSummary loadouts={t.loadouts ?? []} bomb={t.bomb_carrier} phases={t.phases as unknown as Phase[]} phaseIndex={Math.min(index, t.phases.length - 1)} side={t.side}
+              <BuyListSummary loadouts={t.loadouts ?? []} bomb={t.bomb_carrier} phases={t.phases as unknown as Phase[]} phaseIndex={Math.min(index, t.phases.length - 1)} side={t.side} map={t.map}
                 name={(r) => `Player ${r.slot}`} />
               {lineups.length ? <><h3>Lineups</h3><LineupGallery markers={lineups} onOpen={(m, i) => setOpen({ marker: m, index: i })} /></> : null}
             </Panel>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { KIT_ICON } from '../lib/constants';
 import { UtilityIcon } from './UtilityIcon';
 import type { GrenadeCounts, Loadout, Phase, PlayerRef, PlayerUtility } from '../lib/types';
@@ -105,38 +105,81 @@ export function buyBreakdown(p: Pick<PlayerPlan, 'buy' | 'kit'>, side: string | 
   return parts.join(' + ') || 'Nothing to buy';
 }
 
-// Viewer / shared preview: each player's buy list and what they have at the
-// start of the phase being shown (derived from earlier phases).
-export function BuyListSummary({ loadouts, bomb, phases, phaseIndex, side, name }: {
+// Phase overview (viewer and shared preview): one row per player with a
+// fixed-width column per grenade, the icon in the header and the count the
+// player carries at the start of the phase shown (the buy list in phase 1),
+// with this phase's throws (−), drops (↓) and route pickups (+) beneath it.
+// A dash marks an item the player doesn't have. Cost is the starting buy.
+export function BuyListSummary({ loadouts, bomb, phases, phaseIndex, side, name, plan: given, map }: {
   loadouts: Loadout[]; bomb: PlayerRef | null | undefined; phases: Phase[]; phaseIndex: number; side: string | null;
-  name: (r: PlayerRef) => string;
+  name: (r: PlayerRef) => string; plan?: Map<string, PlayerPlan>; map?: string | null;
 }) {
-  const plan = utilityPlan(loadouts, phases, side);
-  const owners: PlayerPlan[] = [...plan.values()];
+  const plan = given ?? utilityPlan(loadouts, phases, side, map, side === 'T' ? bomb : null);
+  const owners: PlayerPlan[] = [...plan.values()].filter((p) => p.phases.some((x) => grenadeTotalOf(x.start) || grenadeTotalOf(x.used) || grenadeTotalOf(x.picked)) || p.cost || p.kit || p.over.length || refKey(bomb) === p.key);
   const bombKey = side === 'T' ? refKey(bomb) : null;
-  if (bombKey && !plan.has(bombKey) && bomb) owners.push({ key: bombKey, buy: { smoke: 0, flash: 0, molly: 0, he: 0, decoy: 0 }, kit: false, cost: 0, phases: [], over: [] });
   if (!owners.length) return <p className="muted small">No buy lists yet.</p>;
   const refOf = (key: string): PlayerRef => (key.startsWith('u') ? { user_id: Number(key.slice(1)), slot: null } : { user_id: null, slot: Number(key.slice(1)) });
+  const showKit = side === 'CT' && owners.some((p) => p.kit);
+  const label = phaseIndex === 0 ? 'bought' : 'carried at the start of this phase';
   return (
-    <table className="table compact utility-table">
-      <thead><tr><th>Player</th><th>Buys</th><th className="num">Cost</th><th>{phaseIndex === 0 ? 'Throws now' : 'Has now'}</th></tr></thead>
-      <tbody>
-        {owners.map((p) => {
-          const at = p.phases[phaseIndex];
-          const over = p.over.filter((o) => o.phase === phaseIndex);
-          return (
-            <tr key={p.key} className={over.length ? 'over' : ''}>
-              <td>{name(refOf(p.key))}{bombKey === p.key ? <> <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /></> : null}</td>
-              <td>{describeCounts(p.buy, side) || '—'}{side === 'CT' && p.kit ? <span className="kit-label">, <KitIcon /> defuse kit</span> : null}</td>
-              <td className="num" title={buyBreakdown(p, side)}>{money(p.cost)}</td>
-              <td>{at ? (phaseIndex === 0 ? describeCounts(at.used, side) : describeCounts(at.start, side)) || '—' : '—'}
-                {at && (describeCounts(at.dropped) || describeCounts(at.picked)) ? <span className="muted small">
-                  {describeCounts(at.dropped) ? ` · drops ${describeCounts(at.dropped, side)}` : ''}{describeCounts(at.picked) ? ` · picks up ${describeCounts(at.picked, side)}` : ''}</span> : null}
-                {over.length ? <span className="error-text"> · {over.map((o) => issueText(o, side)).join(' ')}</span> : null}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="utility-table-wrap">
+      <table className="table compact utility-table phase-utility">
+        <colgroup>
+          <col className="col-player" />
+          {GRENADES.map((g) => <col key={g} className="col-nade" />)}
+          {showKit ? <col className="col-nade" /> : null}
+          <col className="col-cost" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Player</th>
+            {GRENADES.map((g) => <th key={g} scope="col" className="nade" title={itemLabel(g, side, true)}><UtilityIcon kind={g} side={side} size={18} label={itemLabel(g, side, true)} /></th>)}
+            {showKit ? <th scope="col" className="nade" title="Defuse kit"><KitIcon size={18} /><span className="sr-only">Defuse kit</span></th> : null}
+            <th scope="col" className="num">Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {owners.map((p) => {
+            const at = p.phases[phaseIndex];
+            const over = p.over.filter((o) => o.phase === phaseIndex);
+            const who = name(refOf(p.key));
+            return (
+              <Fragment key={p.key}>
+                <tr className={over.length ? 'over' : ''} data-utility-row={p.key}>
+                  <th scope="row" className="player">{who}{bombKey === p.key ? <> <img src="/icons/bomb.png" alt="Bomb" title="Carries the bomb" width="12" height="16" /></> : null}</th>
+                  {GRENADES.map((g) => {
+                    const has = at ? at.start[g] : p.buy[g];
+                    const used = at?.used[g] ?? 0;
+                    const dropped = at?.dropped[g] ?? 0;
+                    const picked = at?.picked[g] ?? 0;
+                    const item = itemLabel(g, side, has !== 1).toLowerCase();
+                    return (
+                      <td key={g} className={`nade${has || picked ? '' : ' none'}`} aria-label={`${who}: ${has || 'no'} ${item} ${label}${used ? `, throws ${used}` : ''}${dropped ? `, drops ${dropped}` : ''}${picked ? `, picks up ${picked}` : ''}`}>
+                        <span className="nade-count">{has || '—'}</span>
+                        {used || dropped || picked ? (
+                          <span className="nade-delta">
+                            {used ? <span title={`Throws ${used} this phase`}>−{used}</span> : null}
+                            {dropped ? <span title={`Drops ${dropped} this phase`}>↓{dropped}</span> : null}
+                            {picked ? <span className="ok-text" title={`Picks up ${picked} on their route this phase`}>+{picked}</span> : null}
+                          </span>
+                        ) : null}
+                      </td>
+                    );
+                  })}
+                  {showKit ? <td className={`nade${p.kit ? '' : ' none'}`}>{p.kit ? <span title="Buys a defuse kit">✓</span> : <span className="nade-count">—</span>}</td> : null}
+                  <td className="num" title={buyBreakdown(p, side)}>{money(p.cost)}</td>
+                </tr>
+                {over.length ? (
+                  <tr className="over issue-row"><td colSpan={GRENADES.length + (showKit ? 3 : 2)} className="error-text small">{over.map((o) => issueText(o, side)).join(' ')}</td></tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="muted small">{phaseIndex === 0 ? 'Counts are each player’s buy list.' : 'Counts are what each player carries when this phase starts.'} −&nbsp;thrown, ↓&nbsp;dropped, +&nbsp;picked up this phase.</p>
+    </div>
   );
 }
+
+const grenadeTotalOf = (c: GrenadeCounts) => GRENADES.reduce((n, g) => n + (c[g] || 0), 0);

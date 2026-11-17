@@ -17,12 +17,20 @@ import { CaptureWarning, ConfirmDialog } from './CaptureSession';
 // Recorded input for a clip: usercmd button bits per tick from `start`
 // (null where the demo has none), and which bit is which action.
 export interface ClipInputs { start: number; bits: (number | null)[]; tickrate: number; map: Record<string, number> }
+// Phase 15: nearby events by one player share one clip (kills by the
+// killer, throws by the thrower); each member event keeps its own capture.
+export interface MediaGroup {
+  id: string; kind: 'kill' | 'utility'; start: number; end: number;
+  members: { capture_id: number; round_number: number; event_index: number | null; event_tick: number }[];
+}
+// Lineup still timing: the aim before the throw's setup movement.
+export interface LineupSetup { technique: string; reliable: boolean; reason: string | null; setup_start: number | null; still_tick: number; note: string | null }
 export interface CaptureMedia {
   // Phase 11 kill captures used 'killer' / 'victim' for the stills.
   role: 'killer' | 'victim' | 'killer_clip' | 'killer_still' | 'victim_clip' | 'victim_still' | 'replay' | 'lineup';
   type: 'image' | 'video'; mime: string; file: string; url: string; attempt?: number;
   player: string; tick?: number; start?: number; end?: number; width?: number; height?: number; fps?: number; timescale?: number;
-  xray?: boolean; inputs?: ClipInputs;
+  xray?: boolean; inputs?: ClipInputs; event_tick?: number; group?: MediaGroup; release_tick?: number; setup?: LineupSetup;
 }
 export interface Capture {
   capture_id: number; round_number: number; event_index: number; kind: 'kill' | 'utility';
@@ -36,11 +44,14 @@ const metres = (units: number) => `${units.toLocaleString('en-GB')} units (≈${
 const levelName = (l: string) => (l === 'lower' ? 'lower floor' : 'main floor');
 
 // A clip with its own loading and error state (one slot never waits on another).
-function ClipVideo({ url, title, videoRef }: { url: string; title: string; videoRef?: Ref<HTMLVideoElement> }) {
+// startAt: seconds into the clip to show first (a grouped clip opens at
+// the selected event; the frame remounts the clip when it changes).
+function ClipVideo({ url, title, videoRef, startAt }: { url: string; title: string; videoRef?: Ref<HTMLVideoElement>; startAt?: number }) {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   return (
     <>
-      <video ref={videoRef} src={url} controls loop muted playsInline preload="metadata" aria-label={title}
+      <video ref={videoRef} src={url} controls loop muted playsInline preload="metadata" aria-label={title} data-start-at={startAt ?? 0}
+        onLoadedMetadata={(e) => { if (startAt) e.currentTarget.currentTime = Math.max(0, startAt); }}
         onLoadedData={() => setState('ready')} onCanPlay={() => setState('ready')} onError={() => setState('error')} />
       {state !== 'ready' ? (
         <div className="clip-state" role="status">{state === 'loading' ? <><span className="inspector-spinner" aria-hidden="true" /> Loading clip…</> : 'This clip could not be loaded.'}</div>
@@ -50,9 +61,9 @@ function ClipVideo({ url, title, videoRef }: { url: string; title: string; video
 }
 
 // One media slot: the captured image or clip when it exists, otherwise why not.
-function MediaFrame({ title, note, media, capture, status, zoom, crosshair, videoRef, overlay, missing, children }: {
+function MediaFrame({ title, note, media, capture, status, zoom, crosshair, videoRef, overlay, missing, children, startAt, tabs }: {
   title: string; note?: string; media: CaptureMedia | null; capture: Capture | null; status: CaptureStatus | null;
-  zoom?: number; crosshair?: boolean; videoRef?: Ref<HTMLVideoElement>; overlay?: ReactNode;
+  zoom?: number; crosshair?: boolean; videoRef?: Ref<HTMLVideoElement>; overlay?: ReactNode; startAt?: number; tabs?: ReactNode;
   // This slot has no media although the capture finished (e.g. one POV only).
   missing?: string; children?: ReactNode;
 }) {
@@ -60,11 +71,12 @@ function MediaFrame({ title, note, media, capture, status, zoom, crosshair, vide
   if (media) {
     return (
       <figure className="inspector-media">
+        {tabs}
         <figcaption>{title}{note ? <span className="muted small"> · {note}</span> : null}
           {media.xray ? <span className="xray-badge" title="Spectator X-ray was on: players are outlined through walls, smoke and flashes, which the player could not see.">X-ray enabled</span> : null}</figcaption>
         <div className="inspector-media__frame captured">
           {media.type === 'video'
-            ? <ClipVideo key={media.url} url={media.url} title={title} videoRef={videoRef} />
+            ? <ClipVideo key={`${media.url}#${startAt ?? 0}`} url={media.url} title={title} videoRef={videoRef} startAt={startAt} />
             : <img src={media.url} alt={`${title}, captured from CS2 at tick ${media.tick}`} style={zoom && zoom > 1 ? { transform: `scale(${zoom})` } : undefined} />}
           {/* Thin crosshair through the aim point (the frame centre, where CS2
               draws the crosshair); the zoom scales about the same point. */}
@@ -91,6 +103,7 @@ function MediaFrame({ title, note, media, capture, status, zoom, crosshair, vide
   else if (status?.enabled) { heading = 'Not captured yet'; }
   return (
     <figure className="inspector-media">
+      {tabs}
       <figcaption>{title}{note ? <span className="muted small"> · {note}</span> : null}</figcaption>
       <div className="inspector-media__frame" role="img" aria-label={`${title}: ${heading.toLowerCase()}`}>
         <div className="inspector-media__empty" aria-live="polite">
@@ -198,13 +211,16 @@ function InputOverlay({ media, videoRef }: { media: CaptureMedia; videoRef: RefO
 }
 
 export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, tick, event, eventIndex, selectionRound, name, side,
-  filter, onFilter, onPrev, onNext, onClear, onSeek, onGoToRound, canControl, status, onStatus, onRefresh, mapName }: {
+  filter, onFilter, onPrev, onNext, onClear, onSeek, onGoToRound, canControl, status, onStatus, onRefresh, mapName, tab = {}, onTab }: {
   demoId: number; round: ReplayRound | null; roundNumber: number; info: { start_tick: number; freeze_end_tick: number | null };
   tickrate: number; tick: number; event: ReplayEvent | null; eventIndex: number | null; selectionRound: number | null;
   name: (p: number | null | undefined) => string; side: (p: number | null | undefined) => 'CT' | 'T' | null;
   filter: InspectFilter; onFilter: (f: InspectFilter) => void; onPrev: () => void; onNext: () => void; onClear: () => void;
   onSeek: (tick: number) => void; onGoToRound: (n: number) => void; canControl: boolean;
   status: CaptureStatus | null; onStatus: (s: CaptureStatus) => void; onRefresh: () => void; mapName: string | null;
+  // Grouped events: the victim / lineup tab shown (an event index in this
+  // round; shared in a live review). Null means the selected event's own.
+  tab?: { victim?: number | null; lineup?: number | null }; onTab?: (t: { victim?: number | null; lineup?: number | null }) => void;
 }) {
   const [step, setStep] = useState<number>(STEP_SECONDS[1]);
   const [requesting, setRequesting] = useState(false);
@@ -227,6 +243,15 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
   };
   const busy = capture?.status === 'queued' || capture?.status === 'running';
   const [confirm, setConfirm] = useState(false);
+  // Another event's capture in this round (group members).
+  const captureOf = (index: number | null | undefined, k: 'kill' | 'utility') => (index == null || selectionRound == null ? null
+    : status?.captures?.find((c) => c.round_number === selectionRound && c.event_index === index && c.kind === k) ?? null);
+  const roleOf = (c: Capture | null, ...roles: CaptureMedia['role'][]) => {
+    for (const r of roles) { const m = c?.media.find((x) => x.role === r); if (m) return m; }
+    return null;
+  };
+  // Seconds into a (grouped) clip for an event tick: a second before it.
+  const offsetFor = (m: CaptureMedia | null, t: number | undefined) => (m && m.start != null && t != null ? Math.max(0, (t - m.start) / tickrate - 1) : undefined);
 
   // Asks the server to capture the selected event (validated there); the
   // result appears through the polled status.
@@ -341,16 +366,44 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
           </p>
           <p className="muted small">Round {roundNumber} · {at(event.tick)} · tick {event.tick}{flags.length ? ` · ${flags.join(', ')}` : ''}</p>
           {nav}
-          {/* Phase 14: both views stacked, killer above victim; each shows its
-              own state, so a missing POV never hides the other. */}
-          <div className="pov-stack">
-            <MediaFrame title={`Killer POV — ${killerName}`} note="1 s either side of the kill"
-              media={mediaFor('killer_clip') ?? mediaFor('killer_still', 'killer')} capture={capture} status={status}
-              missing={capture?.status === 'ready' && !mediaFor('killer_clip', 'killer_still', 'killer') ? (event.attacker == null || event.attacker === event.victim ? 'No killer view: this kill has no player killer.' : 'The killer\'s view could not be captured.') : undefined}>{captureButton}</MediaFrame>
-            <MediaFrame title={`Victim POV — ${name(event.victim)}`} note="1 s either side of the death (after it, CS2 shows its death camera)"
-              media={mediaFor('victim_clip') ?? mediaFor('victim_still', 'victim')} capture={capture} status={status}
-              missing={capture?.status === 'ready' && !mediaFor('victim_clip', 'victim_still', 'victim') ? 'The victim\'s view could not be captured.' : undefined}>{captureButton}</MediaFrame>
-          </div>
+          {/* Both views stacked, killer above victim; each shows its own
+              state, so a missing POV never hides the other. Nearby kills by
+              the same killer share one Killer POV clip (Phase 15) and each
+              victim has its own tab; the clip opens at the chosen kill. */}
+          {(() => {
+            const killerMedia = mediaFor('killer_clip') ?? mediaFor('killer_still', 'killer');
+            const group = killerMedia?.group;
+            const members = group ? group.members.filter((m) => m.event_index != null) : [];
+            const victimIndex = group && tab.victim != null && members.some((m) => m.event_index === tab.victim) ? tab.victim : eventIndex;
+            const victimCapture = victimIndex === eventIndex ? capture : captureOf(victimIndex, 'kill');
+            const victimEv = victimIndex != null ? round.events[victimIndex] : event;
+            const victimMedia = roleOf(victimCapture, 'victim_clip') ?? roleOf(victimCapture, 'victim_still', 'victim');
+            const killTick = (group ? members.find((m) => m.event_index === victimIndex)?.event_tick : undefined) ?? killerMedia?.event_tick ?? event.tick;
+            const tabs = members.length > 1 ? (
+              <div className="pov-tabs" role="tablist" aria-label={`Victims of ${killerName} in this clip`}>
+                {members.map((m, i) => {
+                  const ev = round.events[m.event_index!];
+                  const on = m.event_index === victimIndex;
+                  return (
+                    <button key={m.capture_id} type="button" role="tab" aria-selected={on} className={on ? 'on' : ''} disabled={!onTab}
+                      onClick={() => onTab?.({ ...tab, victim: m.event_index })}>
+                      {i + 1}. {ev && ev.type === 'kill' ? name(ev.victim) : 'Victim'} <span className="muted small">{at(m.event_tick)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null;
+            return (
+              <div className="pov-stack">
+                <MediaFrame title={`Killer POV — ${killerName}`} note={group ? `${group.members.length} kills in one clip, opened at the ${victimIndex === eventIndex ? 'selected' : 'chosen'} kill` : '1 s either side of the kill'}
+                  media={killerMedia} capture={capture} status={status} startAt={offsetFor(killerMedia, killTick)}
+                  missing={capture?.status === 'ready' && !killerMedia ? (event.attacker == null || event.attacker === event.victim ? 'No killer view: this kill has no player killer.' : 'The killer\'s view could not be captured.') : undefined}>{captureButton}</MediaFrame>
+                <MediaFrame title={`Victim POV — ${victimEv && victimEv.type === 'kill' ? name(victimEv.victim) : name(event.victim)}`} note="1 s either side of the death (after it, CS2 shows its death camera)"
+                  media={victimMedia} capture={victimCapture} status={status} tabs={tabs}
+                  missing={victimCapture?.status === 'ready' && !victimMedia ? 'The victim\'s view could not be captured.' : undefined}>{victimIndex === eventIndex ? captureButton : null}</MediaFrame>
+              </div>
+            );
+          })()}
           {capture?.media.length && captureButton ? <div className="row tight">{captureButton}</div> : null}
           {confirmDialog}
           {requestError ? <p className="error-text small">{requestError}</p> : null}
@@ -382,7 +435,29 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
 
   const u = utilityTactics(round, event, tickrate);
   const replay = mediaFor('replay');
-  const lineup = mediaFor('lineup');
+  // Nearby throws by one player share one clip; each keeps its own lineup tab.
+  const ugroup = replay?.group;
+  const umembers = ugroup ? ugroup.members.filter((m) => m.event_index != null) : [];
+  const lineupIndex = ugroup && tab.lineup != null && umembers.some((m) => m.event_index === tab.lineup) ? tab.lineup : eventIndex;
+  const lineupCapture = lineupIndex === eventIndex ? capture : captureOf(lineupIndex, 'utility');
+  const lineup = roleOf(lineupCapture, 'lineup');
+  const lineupEv = lineupIndex != null ? round.events[lineupIndex] : event;
+  const throwTick = (ugroup ? umembers.find((m) => m.event_index === lineupIndex)?.event_tick : undefined) ?? replay?.event_tick ?? u.releaseTick ?? event.tick;
+  const lineupTabs = umembers.length > 1 ? (
+    <div className="pov-tabs" role="tablist" aria-label={`Lineups of ${name(event.player)}'s throws in this clip`}>
+      {umembers.map((m, i) => {
+        const ev = round.events[m.event_index!];
+        const on = m.event_index === lineupIndex;
+        return (
+          <button key={m.capture_id} type="button" role="tab" aria-selected={on} className={on ? 'on' : ''} disabled={!onTab}
+            onClick={() => onTab?.({ ...tab, lineup: m.event_index })}>
+            {i + 1}. <UtilityIcon kind={ev?.type ?? 'smoke'} variant={ev?.variant} size={14} label="" /> {ev ? (RECORDED_LABEL[ev.type] ?? ev.type) : 'Throw'} <span className="muted small">{at(m.event_tick)}</span>
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+  const lineupNote = lineup?.setup?.note ?? (lineup?.tick != null ? `tick ${lineup.tick}` : u.releaseTick != null ? `tick ${u.releaseTick - 1}` : 'needs a linked release');
   const utilityKind = event.type === 'fire' ? (event.variant === 'incendiary' ? 'Incendiary' : 'Molotov') : RECORDED_LABEL[event.type] ?? event.type;
   return (
     <section className="replay-inspector" aria-label="Replay Inspector: utility">
@@ -394,19 +469,26 @@ export function ReplayInspector({ demoId, round, roundNumber, info, tickrate, ti
         </p>
         <p className="muted small">Round {roundNumber} · {u.releaseTick != null ? `released ${at(u.releaseTick)} (tick ${u.releaseTick})` : 'release not linked'} · detonated {at(event.tick)} (tick {event.tick})</p>
         {nav}
-        <MediaFrame title="Two-second replay" note={u.releaseTick != null ? `around the release, from ${name(event.player)}'s view` : 'around the detonation (release not linked)'}
-          media={replay} capture={capture} status={status} videoRef={videoRef}
+        <MediaFrame title={ugroup ? `Throw clip — ${ugroup.members.length} throws` : 'Two-second replay'}
+          note={ugroup ? `${name(event.player)}'s view, opened at the ${lineupIndex === eventIndex ? 'selected' : 'chosen'} throw` : u.releaseTick != null ? `around the release, from ${name(event.player)}'s view` : 'around the detonation (release not linked)'}
+          media={replay} capture={capture} status={status} videoRef={videoRef} startAt={offsetFor(replay, throwTick)}
           overlay={replay ? <InputOverlay media={replay} videoRef={videoRef} /> : null}>{captureButton}</MediaFrame>
         <div className="row wrap tight inspector-speeds" role="group" aria-label="Replay speed">
           {[0.25, 0.5, 1].map((r) => (
             <button key={r} type="button" className={`btn small${speed === r ? '' : ' ghost'}`} aria-pressed={speed === r} disabled={!replay} onClick={() => setPlayback(r)}>{r}×</button>
           ))}
         </div>
-        <MediaFrame title="Lineup — just before release" note={u.releaseTick != null ? `tick ${u.releaseTick - 1}` : 'needs a linked release'}
-          media={lineup} capture={capture} status={status} zoom={zoom} crosshair>{u.releaseTick != null ? captureButton : null}</MediaFrame>
-        <label className="inline small inspector-zoom">Crosshair zoom {zoom}×
-          <input type="range" min={1} max={5} step={1} value={zoom} disabled={!lineup} onChange={(e) => setZoom(Number(e.target.value))} aria-label="Crosshair zoom" />
-        </label>
+        <MediaFrame title={`Lineup — ${lineupEv && lineupEv !== event ? `${RECORDED_LABEL[lineupEv.type] ?? lineupEv.type}, ` : ''}aim before the throw`} note={lineupNote}
+          media={lineup} capture={lineupCapture} status={status} zoom={zoom} crosshair tabs={lineupTabs}>{u.releaseTick != null && lineupIndex === eventIndex ? captureButton : null}</MediaFrame>
+        {lineup?.setup && !lineup.setup.reliable ? (
+          <p className="small warn-text" role="note">Limitation: {lineup.setup.note}</p>
+        ) : null}
+        <div className="row tight wrap inspector-zoom" role="group" aria-label="Crosshair zoom">
+          <span className="small">Crosshair zoom</span>
+          {[1, 2, 4, 6, 8].map((z) => (
+            <button key={z} type="button" className={`btn small${zoom === z ? '' : ' ghost'}`} aria-pressed={zoom === z} disabled={!lineup} onClick={() => setZoom(z)}>{z}×</button>
+          ))}
+        </div>
         {capture?.media.length && captureButton ? <div className="row tight">{captureButton}</div> : null}
         {confirmDialog}
         {requestError ? <p className="error-text small">{requestError}</p> : null}

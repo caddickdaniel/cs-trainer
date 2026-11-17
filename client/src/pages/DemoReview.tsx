@@ -643,11 +643,24 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   const [showDamageArea, setShowDamageArea] = useState(true);
   const [damageSeconds, setDamageSeconds] = useState(5);
   // The kill picked in the kill feed: killer and victim are highlighted around it.
-  const [selectedKill, setSelectedKill] = useState<ReplayEvent | null>(null);
+  const [selectedKillState, setSelectedKill] = useState<ReplayEvent | null>(null);
   // Replay Inspector: the selected kill or utility event (round + index in that
   // round's events, or the first/last inspectable one once that round loads).
   // Kept until another event is chosen or it's cleared.
   const [inspect, setInspect] = useState<{ round: number; index: number } | null>(null);
+  // Grouped captures: the victim / lineup tab chosen (event indexes).
+  const [tabs, setTabs] = useState<{ victim?: number | null; lineup?: number | null }>({});
+  // Live review (Phase 15): the host's selection and tab are shared; a
+  // follower can look at another event locally until the host picks a new one.
+  const sharedInspect = mode !== 'solo' ? liveHere?.inspect ?? null : null;
+  const sharedKey = sharedInspect ? `${sharedInspect.round_number}:${sharedInspect.event_index}:${sharedInspect.victim ?? ''}:${sharedInspect.lineup ?? ''}` : 'none';
+  const following = mode === 'follow';
+  const [peek, setPeek] = useState<{ base: string; sel: { round: number; index: number } | null } | null>(null);
+  const peeking = following && peek && peek.base === sharedKey ? peek : null;
+  const sel = following
+    ? (peeking ? peeking.sel : sharedInspect ? { round: sharedInspect.round_number, index: sharedInspect.event_index } : null)
+    : inspect;
+  const selTabs = following ? (peeking ? {} : { victim: sharedInspect?.victim ?? null, lineup: sharedInspect?.lineup ?? null }) : tabs;
   const [inspectFilter, setInspectFilter] = useState<InspectFilter>('all');
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
   const [captureRefresh, setCaptureRefresh] = useState(0);
@@ -655,7 +668,8 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     let cancelled = false;
     api.get<CaptureStatus>(`/demos/${demo.demo_id}/captures`).then((s) => { if (!cancelled) setCaptureStatus(s); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [demo.demo_id, captureRefresh]);
+  // Followers also fetch again when the host shows another event.
+  }, [demo.demo_id, captureRefresh, following ? sharedKey : '']); // eslint-disable-line react-hooks/exhaustive-deps
   // The user's capture session (overlay); its progress refreshes the list.
   const { current: captureCurrent, refresh: refreshCapture } = useCaptureSession(() => setCaptureRefresh((n) => n + 1));
   const capturePending = !!captureStatus?.captures?.some((c) => c.status === 'queued' || c.status === 'running');
@@ -665,6 +679,14 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 5000);
     return () => window.clearTimeout(t);
   }, [capturePending, captureStatus]);
+  // Followers: fetch capture status again while the shared event's capture
+  // is still pending (footage captured after this page loaded).
+  const sharedCapture = following && sharedInspect ? captureStatus?.captures?.find((c) => c.round_number === sharedInspect.round_number && c.event_index === sharedInspect.event_index) : undefined;
+  useEffect(() => {
+    if (!following || !sharedInspect || sharedCapture?.status === 'ready' || sharedCapture?.status === 'failed') return undefined;
+    const t = window.setTimeout(() => setCaptureRefresh((n) => n + 1), 6000);
+    return () => window.clearTimeout(t);
+  }, [following, sharedInspect, sharedCapture, captureStatus]);
   // Capture this round: count first (dry run), then confirm and queue.
   const [roundCapture, setRoundCapture] = useState<{ selection: 'all' | 'kill' | 'utility'; total: number; kills: number; utility: number; estimate_s: number | null } | null>(null);
   const [roundCaptureMsg, setRoundCaptureMsg] = useState<string | null>(null);
@@ -787,7 +809,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     seek: (t: number) => (mode === 'solo' ? setSolo({ ...solo, anchorTick: t, anchorAt: Date.now() }) : sendLive({ action: 'seek', tick: t })),
     // startTick: where to start in that round (Replay Inspector navigation);
     // otherwise the end of freeze time.
-    round: async (n: number, startTick?: number) => {
+    round: async (n: number, startTick?: number, insp?: Record<string, unknown> | null) => {
       const r = demo.rounds.find((x) => x.round_number === n);
       if (!r) return;
       setTextEdit(null);
@@ -799,9 +821,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
         // Live: change round, then seek with the version that change returned.
         setBusy(true);
         try {
-          const res = await api.post<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/command`, { action: 'round', round_number: n, expected_version: liveHere.version });
+          const res = await api.post<{ review: LiveReview }>(`/reviews/${liveHere.review_id}/command`, { action: 'round', round_number: n, expected_version: liveHere.version, ...(insp !== undefined && startTick == null ? { inspect: insp } : {}) });
           let review = res.review;
-          if (startTick != null) review = (await api.post<{ review: LiveReview }>(`/reviews/${review.review_id}/command`, { action: 'seek', tick: at, expected_version: review.version })).review;
+          if (startTick != null) review = (await api.post<{ review: LiveReview }>(`/reviews/${review.review_id}/command`, { action: 'seek', tick: at, expected_version: review.version, ...(insp !== undefined ? { inspect: insp } : {}) })).review;
           sync.adopt(review);
         } catch (err) {
           if (err instanceof ApiError && err.status === 409 && err.body.review) sync.adopt(err.body.review as LiveReview);
@@ -1042,9 +1064,28 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     if (!round) return;
     const index = round.events.indexOf(ev);
     if (index < 0) return;
-    setInspect({ round: roundNumber, index });
     setSelectedKill(isKill(ev) ? ev : null);
-    if (canControl) control.seek(Math.max(info.start_tick, Math.min(info.end_tick, eventMoment(ev))));
+    if (following) { setPeek({ base: sharedKey, sel: { round: roundNumber, index } }); return; }
+    setInspect({ round: roundNumber, index });
+    setTabs({});
+    const t = Math.max(info.start_tick, Math.min(info.end_tick, eventMoment(ev)));
+    // The host's seek carries the selection, so followers get both at once.
+    if (mode === 'control') void sendLive({ action: 'seek', tick: t, inspect: { round_number: roundNumber, event_index: index, kind: isKill(ev) ? 'kill' : 'utility' } });
+    else control.seek(t);
+  };
+  // Victim / lineup tab in a grouped capture (shared by the host).
+  const chooseTab = (t: { victim?: number | null; lineup?: number | null }) => {
+    if (following || !sel) return;
+    setTabs(t);
+    const ev = round?.events[sel.index];
+    if (mode === 'control' && ev) void sendLive({ action: 'inspect', inspect: { round_number: sel.round, event_index: sel.index, kind: isKill(ev) ? 'kill' : 'utility', victim: t.victim ?? null, lineup: t.lineup ?? null } });
+  };
+  const clearInspect = () => {
+    setSelectedKill(null);
+    if (following) { setPeek({ base: sharedKey, sel: null }); return; }
+    setInspect(null);
+    setTabs({});
+    if (mode === 'control') void sendLive({ action: 'inspect', inspect: null });
   };
   const pickKill = (ev: ReplayEvent) => selectEvent(ev);
   // Landed recorded utility on the radar opens the same inspector event as
@@ -1058,8 +1099,8 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
     onKeyDown: (e: { key: string; preventDefault: () => void }) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectEvent(ev); } },
   } : {});
   // The inspected event, once its round is loaded.
-  const inspectedEv = inspect && round && inspect.round === roundNumber ? round.events[inspect.index] : undefined;
-  const inspected = inspectedEv && inspectable(inspectedEv) ? { ev: inspectedEv, index: inspect!.index } : null;
+  const inspectedEv = sel && round && sel.round === roundNumber ? round.events[sel.index] : undefined;
+  const inspected = inspectedEv && inspectable(inspectedEv) ? { ev: inspectedEv, index: sel!.index } : null;
   const stepEvent = (dir: 1 | -1) => {
     if (!round) return;
     const from = inspected ? inspected.index : (() => {
@@ -1084,7 +1125,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
           const index = dir === 1 ? list[0] : list[list.length - 1];
           if (index == null) continue;
           setInspect({ round: target.round_number, index });
-          await control.round(target.round_number, eventMoment(data.events[index]));
+          setTabs({});
+          await control.round(target.round_number, eventMoment(data.events[index]),
+            { round_number: target.round_number, event_index: index, kind: isKill(data.events[index]) ? 'kill' : 'utility' });
           if (isKill(data.events[index])) setSelectedKill(data.events[index]);
           return;
         } catch (err) {
@@ -1097,6 +1140,8 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
   // Utility throw highlight: where it was thrown from and where it landed.
   const utilityHighlight = inspected && isUtility(inspected.ev) && Math.abs(tick - eventMoment(inspected.ev)) <= 3 * tickrate ? inspected.ev : null;
   const killHighlight = (() => {
+    // Followers highlight the event the host (or their own peek) selected.
+    const selectedKill = following ? (inspected && isKill(inspected.ev) ? inspected.ev : null) : selectedKillState;
     if (!round || !selectedKill || Math.abs(tick - selectedKill.tick) > 3 * tickrate) return null;
     const killerSlot = slotOfPlayer(selectedKill.attacker);
     const killer = killerSlot >= 0 ? frameAt(round, killerSlot, selectedKill.tick) : null;
@@ -1463,7 +1508,7 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
               <div id="replay-scoreboard" className="cs2-scoreboard-layer"><ReplayScoreboard round={round} tick={tick} name={nameOf} onClose={() => setShowScoreboard(false)} /></div>
             ) : null}
             {round && killFeed.length ? (
-              <KillFeed entries={killFeed} side={sideOfPlayer} name={nameOf} describe={describe} onSelect={pickKill} selected={selectedKill} />
+              <KillFeed entries={killFeed} side={sideOfPlayer} name={nameOf} describe={describe} onSelect={pickKill} selected={following ? (inspected && isKill(inspected.ev) ? inspected.ev : null) : selectedKillState} />
             ) : null}
             {damageArea ? (
               <p className="bomb-estimate-note" role="note">Estimated bomb damage area (CS:GO formula: {BOMB_ESTIMATE.damage} damage, {BOMB_ESTIMATE.radius}-unit radius, no armour or cover).
@@ -1570,9 +1615,9 @@ function Replay({ demo, teamId, canControlReview }: { demo: DemoDetail; teamId: 
         </aside>
         <div className={`replay-inspector-cell${inspectorBeside ? '' : ' below'}`}>
           <ReplayInspector demoId={demo.demo_id} round={round} roundNumber={roundNumber} info={info} tickrate={tickrate} tick={tick}
-            event={inspected?.ev ?? null} eventIndex={inspected?.index ?? null} selectionRound={inspect?.round ?? null}
+            event={inspected?.ev ?? null} eventIndex={inspected?.index ?? null} selectionRound={sel?.round ?? null} tab={selTabs} onTab={following ? undefined : chooseTab}
             name={(p) => (p == null ? 'Unknown' : nameOf(p))} side={sideOfPlayer} filter={inspectFilter} onFilter={setInspectFilter}
-            onPrev={() => stepEvent(-1)} onNext={() => stepEvent(1)} onClear={() => { setInspect(null); setSelectedKill(null); }}
+            onPrev={() => stepEvent(-1)} onNext={() => stepEvent(1)} onClear={clearInspect}
             onSeek={(t) => control.seek(Math.max(info.start_tick, Math.min(info.end_tick, t)))} onGoToRound={(n) => control.round(n)}
             canControl={canControl} status={captureStatus} onStatus={setCaptureStatus} onRefresh={() => { setCaptureRefresh((n) => n + 1); refreshCapture(); }} mapName={demo.map} />
         </div>

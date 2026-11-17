@@ -1,36 +1,37 @@
-// Play Phase control (Phase 14): previews a phase from its saved positions.
-// The board passed to MapBoard while playing is derived each frame; saved
-// placements and live Game Mode state are never changed. Switching or
-// replaying a phase starts again from the same saved state.
+// Play Phase control: previews a phase from its saved positions with the
+// tactic plan's own simulation (lib/utility phasePlan), so the preview and
+// the utility carried into later phases always agree. The board passed to
+// MapBoard while playing is derived each frame; saved placements, drops and
+// routes are never changed. Switching or replaying a phase starts again from
+// the same saved state.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Board, GrenadeCounts, Phase } from '../lib/types';
-import { frameAt, phaseTimeline, type Frame } from '../lib/phasePlayback';
-import { GRENADES, itemLabel, phaseSteps, type PlayerPlan } from '../lib/utility';
+import type { GrenadeCounts, Phase } from '../lib/types';
+import { frameAt, type Frame } from '../lib/phasePlayback';
+import { GRENADES, itemLabel, moveAt, type TacticPlan } from '../lib/utility';
 import { UtilityGlyph } from './MapBoard';
 import { usePlayerColors } from '../lib/playerColors';
 import { UtilityIcon } from './UtilityIcon';
 
 const SIZE = 1000;
 
-export function usePhasePlayback(phases: Phase[], index: number, map: string, plan: Map<string, PlayerPlan>) {
+export function usePhasePlayback(phases: Phase[], index: number, tplan: TacticPlan) {
   const phase = phases[index];
   // The run is tied to the phase it started on: switching phase (or editing
   // the board) leaves the preview, and Play starts again from saved state.
   const [run, setRun] = useState<{ phase: Phase; index: number; t: number } | null>(null);
   const raf = useRef(0);
-  const earlier = useMemo(() => new Set(phases.slice(0, index).flatMap((p) => p.board.markers.map((m) => m.id))), [phases, index]);
-  const tl = useMemo(() => (phase ? phaseTimeline(phase.board, map, phaseSteps, earlier) : null), [phase, map, earlier]);
-  const start = useMemo(() => new Map([...plan.values()].map((p) => [p.key, { ...(p.phases[index]?.start ?? p.buy) } as GrenadeCounts])), [plan, index]);
-  const dropKinds = useMemo(() => new Map(phases.flatMap((p) => (p.board.actions ?? []).filter((a) => a.type === 'drop').map((a) => [a.id, a.kind ?? '']))), [phases]);
+  const sim = tplan.sims[index] ?? null;
+  const ground = useMemo(() => tplan.grounds[index] ?? [], [tplan, index]);
+  const start = useMemo(() => new Map([...tplan.players.values()].map((p) => [p.key, { ...(p.phases[index]?.start ?? p.buy) } as GrenadeCounts])), [tplan, index]);
   const stop = () => { cancelAnimationFrame(raf.current); setRun(null); };
   const play = () => {
-    if (!tl || !phase) return;
+    if (!sim || !phase) return;
     cancelAnimationFrame(raf.current);
     const t0 = performance.now();
     const tick = () => {
       const now = (performance.now() - t0) / 1000;
-      setRun({ phase, index, t: Math.min(now, tl.duration) });
-      if (now < tl.duration + 1) raf.current = requestAnimationFrame(tick);
+      setRun({ phase, index, t: Math.min(now, sim.duration) });
+      if (now < sim.duration + 1) raf.current = requestAnimationFrame(tick);
     };
     setRun({ phase, index, t: 0 });
     raf.current = requestAnimationFrame(tick);
@@ -40,8 +41,8 @@ export function usePhasePlayback(phases: Phase[], index: number, map: string, pl
   // Stop the animation loop once the phase changes.
   useEffect(() => { if (!live) cancelAnimationFrame(raf.current); }, [live]);
   const t = live ? live.t : null;
-  const frame: Frame | null = tl && t != null && phase ? frameAt(phase.board, tl, t, start, dropKinds) : null;
-  return { playing: t != null, t, duration: tl?.duration ?? 0, frame, play, stop };
+  const frame: Frame | null = sim && t != null && phase ? frameAt(phase.board, sim, t, start, ground, moveAt) : null;
+  return { playing: t != null, t, duration: sim?.duration ?? 0, frame, play, stop };
 }
 
 export function PlayPhaseBar({ pb, side, name }: {
@@ -90,4 +91,3 @@ export function FlyingUtility({ frame, side }: { frame: Frame | null; side: stri
   );
 }
 
-export type PreviewBoard = Board;
